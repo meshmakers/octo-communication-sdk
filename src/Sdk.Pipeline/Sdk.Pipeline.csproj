@@ -15,7 +15,13 @@
         <NoWarn>1701;1702;CS8002</NoWarn>
         <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+        <!-- Multi-targeting net10.0 + netstandard2.0 would mirror the old
+             Sdk.Common but several deps here (MassTransit 8.5.9, Microsoft.
+             Extensions.Hosting 10.0.7, NJsonSchema 11.6.1) don't support
+             netstandard2.0, and silently skipping the netstandard2.0 build
+             also skips the pack target → no nupkg → consumers (mesh-adapter
+             etc.) hit NU1101 on restore. Net10.0 only for now. -->
+        <TargetFramework>net10.0</TargetFramework>
     </PropertyGroup>
 
     <ItemGroup>

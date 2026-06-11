@@ -14,7 +14,10 @@
         <NoWarn>1701;1702;CS8002</NoWarn>
         <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+        <!-- Single-target net10.0; see Sdk.Pipeline.csproj for the rationale
+             (transitive netstandard2.0 incompat in upstream packages would
+             silently skip the pack target). -->
+        <TargetFramework>net10.0</TargetFramework>
     </PropertyGroup>
 
     <ItemGroup>
