@@ -16,4 +16,9 @@
     <Project Path="src/Sdk.Plug.Simulation/Sdk.Plug.Simulation.csproj" />
     <Project Path="src/Sdk.SimulationNodes/Sdk.SimulationNodes.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Sdk.Common.IntegrationTests/Sdk.Common.IntegrationTests.csproj" />
+    <Project Path="tests/Sdk.Common.PipelineParityTests/Sdk.Common.PipelineParityTests.csproj" />
+    <Project Path="tests/Sdk.Common.Tests/Sdk.Common.Tests.csproj" />
+  </Folder>
 </Solution>

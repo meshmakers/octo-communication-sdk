@@ -1,0 +1,62 @@
+{
+  "orders": [
+    {
+      "id": "ord-1001",
+      "customer": {
+        "name": "Acme Heavy Industries",
+        "attrs": {
+          "code": "X1",
+          "tier": "gold"
+        }
+      },
+      "items": [
+        { "sku": "SKU-A1", "price": 19.99, "qty": 2 },
+        { "sku": "SKU-A2", "price": 5.49, "qty": 5 },
+        { "sku": "SKU-A3", "price": 120.00, "qty": 1 }
+      ]
+    },
+    {
+      "id": "ord-1002",
+      "customer": {
+        "name": "Beta Systems Ltd",
+        "attrs": {
+          "code": "X2",
+          "tier": "silver"
+        }
+      },
+      "items": [
+        { "sku": "SKU-B1", "price": 9.99, "qty": 10 },
+        { "sku": "SKU-B2", "price": 49.50, "qty": 3 }
+      ]
+    },
+    {
+      "id": "ord-1003",
+      "customer": {
+        "name": "Gamma Logistics",
+        "attrs": {
+          "code": "X1",
+          "tier": "gold"
+        }
+      },
+      "items": [
+        { "sku": "SKU-C1", "price": 299.99, "qty": 1 },
+        { "sku": "SKU-C2", "price": 14.95, "qty": 7 },
+        { "sku": "SKU-C3", "price": 0.50, "qty": 100 },
+        { "sku": "SKU-C4", "price": 75.00, "qty": 2 }
+      ]
+    },
+    {
+      "id": "ord-1004",
+      "customer": {
+        "name": "Delta Manufacturing GmbH",
+        "attrs": {
+          "code": "X3",
+          "tier": "bronze"
+        }
+      },
+      "items": [
+        { "sku": "SKU-D1", "price": 12.00, "qty": 4 }
+      ]
+    }
+  ]
+}

@@ -15,12 +15,10 @@
         <NoWarn>1701;1702;CS8002</NoWarn>
         <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <!-- Multi-targeting net10.0 + netstandard2.0 would mirror the old
-             Sdk.Common but several deps here (MassTransit 8.5.9, Microsoft.
-             Extensions.Hosting 10.0.7, NJsonSchema 11.6.1) don't support
-             netstandard2.0, and silently skipping the netstandard2.0 build
-             also skips the pack target → no nupkg → consumers (mesh-adapter
-             etc.) hit NU1101 on restore. Net10.0 only for now. -->
+        <!-- net10.0 only — netstandard2.0 was dropped across the platform in
+             Phase 3 (no consumer needs it anymore). Sdk.Pipeline never
+             actually multi-targeted in practice anyway; the netstandard2.0
+             leg silently produced no output. -->
         <TargetFramework>net10.0</TargetFramework>
     </PropertyGroup>
 
@@ -64,6 +62,15 @@
         </AssemblyAttribute>
         <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
             <_Parameter1>Meshmakers.Octo.Sdk.Common.Web</_Parameter1>
+        </AssemblyAttribute>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+            <_Parameter1>Sdk.Common.Tests</_Parameter1>
+        </AssemblyAttribute>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+            <_Parameter1>Sdk.Common.IntegrationTests</_Parameter1>
+        </AssemblyAttribute>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+            <_Parameter1>Sdk.Common.PipelineParityTests</_Parameter1>
         </AssemblyAttribute>
         <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
             <_Parameter1>DynamicProxyGenAssembly2</_Parameter1>

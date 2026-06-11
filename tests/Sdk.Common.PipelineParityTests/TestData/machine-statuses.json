@@ -1,0 +1,46 @@
+{
+  "Machines": [
+    {
+      "Id": "machine_1",
+      "Name": "Lathe A1",
+      "Value": 42.5,
+      "Status": "OK",
+      "Location": { "Site": "Plant 1", "Hall": "H-A" }
+    },
+    {
+      "Id": "machine_2",
+      "Name": "Mill B2",
+      "Value": 17.0,
+      "Status": "WARNING",
+      "Location": { "Site": "Plant 1", "Hall": "H-B" }
+    },
+    {
+      "Id": "machine_3",
+      "Name": "Press C3",
+      "Value": 100.123,
+      "Status": "OK",
+      "Location": { "Site": "Plant 2", "Hall": "H-A" }
+    },
+    {
+      "Id": "machine_4",
+      "Name": "Drill D4",
+      "Value": 0.0,
+      "Status": "OFFLINE",
+      "Location": { "Site": "Plant 2", "Hall": "H-C" }
+    },
+    {
+      "Id": "machine_5",
+      "Name": "Welder E5",
+      "Value": 73.8,
+      "Status": "OK",
+      "Location": { "Site": "Plant 1", "Hall": "H-C" }
+    },
+    {
+      "Id": "machine_6",
+      "Name": "Robot F6",
+      "Value": 12.5,
+      "Status": "MAINTENANCE",
+      "Location": { "Site": "Plant 3", "Hall": "H-A" }
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "EdaMessages": [
+    {
+      "MessageId": "msg-2001",
+      "Sender": "supplier-a",
+      "Timestamp": "2026-04-15T08:00:00Z",
+      "MeteringPoints": [
+        { "Id": "mp-001", "Value": 1234.5, "Status": "OK", "Unit": "kWh" },
+        { "Id": "mp-002", "Value": 87.2, "Status": "OK", "Unit": "kWh" },
+        { "Id": "mp-003", "Value": 0.0, "Status": "ESTIMATED", "Unit": "kWh" }
+      ]
+    },
+    {
+      "MessageId": "msg-2002",
+      "Sender": "supplier-b",
+      "Timestamp": "2026-04-15T08:05:00Z",
+      "MeteringPoints": [
+        { "Id": "mp-101", "Value": 4567.89, "Status": "OK", "Unit": "kWh" },
+        { "Id": "mp-102", "Value": 23.4, "Status": "MISSING", "Unit": "kWh" }
+      ]
+    },
+    {
+      "MessageId": "msg-2003",
+      "Sender": "supplier-c",
+      "Timestamp": "2026-04-15T08:10:00Z",
+      "MeteringPoints": [
+        { "Id": "mp-201", "Value": 999.99, "Status": "OK", "Unit": "kWh" },
+        { "Id": "mp-202", "Value": 12.5, "Status": "OK", "Unit": "kWh" },
+        { "Id": "mp-203", "Value": 7.5, "Status": "OK", "Unit": "kWh" },
+        { "Id": "mp-204", "Value": 100.0, "Status": "ESTIMATED", "Unit": "kWh" }
+      ]
+    }
+  ]
+}

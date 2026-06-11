@@ -1,0 +1,8 @@
+{
+  "machines": {
+    "m1": { "Id": "m1", "value": 10, "Status": "OK" },
+    "m2": { "Id": "m2", "value": 20, "Status": "WARNING" },
+    "m3": { "Id": "m3", "value": 30, "Status": "OK" }
+  },
+  "wrap": { "Id": "x", "v": 1 }
+}
