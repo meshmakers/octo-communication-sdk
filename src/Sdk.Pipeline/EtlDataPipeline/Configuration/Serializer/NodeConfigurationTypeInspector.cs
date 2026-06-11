@@ -36,4 +36,14 @@ internal class NodeConfigurationTypeInspector(ITypeInspector innerTypeInspector)
     {
         return innerTypeInspector.GetEnumValue(enumValue);
     }
+
+    public bool HasParseMethod(Type type)
+    {
+        return innerTypeInspector.HasParseMethod(type);
+    }
+
+    public object? Parse(string value, Type expectedType)
+    {
+        return innerTypeInspector.Parse(value, expectedType);
+    }
 }
