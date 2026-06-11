@@ -12,7 +12,11 @@
         <NoWarn>1701;1702;CS8002</NoWarn>
         <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+        <!-- Single-target net10.0 to match Sdk.Pipeline; SimulationNodes
+             ProjectRefs it, and Sdk.Pipeline dropped netstandard2.0 because
+             its deps (MassTransit, Hosting, NJsonSchema) don't ship for it.
+             A netstandard2.0 leg here would fail restore with NU1201. -->
+        <TargetFramework>net10.0</TargetFramework>
     </PropertyGroup>
 
     <ItemGroup>
