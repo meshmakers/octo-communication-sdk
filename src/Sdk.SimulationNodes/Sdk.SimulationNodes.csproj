@@ -1,0 +1,42 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <AssemblyName>Meshmakers.Octo.Sdk.SimulationNodes</AssemblyName>
+        <Description>Simulation pipeline nodes</Description>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+        <PackageId>Meshmakers.Octo.Sdk.SimulationNodes</PackageId>
+        <RootNamespace>Meshmakers.Octo.Sdk.SimulationNodes</RootNamespace>
+        <OutputType>Library</OutputType>
+        <Configurations>Debug;Release;DebugL</Configurations>
+        <Platforms>AnyCPU</Platforms>
+        <NoWarn>1701;1702;CS8002</NoWarn>
+        <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="..\..\assets\meshmakers64.png">
+            <Pack>True</Pack>
+            <PackagePath/>
+            <Link>meshmakers64.png</Link>
+        </None>
+        <None Include="..\..\LICENSE">
+            <Pack>True</Pack>
+            <PackagePath/>
+            <Link>LICENSE</Link>
+        </None>
+    </ItemGroup>
+
+    <ItemGroup>
+      <!-- Was ProjectRef to Sdk.Common (which now stays in octo-sdk with only
+           Encryption/). SimulationNodes uses Sdk.Common.EtlDataPipeline.* +
+           Sdk.Common.Services — both now in Sdk.Pipeline. -->
+      <ProjectReference Include="..\Sdk.Pipeline\Sdk.Pipeline.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Bogus" Version="35.6.5" />
+    </ItemGroup>
+
+</Project>

@@ -1,0 +1,6 @@
+@Sdk.Socket.WebSample_HostAddress = http://localhost:5006
+
+GET {{Sdk.Socket.WebSample_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

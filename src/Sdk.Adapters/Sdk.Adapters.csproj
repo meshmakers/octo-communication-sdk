@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <AssemblyName>Meshmakers.Octo.Sdk.Adapters</AssemblyName>
+        <Description>Adapter base classes for OctoMesh communication adapters. Carved out of Sdk.Common/Adapters in Phase 3 of the YAML migration.</Description>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+        <PackageId>Meshmakers.Octo.Sdk.Adapters</PackageId>
+        <!-- Source files still namespace as Meshmakers.Octo.Sdk.Common.Adapters
+             to keep consumer code unchanged. -->
+        <RootNamespace>Meshmakers.Octo.Sdk.Common</RootNamespace>
+        <OutputType>Library</OutputType>
+        <Configurations>Debug;Release;DebugL</Configurations>
+        <Platforms>AnyCPU</Platforms>
+        <NoWarn>1701;1702;CS8002</NoWarn>
+        <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="..\..\assets\meshmakers64.png">
+            <Pack>True</Pack>
+            <PackagePath />
+            <Link>meshmakers64.png</Link>
+        </None>
+        <None Include="..\..\LICENSE">
+            <Pack>True</Pack>
+            <PackagePath />
+            <Link>LICENSE</Link>
+        </None>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Meshmakers.Octo.Common.DistributionEventHub" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Communication.Contracts" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.ConstructionKit.Contracts" Version="$(OctoVersion)" />
+        <!-- Sdk.Common holds AssemblyMetadataReader + EnumerableExtensions used here. -->
+        <PackageReference Include="Meshmakers.Octo.Sdk.Common" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Sdk.ServiceClient" Version="$(OctoVersion)" />
+        <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.7" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.7" />
+        <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.7" />
+        <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.7" />
+        <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.7" />
+        <PackageReference Include="NLog" Version="6.1.3" />
+        <PackageReference Include="NLog.Extensions.Logging" Version="6.1.3" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Sdk.Pipeline\Sdk.Pipeline.csproj" />
+    </ItemGroup>
+
+</Project>

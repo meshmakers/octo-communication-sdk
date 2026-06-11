@@ -1,0 +1,8 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+attributes:
+- id: Sinus
+  valueType: Double
+- id: Constant
+  valueType: Double
+- id: Triangle
+  valueType: Double  

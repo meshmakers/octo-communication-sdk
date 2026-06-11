@@ -1,0 +1,143 @@
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
+using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Loads;
+using Meshmakers.Octo.Sdk.Common.Services;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+
+namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+
+internal class AdapterTriggerContext(
+    IServiceProvider serviceProvider,
+    string tenantId,
+    OctoObjectId dataFlowRtId,
+    RtEntityId pipelineRtEntityId,
+    INodeContext nodeContext, IGlobalConfiguration globalConfiguration)
+    : TriggerContext(tenantId, dataFlowRtId, pipelineRtEntityId, nodeContext, globalConfiguration)
+{
+    private readonly ILogger<AdapterTriggerContext> _logger = serviceProvider.GetRequiredService<ILogger<AdapterTriggerContext>>();
+    private readonly IPipelineRegistryService _pipelineRegistryService = serviceProvider.GetRequiredService<IPipelineRegistryService>();
+    private readonly IEtlDataOrchestrator _etlDataOrchestrator = serviceProvider.GetRequiredService<IEtlDataOrchestrator>();
+    private readonly IContextCreatorService _contextCreatorService = serviceProvider.GetRequiredService<IContextCreatorService>();
+    private readonly IPipelineExecutionReporter? _executionReporter = serviceProvider.GetService<IPipelineExecutionReporter>();
+
+    /// <inheritdoc />
+    public override async Task<Guid> StartExecutePipelineAsync(ExecutePipelineOptions executePipelineOptions, object? value = null)
+    {
+        if (!_pipelineRegistryService.TryGetPipelineRegistration(TenantId, PipelineRtEntityId,
+                // ReSharper disable once ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+                out var pipelineRegistration) || pipelineRegistration == null)
+        {
+            _logger.LogError("[{TenantId}] Pipeline {Id} not found", PipelineRtEntityId, TenantId);
+            throw PipelineExecutionException.PipelineNotFound(TenantId, PipelineRtEntityId);
+        }
+
+        var pipelineExecutionId = Guid.NewGuid();
+        _logger.LogDebug("[{TenantId}] Running pipeline for pipeline {PipelineRtEntityId} as run with execution id {PipelineExecutionId}", TenantId,
+            PipelineRtEntityId, pipelineExecutionId);
+        var etlContext = await _contextCreatorService.CreateEtlContext<IEtlContext>(pipelineRegistration, executePipelineOptions, pipelineExecutionId);
+
+        IPipelineDebugger? debugger = null;
+        if (pipelineRegistration.IsDebuggingEnabled)
+        {
+            _logger.LogWarning("[{TenantId}] Debugging enabled for pipeline {PipelineRtEntityId} with execution id {PipelineExecutionId}", TenantId,
+                PipelineRtEntityId, pipelineExecutionId);
+
+            debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
+            debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
+        }
+
+        DateTime startedDateTime = DateTime.UtcNow;
+
+        // Report execution start to communication controller
+        if (_executionReporter != null)
+        {
+            await _executionReporter.ReportExecutionStartAsync(
+                PipelineRtEntityId,
+                pipelineExecutionId,
+                executePipelineOptions.TriggerType,
+                startedDateTime,
+                executePipelineOptions.InputData);
+        }
+
+        Task<object?> task = Task.Run(async () =>
+        {
+            var r = await _etlDataOrchestrator.ExecutePipelineAsync(
+                pipelineRegistration.NodeDefinitionRoot,
+                etlContext, debugger, value);
+
+            return r;
+        });
+        var execution = pipelineRegistration.RegisterExecution(pipelineExecutionId, startedDateTime, task);
+        execution.Properties["EtlContext"] = etlContext;
+
+        return pipelineExecutionId;
+    }
+
+    /// <inheritdoc />
+    public override async Task<object?> EndExecutePipelineAsync(Guid pipelineExecutionId)
+    {
+        if (!_pipelineRegistryService.TryGetPipelineRegistration(TenantId, PipelineRtEntityId,
+                // ReSharper disable once ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+                out var pipelineRegistration) || pipelineRegistration == null)
+        {
+            _logger.LogError("[{TenantId}] Pipeline {Id} not found", PipelineRtEntityId, TenantId);
+            throw PipelineExecutionException.PipelineNotFound(TenantId, PipelineRtEntityId);
+        }
+
+        var startedAt = pipelineRegistration.GetExecutionStartTime(pipelineExecutionId) ?? DateTime.UtcNow;
+
+        // Retrieve the EtlContext stored during StartExecutePipelineAsync
+        var etlContext = pipelineRegistration.GetExecutionPropertyValue<IEtlContext>(pipelineExecutionId, "EtlContext");
+
+        var status = PipelineExecutionStatus.Running;
+        string? errorMessage = null;
+        object? result = null;
+
+        try
+        {
+            result = await pipelineRegistration.UnregisterExecutionAsync(pipelineExecutionId);
+            status = PipelineExecutionStatus.Completed;
+        }
+        catch (Exception ex)
+        {
+            status = PipelineExecutionStatus.Failed;
+            errorMessage = ex.Message;
+            throw;
+        }
+        finally
+        {
+            // Capture completion time AFTER the pipeline task has been awaited
+            var completedAt = DateTime.UtcNow;
+            var durationMs = (int)(completedAt - startedAt).TotalMilliseconds;
+
+            // Report execution end to communication controller
+            if (_executionReporter != null)
+            {
+                // Only include OutputData if explicitly set by SetPipelineExecutionResult node
+                string? outputData = null;
+                if (etlContext?.Properties.TryGetValue(
+                        SetPipelineExecutionResultNode.ExecutionResultPropertyKey, out var resultValue) == true
+                    && resultValue is string resultString)
+                {
+                    outputData = resultString;
+                }
+
+                await _executionReporter.ReportExecutionEndAsync(
+                    pipelineExecutionId,
+                    status,
+                    completedAt,
+                    durationMs,
+                    errorMessage,
+                    outputData);
+            }
+
+            _logger.LogDebug("[{TenantId}] Pipeline finished for pipeline {PipelineRtEntityId} with status {Status}",
+                TenantId, PipelineRtEntityId, status);
+        }
+
+        return result;
+    }
+}

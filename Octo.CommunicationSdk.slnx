@@ -1,0 +1,19 @@
+<Solution>
+  <Configurations>
+    <BuildType Name="Debug" />
+    <BuildType Name="DebugL" />
+    <BuildType Name="Release" />
+  </Configurations>
+  <Folder Name="/samples/">
+    <Project Path="samples/Sdk.Plugs.Sample/Sdk.Plugs.Sample.csproj" />
+    <Project Path="samples/Sdk.Socket.WebSample/Sdk.Socket.WebSample.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Sdk.Adapters/Sdk.Adapters.csproj" />
+    <Project Path="src/Sdk.Common.Web/Sdk.Common.Web.csproj" />
+    <Project Path="src/Sdk.CommunicationAdapter/Sdk.CommunicationAdapter.csproj" />
+    <Project Path="src/Sdk.Pipeline/Sdk.Pipeline.csproj" />
+    <Project Path="src/Sdk.Plug.Simulation/Sdk.Plug.Simulation.csproj" />
+    <Project Path="src/Sdk.SimulationNodes/Sdk.SimulationNodes.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,11 @@
+$schema: https://schemas.meshmakers.cloud/construction-kit-elements.schema.json
+types:
+- typeId: Simulation
+  derivedFromCkTypeId: System/Entity
+  attributes:
+  - id: ${thisModel}/Sinus
+    name: Sinus
+  - id: ${thisModel}/Constant
+    name: Constant
+  - id: ${thisModel}/Triangle
+    name: Triangle

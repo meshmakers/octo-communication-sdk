@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <TargetFrameworks></TargetFrameworks>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+        <Configurations>Debug;Release;DebugL</Configurations>
+        <Platforms>AnyCPU</Platforms>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- Plug.Simulation is an adapter sample. It used to depend on Sdk.Common
+             (whose Adapters/EtlDataPipeline/Services subfolders moved here);
+             those are now split out as Sdk.Adapters + Sdk.Pipeline. -->
+        <ProjectReference Include="..\Sdk.Adapters\Sdk.Adapters.csproj" />
+        <ProjectReference Include="..\Sdk.Pipeline\Sdk.Pipeline.csproj" />
+        <ProjectReference Include="..\Sdk.CommunicationAdapter\Sdk.CommunicationAdapter.csproj" />
+        <ProjectReference Include="..\Sdk.SimulationNodes\Sdk.SimulationNodes.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Update="appsettings.json">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+        <None Update="nlog.config">
+          <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
+    </ItemGroup>
+
+    <Target Name="GeneratePipelineSchema" AfterTargets="Build" Condition="'$(GeneratePipelineSchema)' != 'false' and '$(DesignTimeBuild)' != 'true'" Inputs="$(TargetPath)" Outputs="$(TargetDir)pipeline-schema.json">
+        <Exec Command="dotnet exec &quot;$(TargetPath)&quot; --generate-pipeline-schema &quot;$(TargetDir)pipeline-schema.json&quot;" />
+        <Message Importance="high" Text="Pipeline schema generated at $(TargetDir)pipeline-schema.json" />
+    </Target>
+</Project>

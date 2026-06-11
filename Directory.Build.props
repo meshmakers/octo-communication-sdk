@@ -1,0 +1,47 @@
+<Project>
+    <PropertyGroup>
+        <OctoRootDirectoryPropsFilePath>$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))</OctoRootDirectoryPropsFilePath>
+        <OctoUserPropsFilePath>$([MSBuild]::GetPathOfFileAbove('Octo.User.props', '$(MSBuildThisFileDirectory)'))</OctoUserPropsFilePath>
+        <OctoRepoRootPath>$(MSBuildThisFileDirectory)</OctoRepoRootPath>
+        <OctoRepoRootPath Condition="'$(OctoRootDirectoryPropsFilePath)'!=''">$([System.IO.Path]::GetDirectoryName($(OctoRootDirectoryPropsFilePath)))</OctoRepoRootPath>
+    </PropertyGroup>
+    <!-- Import an custom file to overwrite versions etc. -->
+    <Import Condition="'$(OctoRootDirectoryPropsFilePath)'=='' And Exists($(OctoUserPropsFilePath))" Project="$(OctoUserPropsFilePath)"/>
+    <!-- Import the Directory.Build.props file of the root directory -->
+    <Import Condition="Exists($(OctoRootDirectoryPropsFilePath))" Project="$(OctoRootDirectoryPropsFilePath)"/>
+    <PropertyGroup>
+        <LangVersion>latestmajor</LangVersion>
+        <Nullable>enable</Nullable>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <ImplicitUsings>true</ImplicitUsings>
+        <RepositoryUrl>https://github.com/meshmakers/octo-communication-sdk</RepositoryUrl>
+        <PackageIcon>meshmakers64.png</PackageIcon>
+        <PackageLicenseFile>LICENSE</PackageLicenseFile>
+        <PackageProjectUrl>https://www.meshmakers.io</PackageProjectUrl>
+        <PackageTags>Octo data mesh iot communication adapter pipeline</PackageTags>
+        <TargetFramework>net10.0</TargetFramework>
+        <!-- OctoVersion is the version RANGE used to resolve upstream Meshmakers
+             NuGets (Sdk.Common, Sdk.ServiceClient, Communication.Contracts,
+             DistributedEventHub) at restore time. Mirrors the pattern in the
+             5 Libs repos that we just released as 3.4.x.
+             - DebugL: 999.0.0 from the locally-built nuget folder
+             - Main builds: 0.1.* (continuous date-versioned upstream)
+             - Release-tag builds (r-tag): 3.4.* (matches the Libs release line) -->
+        <OctoVersion Condition="'$(Configuration)'=='DebugL'">999.0.0</OctoVersion>
+        <OctoVersion Condition="'$(OctoNugetPrivateServer)'!='' And '$(OctoVersion)'==''">0.1.*</OctoVersion>
+        <OctoVersion Condition="'$(OctoNugetPrivateServer)'=='' And '$(OctoVersion)'==''">3.4.*</OctoVersion>
+        <Version Condition="'$(Configuration)'=='DebugL'">999.0.0</Version>
+        <PackageVersion Condition="'$(Configuration)'=='DebugL'">999.0.0</PackageVersion>
+        <MeshmakerVersion>4.1.35</MeshmakerVersion>
+        <MeshmakerVersion Condition="'$(Configuration)'=='DebugL'">999.0.0</MeshmakerVersion>
+        <RestoreSources Condition="'$(RestoreSources)'==''">https://api.nuget.org/v3/index.json</RestoreSources>
+        <RestoreSources Condition="'$(OctoNugetPrivateServer)'!=''">$(OctoNugetPrivateServer)</RestoreSources>
+        <RestoreSources Condition="'$(Configuration)'=='DebugL'">$(OctoRepoRootPath)../nuget;$(RestoreSources)</RestoreSources>
+    </PropertyGroup>
+    <PropertyGroup Condition=" '$(Configuration)' == 'DebugL' ">
+        <DebugSymbols>true</DebugSymbols>
+        <DebugType>full</DebugType>
+        <Optimize>false</Optimize>
+        <DefineConstants>DEBUG;TRACE</DefineConstants>
+    </PropertyGroup>
+</Project>

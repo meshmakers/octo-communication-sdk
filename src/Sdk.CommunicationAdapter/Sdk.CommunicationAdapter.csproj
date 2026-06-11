@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <AssemblyName>Meshmakers.Octo.Sdk.CommunicationAdapter</AssemblyName>
+        <Description>CK Model + adapter contracts for the OctoMesh Communication SDK (System.Sdk schema).</Description>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+        <PackageId>Meshmakers.Octo.Sdk.CommunicationAdapter</PackageId>
+        <RootNamespace>Meshmakers.Octo.Sdk.CommunicationAdapter</RootNamespace>
+        <OutputType>Library</OutputType>
+        <Configurations>Debug;Release;DebugL</Configurations>
+        <Platforms>AnyCPU</Platforms>
+        <NoWarn>1701;1702;CS8002</NoWarn>
+        <TargetFramework>net10.0</TargetFramework>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="..\..\assets\meshmakers64.png">
+            <Pack>True</Pack>
+            <PackagePath />
+            <Link>meshmakers64.png</Link>
+        </None>
+        <None Include="..\..\LICENSE">
+            <Pack>True</Pack>
+            <PackagePath />
+            <Link>LICENSE</Link>
+        </None>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Bogus" Version="35.6.5" />
+        <!-- Communication.Contracts stays in octo-sdk; here as a PackageRef instead
+             of the cross-repo ProjectRef we used to have. -->
+        <PackageReference Include="Meshmakers.Octo.Communication.Contracts" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.ConstructionKit.MsBuildTasks" Version="$(OctoVersion)" PrivateAssets="all" />
+    </ItemGroup>
+</Project>
