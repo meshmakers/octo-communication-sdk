@@ -15,26 +15,14 @@ name: $(MajorVersion).$(MinorVersion).$(date:yyMM).$(DayOfMonth)$(rev:rrr)-$(Bui
 
 resources:
   pipelines:
-    - pipeline: octo-distributedEventHub
-      source: octo-distributedEventHub-CI
-      trigger:
-        branches:
-          include:
-            - main
-    - pipeline: octo-construction-kit-engine
-      source: octo-construction-kit-engine-CI
-      trigger:
-        branches:
-          include:
-            - main
+    # Only octo-sdk needed — it transitively depends on DEH + CK-Engine (its
+    # own resources.pipelines re-fires it when those build), and once it
+    # publishes the slim Sdk.Common / Sdk.ServiceClient / Communication.Contracts
+    # we want to rebuild against, this repo fires too. octo-common-services is
+    # NOT a dependency here (no Sdk.Pipeline / Sdk.Adapters / Web project
+    # references it).
     - pipeline: octo-sdk
       source: octo-sdk-CI
-      trigger:
-        branches:
-          include:
-            - main
-    - pipeline: octo-common-services
-      source: octo-common-services-CI
       trigger:
         branches:
           include:
