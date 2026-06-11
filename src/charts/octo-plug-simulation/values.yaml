@@ -1,0 +1,103 @@
+# Default values for octo-plug-simulation.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+#
+# The simulation plug is a worker — no HTTP port, no Service, no Ingress.
+# It produces synthetic data through registered pipelines for development
+# and demo scenarios; the only outbound dependency is RabbitMQ to talk to
+# the Communication Controller. Operator-driven deploys leave most fields
+# empty and rely on the operator's context-injection (instancePrefix,
+# communicationControllerServiceUri, clusterDependencies.*,
+# image.privateRegistry, and the RabbitMQ broker secret via the secret
+# contract).
+
+replicaCount: 1
+
+# Optional backend integrations. The simulation plug is a pure worker
+# that generates synthetic data and ships it through RabbitMQ to the
+# controller; it does NOT open its own MongoDB or CrateDB connections.
+# Defaults are therefore OFF, which keeps the chart deployable on edge
+# clusters that have no Mongo / no CrateDB and don't provide the matching
+# secrets. Override per-deploy via valuesYaml on the Adapter entity if a
+# custom build of this image actually needs one of these backends:
+#   features:
+#     mongo: true        # OCTO_SYSTEM__DATABASEHOST + DATABASEUSERPASSWORD + ADMINUSERPASSWORD
+#     streamData: true   # OCTO_ADAPTER__STREAMDATAHOST + STREAMDATAUSER + STREAMDATAPASSWORD
+# RabbitMQ is always emitted — the controller↔adapter command bus is the
+# core of the contract and there's no edge variant without it.
+features:
+  mongo: false
+  streamData: false
+
+# Tenant id the adapter is executing
+tenantId: ""
+
+# Runtime id of the adapter in MongoDB
+adapterRtId: ""
+
+# The communication controller service uri (cluster-internal for cloud
+# deploys, public URL for edge deploys)
+communicationControllerServiceUri: ""
+
+# Reporting service uri. Simulation plugs typically don't talk to reporting,
+# kept here so the env-vars template renders consistently across charts.
+reportingServiceUri: ""
+
+# Disambiguates adapter pods deployed by this operator on shared brokers.
+instancePrefix: ""
+
+secrets:
+  # Each value may be either:
+  #   - a string  → plaintext, packed into the chart-owned `<fullname>-backend` Secret
+  #   - a map     → `{valueFrom: {secretKeyRef: {name, key}}}` pointing at an
+  #                 externally-managed Secret (operator-managed `{release}-octo-secrets`,
+  #                 External Secrets, etc.)
+  # See octo-mesh.secretEnv in templates/_helpers.tpl.
+  databaseUser: ""
+  databaseAdmin: ""
+  streamDataPassword: ""
+  rabbitmq: ""
+  # Optional: PEM-encoded CA bundle. When set, the initContainer adds it to
+  # the system trust store so the plug accepts self-signed / private CA
+  # certs (e.g. mm-cloud-issuer on the test-2 cluster).
+  rootCa: ""
+
+clusterDependencies:
+  mongodbHost: "octo-mongodb-0.octo-mongodb-svc.mongodb.svc.cluster.local:27017,octo-mongodb-1.octo-mongodb-svc.mongodb.svc.cluster.local:27017,octo-mongodb-2.octo-mongodb-svc.mongodb.svc.cluster.local:27017"
+  rabbitMqHost: "rabbitmq.rabbitmq.svc.cluster.local"
+  rabbitMqUser: "octo-mq-user"
+  streamDataHost: "crate-octo-crate.cratedb.svc.cluster.local"
+  streamDataUser: "octo-system"
+
+image:
+  repository: meshmakers/octo-communication-adapter-simulation
+  pullPolicy: IfNotPresent
+  # private registry to pull images from
+  privateRegistry: ""
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+podLabels: {}
+
+resources: {}
+  # Simulation plugs are usually CPU-light but allocate buffers per pipeline.
+  # Example:
+  # limits:
+  #   cpu: 200m
+  #   memory: 256Mi
+  # requests:
+  #   cpu: 50m
+  #   memory: 128Mi
+
+# Additional volumes / volumeMounts on the output Deployment definition.
+volumes: []
+volumeMounts: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

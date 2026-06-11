@@ -1,0 +1,21 @@
+apiVersion: v2
+name: octo-plug-simulation
+description: Simulation plug adapter — generates synthetic pipeline data via Bogus for OctoMesh development, testing and demo flows.
+icon: https://raw.githubusercontent.com/meshmakers/octo-helm/main/assets/meshmakers64.png
+
+# A chart can be either an 'application' or a 'library' chart.
+type: application
+
+# Bumped on every change to the chart templates. CI overrides this with
+# `--version $(MajorVersion).$(MinorVersion).$(Build.BuildId)` so each build
+# yields a unique, monotonically-increasing patch.
+version: 0.1.0
+
+# Replaced at package time with the actual binary build number via
+# `--app-version $(Build.BuildNumber)`. The string here is only the
+# fallback for local `helm package` calls.
+appVersion: "0.1.0"
+
+maintainers:
+  - name: meshmakers
+    email: support@meshmakers.io

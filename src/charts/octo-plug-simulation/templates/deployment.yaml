@@ -1,0 +1,117 @@
+{{- include "checkMandatoryValue" (dict "name" "communicationControllerServiceUri" "value" .Values.communicationControllerServiceUri) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "octo-mesh.adapterFullname" .  }}
+  labels:
+    {{- include "octo-mesh.service-labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "octo-mesh.service-selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "octo-mesh.service-labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.secrets.rootCa }}
+      # InitContainer to update CA certificates — same shape as the mesh-adapter
+      # chart so a private mm-cloud-issuer chain reaches the modbus binary too.
+      initContainers:
+        - name: update-ca-certs
+          image: alpine:latest
+          command:
+            - sh
+            - -c
+            - |
+              apk add --no-cache ca-certificates
+              mkdir -p /usr/local/share/ca-certificates/
+              cd /usr/local/share/ca-certificates/
+              awk '
+              BEGIN { cert_count = 0 }
+              /-----BEGIN CERTIFICATE-----/ {
+                cert_count++
+                filename = sprintf("meshmakers-%02d.crt", cert_count)
+              }
+              /-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/ {
+                if (filename) print > filename
+              }
+              /-----END CERTIFICATE-----/ {
+                close(filename)
+                filename = ""
+              }
+              ' /mounted-certs/root-ca.pem
+              update-ca-certificates
+              cp /etc/ssl/certs/ca-certificates.crt /shared-certs/ca-certificates.crt
+              cp -r /etc/ssl/certs/ /shared-certs/
+          volumeMounts:
+            - name: custom-ca-certs
+              mountPath: /mounted-certs
+              readOnly: true
+            - name: updated-ca-certs
+              mountPath: /shared-certs
+      {{- end }}
+      containers:
+      - name: {{ .Chart.Name }}
+        {{- if .Values.image.privateRegistry }}
+        image: "{{ .Values.image.privateRegistry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        {{- else }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        {{- end }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+          {{- include "octo-mesh.env" . | nindent 8 }}
+        {{- with .Values.resources}}
+        resources:
+          {{- toYaml . | nindent 12 }}
+        {{- end }}
+        {{- if or .Values.volumeMounts .Values.secrets.rootCa }}
+        volumeMounts:
+        {{- end }}
+        {{- with .Values.volumeMounts }}
+          {{- toYaml . | nindent 12 }}
+        {{- end }}
+        {{- if .Values.secrets.rootCa }}
+        - name: updated-ca-certs
+          mountPath: /etc/ssl/certs
+          readOnly: true
+        {{- end }}
+      {{- if or .Values.volumes .Values.secrets.rootCa }}
+      volumes:
+      {{- end }}
+      {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.secrets.rootCa }}
+      - name: custom-ca-certs
+        secret:
+          secretName: {{ printf "%s-ca" (include "octo-mesh.fullname" .) }}
+      - name: updated-ca-certs
+        emptyDir: {}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
