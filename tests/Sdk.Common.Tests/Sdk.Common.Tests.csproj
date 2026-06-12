@@ -36,7 +36,7 @@
              via NuGet PackageRef). -->
         <ProjectReference Include="..\..\src\Sdk.Adapters\Sdk.Adapters.csproj" />
         <ProjectReference Include="..\..\src\Sdk.Pipeline\Sdk.Pipeline.csproj" />
-        <PackageReference Include="Meshmakers.Octo.Sdk.Common" Version="$(OctoVersion)" />
+        <PackageReference Include="Meshmakers.Octo.Sdk.Common" Version="$(OctoCoreLibVersion)" />
     </ItemGroup>
 
 

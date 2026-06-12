@@ -30,7 +30,7 @@
         <PackageReference Include="Bogus" Version="35.6.5" />
         <!-- Communication.Contracts stays in octo-sdk; here as a PackageRef instead
              of the cross-repo ProjectRef we used to have. -->
-        <PackageReference Include="Meshmakers.Octo.Communication.Contracts" Version="$(OctoVersion)" />
-        <PackageReference Include="Meshmakers.Octo.ConstructionKit.MsBuildTasks" Version="$(OctoVersion)" PrivateAssets="all" />
+        <PackageReference Include="Meshmakers.Octo.Communication.Contracts" Version="$(OctoCoreLibVersion)" />
+        <PackageReference Include="Meshmakers.Octo.ConstructionKit.MsBuildTasks" Version="$(OctoCoreLibVersion)" PrivateAssets="all" />
     </ItemGroup>
 </Project>
