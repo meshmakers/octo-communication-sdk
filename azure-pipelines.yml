@@ -1,5 +1,5 @@
 # Root-level CI pipeline for octo-communication-sdk, using shared templates
-# from octo-pipeline-templates@tpl-v0.2.1.
+# from octo-pipeline-templates@tpl-v0.4.2.
 #
 # This repo was carved out of octo-sdk in Phase 3 of the YAML migration. Its
 # build is structurally the same as octo-sdk's: NuGets (5), one Docker image
@@ -32,7 +32,7 @@ resources:
       type: github
       name: meshmakers/octo-pipeline-templates
       endpoint: meshmakers-access-token
-      ref: refs/tags/tpl-v0.2.1
+      ref: refs/tags/tpl-v0.4.2
     - repository: helmChartBuild
       type: github
       name: meshmakers/helm-chart-build
