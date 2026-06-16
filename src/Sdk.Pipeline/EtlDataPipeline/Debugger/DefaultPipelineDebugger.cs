@@ -103,6 +103,23 @@ public class DefaultPipelineDebugger : IPipelineDebugger
     }
 
     /// <inheritdoc />
+    public void RecordDryRunIntent(string id, NodePath path, string? description, uint sequenceNumber,
+        string nodeTypeName, JsonNode? intentData)
+    {
+        var serialised = SerializeSnapshot(intentData);
+        _debugPoints.AddOrUpdate(id, _ => new DebugPointDto(id, path, description, sequenceNumber)
+        {
+            DryRunIntent = serialised,
+            DryRunNodeTypeName = nodeTypeName
+        }, (key, value) =>
+        {
+            value.DryRunIntent = serialised;
+            value.DryRunNodeTypeName = nodeTypeName;
+            return value;
+        });
+    }
+
+    /// <inheritdoc />
     public DebugInformationRoot GetDebugInformation()
     {
         foreach (var debugMessageGrouping in _debugPipelineLogger.Messages.GroupBy(x => x.NodeId))

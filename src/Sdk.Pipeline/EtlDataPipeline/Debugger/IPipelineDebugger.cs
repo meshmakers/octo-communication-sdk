@@ -52,6 +52,24 @@ public interface IPipelineDebugger
     void LogOutput(string id, NodePath path, string? description, uint sequenceNumber, JsonNode? outputData);
 
     /// <summary>
+    /// Records a dry-run "would-have-written" intent for a node — written into the
+    /// debug point's <see cref="DebugPointDto.DryRunIntent"/> /
+    /// <see cref="DebugPointDto.DryRunNodeTypeName"/> fields, analogous to how
+    /// <see cref="LogInput"/> / <see cref="LogOutput"/> capture per-node data.
+    /// Called by Load nodes via <see cref="Nodes.INodeContext.RecordDryRunIntent(string, object)"/>
+    /// when the pipeline's <c>IPipelineExecutionMode.IsDryRun</c> is true.
+    /// </summary>
+    /// <param name="id">ID of the node</param>
+    /// <param name="path">Path to the node</param>
+    /// <param name="description">Description of the node (or null)</param>
+    /// <param name="sequenceNumber">Sequence number of the node within a transformation list</param>
+    /// <param name="nodeTypeName">Node type name (e.g. <c>ApplyChanges@1</c>)</param>
+    /// <param name="intentData">JSON-serialised would-be payload, or null if the
+    /// payload failed to serialise (the orchestrator logs a warning in that case)</param>
+    void RecordDryRunIntent(string id, NodePath path, string? description, uint sequenceNumber,
+        string nodeTypeName, JsonNode? intentData);
+
+    /// <summary>
     /// Gets the debug information
     /// </summary>
     /// <returns></returns>

@@ -1,6 +1,7 @@
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
@@ -18,6 +19,15 @@ public interface INodeContext
     /// Gets the debugger for the pipeline, when enabled
     /// </summary>
     IPipelineDebugger? PipelineDebugger { get; }
+
+    /// <summary>
+    /// Gets the per-execution mode flags (e.g. dry-run) set by the executor.
+    /// Null when the pipeline runs in default (real-effect) mode.
+    /// Load nodes that honour dry-run check <c>PipelineExecutionMode?.IsDryRun</c>
+    /// and call <see cref="RecordDryRunIntent"/> to emit the would-be payload
+    /// instead of firing the real sink.
+    /// </summary>
+    IPipelineExecutionMode? PipelineExecutionMode { get; }
 
     /// <summary>
     /// Parent node context. If it is null, then it is the root node.
@@ -86,6 +96,18 @@ public interface INodeContext
     /// <param name="message">The message to log</param>
     /// <param name="args">Arguments for logging message</param>
     void Error(Exception exception, string message, params object[] args);
+
+    /// <summary>
+    /// Records that this node WOULD have applied a side effect without actually
+    /// applying it. The intent payload is JSON-serialised into the debug stream
+    /// for the caller to inspect. Only meaningful when the executor configured
+    /// <see cref="PipelineExecutionMode"/> with <c>IsDryRun = true</c>; in any
+    /// other run it is a cheap no-op (no debugger → nothing recorded).
+    /// </summary>
+    /// <param name="nodeTypeName">Human-readable node type name (e.g. <c>ApplyChanges@1</c>).</param>
+    /// <param name="intentPayload">An object describing what would have been written.
+    /// Serialised verbatim with the canonical pipeline STJ options bundle.</param>
+    void RecordDryRunIntent(string nodeTypeName, object intentPayload);
 
     /// <summary>
     /// Unregisters the current node from the node context

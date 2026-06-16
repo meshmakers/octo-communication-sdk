@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
@@ -26,14 +27,17 @@ public class NodeContext : INodeContext
     /// <param name="pipelineLogger">The logger for the pipeline</param>
     /// <param name="nodeConfiguration">The node configuration</param>
     /// <param name="pipelineDebugger">Optional debugger for the pipeline</param>
+    /// <param name="pipelineExecutionMode">Optional per-execution mode flags (e.g. dry-run)</param>
     private NodeContext(INodeContext? parent, string? nodeQualifiedName, uint sequenceNumber,
         IServiceProvider serviceProvider,
         IPipelineLogger pipelineLogger, INodeConfiguration? nodeConfiguration,
-        IPipelineDebugger? pipelineDebugger = null)
+        IPipelineDebugger? pipelineDebugger = null,
+        IPipelineExecutionMode? pipelineExecutionMode = null)
     {
         Parent = parent;
         ServiceProvider = serviceProvider;
         PipelineDebugger = pipelineDebugger;
+        PipelineExecutionMode = pipelineExecutionMode;
         _logger = pipelineLogger;
         _configurationNode = nodeConfiguration;
 
@@ -59,6 +63,9 @@ public class NodeContext : INodeContext
 
     /// <inheritdoc />
     public IPipelineDebugger? PipelineDebugger { get; }
+
+    /// <inheritdoc />
+    public IPipelineExecutionMode? PipelineExecutionMode { get; }
 
     /// <inheritdoc />
     public INodeContext? Parent { get; }
@@ -106,6 +113,44 @@ public class NodeContext : INodeContext
     }
 
     /// <inheritdoc />
+    public void RecordDryRunIntent(string nodeTypeName, object intentPayload)
+    {
+        if (PipelineDebugger == null)
+        {
+            // No recording surface attached → nothing to do. The safety guarantee
+            // is that the caller (a Load node) has already chosen to skip the real
+            // side effect; recording is observability, not correctness.
+            return;
+        }
+
+        JsonNode? intentNode;
+        try
+        {
+            // Reuse the canonical STJ bundle so payload encoding matches LogInput/LogOutput.
+            var json = JsonSerializer.Serialize(intentPayload, SystemTextJsonOptions.Default);
+            intentNode = JsonNode.Parse(json);
+        }
+        catch
+        {
+            // Never throw from this method — Load nodes call it from their hot path,
+            // and the safety guarantee (skip the real write) is the caller's
+            // responsibility, not ours. A silently-null intent on the debug point is
+            // strictly better than a crashed pipeline.
+            intentNode = null;
+        }
+
+        try
+        {
+            PipelineDebugger.RecordDryRunIntent(NodeId, NodePath, _configurationNode?.Description,
+                SequenceNumber, nodeTypeName, intentNode);
+        }
+        catch
+        {
+            // Same rationale: a misbehaving debugger must not crash the pipeline.
+        }
+    }
+
+    /// <inheritdoc />
     public void Unregister(IDataContext dataContext)
     {
         PipelineDebugger?.LogOutput(NodeId, NodePath, _configurationNode?.Description, SequenceNumber,
@@ -130,7 +175,7 @@ public class NodeContext : INodeContext
     {
         var nodeContext = new NodeContext(this, null, sequenceNumber, ServiceProvider, _logger,
             nodeConfiguration,
-            PipelineDebugger);
+            PipelineDebugger, PipelineExecutionMode);
         PipelineDebugger?.LogInput(nodeContext.NodeId, nodeContext.NodePath, null, sequenceNumber,
             ((IDebugSnapshotSource)dataContext).GetDebugSnapshot());
         return nodeContext;
@@ -143,7 +188,7 @@ public class NodeContext : INodeContext
     {
         var nodeContext = new NodeContext(this, nodeQualifiedName, sequenceNumber, ServiceProvider, _logger,
             nodeConfiguration,
-            PipelineDebugger);
+            PipelineDebugger, PipelineExecutionMode);
         PipelineDebugger?.LogInput(nodeContext.NodeId, nodeContext.NodePath, nodeConfiguration.Description,
             sequenceNumber,
             ((IDebugSnapshotSource)dataContext).GetDebugSnapshot());
@@ -156,7 +201,7 @@ public class NodeContext : INodeContext
     {
         var nodeContext = new NodeContext(this, qualifiedName, 0, ServiceProvider, _logger,
             nodeConfiguration,
-            PipelineDebugger);
+            PipelineDebugger, PipelineExecutionMode);
         PipelineDebugger?.LogInput(nodeContext.NodeId, nodeContext.NodePath, nodeConfiguration.Description, 0,
             ((IDebugSnapshotSource)dataContext).GetDebugSnapshot());
         return nodeContext;
@@ -168,10 +213,12 @@ public class NodeContext : INodeContext
     /// <returns></returns>
     public static NodeContext CreateRootNodeContext(IServiceProvider serviceProvider, IPipelineLogger pipelineLogger,
         IDataContext dataContext,
-        IPipelineDebugger? pipelineDebugger = null)
+        IPipelineDebugger? pipelineDebugger = null,
+        IPipelineExecutionMode? pipelineExecutionMode = null)
     {
         var nodeContext =
-            CreateRootNodeContext(serviceProvider, pipelineLogger, "PipelineExecution", null, pipelineDebugger);
+            CreateRootNodeContext(serviceProvider, pipelineLogger, "PipelineExecution", null, pipelineDebugger,
+                pipelineExecutionMode);
         pipelineDebugger?.LogInput(nodeContext.NodeId, nodeContext.NodePath, null, 0, ((IDebugSnapshotSource)dataContext).GetDebugSnapshot());
         return nodeContext;
     }
@@ -184,14 +231,16 @@ public class NodeContext : INodeContext
     /// <param name="nodeQualifiedName"></param>
     /// <param name="nodeConfiguration"></param>
     /// <param name="pipelineDebugger"></param>
+    /// <param name="pipelineExecutionMode"></param>
     /// <returns></returns>
     public static NodeContext CreateRootNodeContext(IServiceProvider serviceProvider, IPipelineLogger pipelineLogger,
         string nodeQualifiedName,
-        INodeConfiguration? nodeConfiguration, IPipelineDebugger? pipelineDebugger = null)
+        INodeConfiguration? nodeConfiguration, IPipelineDebugger? pipelineDebugger = null,
+        IPipelineExecutionMode? pipelineExecutionMode = null)
     {
         var nodeContext =
             new NodeContext(null, nodeQualifiedName, 0, serviceProvider, pipelineLogger, nodeConfiguration,
-                pipelineDebugger);
+                pipelineDebugger, pipelineExecutionMode);
         return nodeContext;
     }
 }
