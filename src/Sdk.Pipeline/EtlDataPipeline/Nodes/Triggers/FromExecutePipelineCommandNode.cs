@@ -43,7 +43,11 @@ public class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
                     }
 
                     var startDateTime = DateTime.UtcNow;
-                    var pipelineExecutionId = await context.StartExecutePipelineAsync(new ExecutePipelineOptions(startDateTime), input);
+                    var executeOptions = new ExecutePipelineOptions(startDateTime)
+                    {
+                        IsDryRun = message.IsDryRun
+                    };
+                    var pipelineExecutionId = await context.StartExecutePipelineAsync(executeOptions, input);
                     await responseFunc(new ExecutePipelineResponse(true, null, pipelineExecutionId, startDateTime));
 
                     // Wait for pipeline completion and report execution end to communication controller

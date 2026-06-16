@@ -1,6 +1,7 @@
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Loads;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -62,11 +63,28 @@ internal class AdapterTriggerContext(
                 executePipelineOptions.InputData);
         }
 
+        IPipelineExecutionMode? executionMode = executePipelineOptions.IsDryRun
+            ? new DefaultPipelineExecutionMode { IsDryRun = true }
+            : null;
+
+        if (executePipelineOptions.IsDryRun && debugger == null)
+        {
+            // Dry-run intents are written to the debug stream; without a debugger
+            // the agent can't inspect them. Force-enable per-execution so the
+            // operator gets the would-have-written record. Real-effect runs are
+            // unchanged — debugger stays opt-in via IsDebuggingEnabled.
+            debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
+            debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
+            _logger.LogInformation(
+                "[{TenantId}] Pipeline {PipelineRtEntityId} dry-run execution {PipelineExecutionId}: forced debugger on so intent payloads are captured",
+                TenantId, PipelineRtEntityId, pipelineExecutionId);
+        }
+
         Task<object?> task = Task.Run(async () =>
         {
             var r = await _etlDataOrchestrator.ExecutePipelineAsync(
                 pipelineRegistration.NodeDefinitionRoot,
-                etlContext, debugger, value);
+                etlContext, debugger, value, executionMode);
 
             return r;
         });
