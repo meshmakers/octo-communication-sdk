@@ -26,4 +26,12 @@ public class ExecutePipelineOptions(DateTime transactionStartedDateTime)
     /// Gets or sets optional input data for debugging (will be truncated if too long)
     /// </summary>
     public string? InputData { get; set; }
+
+    /// <summary>
+    /// When true, the orchestrator runs the pipeline with
+    /// <c>IPipelineExecutionMode.IsDryRun=true</c> so retrofitted Load nodes
+    /// suppress their real sink and record a "would-have-written" intent on
+    /// the debug stream (M4-B.2). Default false preserves classic semantics.
+    /// </summary>
+    public bool IsDryRun { get; set; }
 }

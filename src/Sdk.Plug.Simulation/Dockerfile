@@ -7,6 +7,8 @@ ARG BUILD_CONFIGURATION=Release
 ARG OCTO_PRIVATE_NUGET_SERVICE
 ARG OCTO_PRIVATE_NUGET_CERTIFICATE
 ARG OCTO_VERSION
+ARG OCTO_CORE_LIB_VERSION
+ARG OCTO_COMM_VERSION
 
 COPY ${OCTO_PRIVATE_NUGET_CERTIFICATE} /usr/local/share/ca-certificates/nugetca.crt
 RUN chmod 644 /usr/local/share/ca-certificates/nugetca.crt && update-ca-certificates
@@ -16,11 +18,11 @@ COPY ["src/Sdk.Plug.Simulation/Sdk.Plug.Simulation.csproj", "src/Sdk.Plug.Simula
 RUN dotnet restore "src/Sdk.Plug.Simulation/Sdk.Plug.Simulation.csproj"
 COPY . .
 WORKDIR "/src/src/Sdk.Plug.Simulation"
-RUN dotnet build "Sdk.Plug.Simulation.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} -p:OctoVersion=${OCTO_VERSION} -o /app/build
+RUN dotnet build "Sdk.Plug.Simulation.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} -p:OctoVersion=${OCTO_VERSION} -p:OctoCoreLibVersion=${OCTO_CORE_LIB_VERSION} -p:OctoCommVersion=${OCTO_COMM_VERSION} -o /app/build
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "Sdk.Plug.Simulation.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} -p:OctoVersion=${OCTO_VERSION} -o /app/publish /p:UseAppHost=false
+RUN dotnet publish "Sdk.Plug.Simulation.csproj" -c $BUILD_CONFIGURATION -p:OctoNugetPrivateServer=${OCTO_PRIVATE_NUGET_SERVICE} -p:OctoVersion=${OCTO_VERSION} -p:OctoCoreLibVersion=${OCTO_CORE_LIB_VERSION} -p:OctoCommVersion=${OCTO_COMM_VERSION} -o /app/publish /p:UseAppHost=false
 
 FROM base AS final
 WORKDIR /app

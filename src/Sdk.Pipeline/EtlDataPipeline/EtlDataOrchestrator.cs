@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -28,7 +29,8 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
 
     /// <inheritdoc />
     public async Task<object?> ExecutePipelineAsync<TEtlContext>(NodeDefinitionRoot nodeDefinitionRoot,
-        TEtlContext etlContext, IPipelineDebugger? pipelineDebugger = null, object? value = null)
+        TEtlContext etlContext, IPipelineDebugger? pipelineDebugger = null, object? value = null,
+        IPipelineExecutionMode? executionMode = null)
         where TEtlContext : class, IEtlContext
     {
         var logger = pipelineDebugger?.Logger ?? _globalServiceProvider.GetRequiredService<IPipelineLogger>();
@@ -46,7 +48,8 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
         // or the overlay's _lifted JsonNode), so disposal after the return value is
         // computed is safe.
         using var dataContext = CreateDataContextFromValue(value);
-        var rootNodeContext = NodeContext.CreateRootNodeContext(serviceProvider, logger, dataContext, pipelineDebugger);
+        var rootNodeContext = NodeContext.CreateRootNodeContext(serviceProvider, logger, dataContext, pipelineDebugger,
+            executionMode);
 
         pipelineDebugger?.BeginPipelineExecution();
 
