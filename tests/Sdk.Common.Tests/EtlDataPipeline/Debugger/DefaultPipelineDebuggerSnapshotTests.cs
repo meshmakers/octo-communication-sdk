@@ -61,4 +61,36 @@ public class DefaultPipelineDebuggerSnapshotTests
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse(dp.Input!), node),
             $"Snapshot input did not round-trip to the original node. Input: {dp.Input}");
     }
+
+    [Fact]
+    public void LogOutput_SmallSnapshot_ProducesExactCompactJson()
+    {
+        var debugger = NewDebugger();
+        var node = JsonNode.Parse("""{"a":1,"b":["x","y"],"c":null,"nested":{"d":2.5}}""")!;
+
+        debugger.LogOutput("0:node", new NodePath("node"), "desc", 0, node);
+
+        var dp = debugger.GetDebugInformation().DebugPoints.Single();
+        // Below the cap the snapshot must be byte-for-byte the same compact JSON as before the guard.
+        var expected = node.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = false });
+        Assert.Equal(expected, dp.Output);
+    }
+
+    [Fact]
+    public void LogOutput_OversizedSnapshot_ReturnsPlaceholderAndDoesNotThrow()
+    {
+        var debugger = NewDebugger();
+
+        // A single >4 MB string element easily passes the byte budget once serialised.
+        var huge = new JsonArray(JsonValue.Create(new string('x', 5 * 1024 * 1024)));
+
+        // The guard must swallow the size overrun: capture must not throw.
+        var exception = Record.Exception(() =>
+            debugger.LogOutput("0:node", new NodePath("node"), "desc", 0, huge));
+        Assert.Null(exception);
+
+        var dp = debugger.GetDebugInformation().DebugPoints.Single();
+        Assert.NotNull(dp.Output);
+        Assert.StartsWith("<debug snapshot omitted: output too large", dp.Output);
+    }
 }

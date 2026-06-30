@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
@@ -16,6 +17,16 @@ public class DefaultPipelineDebugger : IPipelineDebugger
     {
         WriteIndented = false
     };
+
+    /// <summary>
+    /// Upper bound, in UTF-8 bytes, for a captured node snapshot. Debug capture is a diagnostic
+    /// convenience and must NEVER influence pipeline execution; a single node can carry a
+    /// multi-million-element payload (real case: 2,805,504 datapoints) whose serialised JSON exceeds
+    /// 2 GB. Materialising that string throws (e.g. <see cref="OverflowException" /> inside
+    /// <c>Encoding.GetString</c> over a buffer larger than <see cref="int.MaxValue" />) and aborts the
+    /// whole pipeline. Above this cap the snapshot is replaced by a short placeholder instead.
+    /// </summary>
+    private const int MaxSnapshotBytes = 4 * 1024 * 1024;
 
     private readonly DebugPipelineLogger _debugPipelineLogger;
     private readonly ConcurrentDictionary<string, DebugPointDto> _debugPoints = new();
@@ -66,14 +77,122 @@ public class DefaultPipelineDebugger : IPipelineDebugger
     private static string? SerializeSnapshot(JsonNode? data)
     {
         if (data == null) return null;
-        // No DeepClone before serialising: ToJsonString is read-only and runs synchronously here, so
-        // the node is fully consumed at capture time (turned into a string) before any later mutation.
-        // NodeContext's debug capture passes IDebugSnapshotSource.GetDebugSnapshot(), which already
-        // returns an owned clone for an iteration child (aliases folded in) and the live "$" view on a
-        // root context (safe to read once synchronously). Cloning again copied a whole document tree
-        // for nothing — an ~8× allocation landmine the moment a materialized (non-element-backed) node
-        // is passed.
-        return data.ToJsonString(DebugSerializerOptions);
+
+        // Debug capture must NEVER crash pipeline execution. SerializeSnapshot is the single choke
+        // point for LogInput/LogOutput/RecordDryRunIntent, so all bounding and backstopping lives here.
+        //
+        // No DeepClone before serialising: writing is read-only and runs synchronously here, so the
+        // node is fully consumed at capture time before any later mutation. NodeContext's debug capture
+        // passes IDebugSnapshotSource.GetDebugSnapshot(), which already returns an owned clone for an
+        // iteration child (aliases folded in) and the live "$" view on a root context (safe to read once
+        // synchronously). Cloning again copied a whole document tree for nothing.
+        try
+        {
+            using var stream = new ByteBudgetStream(MaxSnapshotBytes);
+            try
+            {
+                using (var writer = new Utf8JsonWriter(stream))
+                {
+                    // Stream straight to a byte-budgeted writer; ByteBudgetStream aborts the write the
+                    // moment the cap is passed, so a multi-GB node never materialises a giant string.
+                    data.WriteTo(writer, DebugSerializerOptions);
+                }
+
+                return Encoding.UTF8.GetString(stream.ToArray());
+            }
+            catch (ByteBudgetExceededException)
+            {
+                return $"<debug snapshot omitted: output too large (> {MaxSnapshotBytes} bytes)>";
+            }
+        }
+        catch (Exception ex)
+        {
+            // Last-resort backstop: ANY failure (OverflowException, OOM-ish, serializer errors) degrades
+            // to a placeholder and is swallowed here so it can never propagate into await next(...).
+            return $"<debug snapshot unavailable: {ex.GetType().Name}>";
+        }
+    }
+
+    /// <summary>
+    /// Thrown internally by <see cref="ByteBudgetStream" /> when a snapshot serialisation passes the
+    /// configured byte budget. Caught inside <see cref="SerializeSnapshot" /> and never surfaced.
+    /// </summary>
+    private sealed class ByteBudgetExceededException : Exception;
+
+    /// <summary>
+    /// A write-only, in-memory stream that buffers bytes up to a fixed budget and throws
+    /// <see cref="ByteBudgetExceededException" /> as soon as a write would exceed it. Used to bound
+    /// snapshot serialisation without ever building an oversized buffer/string.
+    /// </summary>
+    private sealed class ByteBudgetStream(int maxBytes) : Stream
+    {
+        private readonly MemoryStream _inner = new();
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => _inner.Length;
+
+        public override long Position
+        {
+            get => _inner.Position;
+            set => throw new NotSupportedException();
+        }
+
+        public byte[] ToArray()
+        {
+            return _inner.ToArray();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            EnsureBudget(count);
+            _inner.Write(buffer, offset, count);
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            EnsureBudget(buffer.Length);
+            _inner.Write(buffer);
+        }
+
+        private void EnsureBudget(int count)
+        {
+            if (_inner.Length + count > maxBytes)
+            {
+                throw new ByteBudgetExceededException();
+            }
+        }
+
+        public override void Flush()
+        {
+            _inner.Flush();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
     }
 
     /// <inheritdoc />
