@@ -51,6 +51,16 @@ public interface IPipelineExecutionReporter
     Task<IReadOnlyList<string>> GetInterruptedExecutionIdsAsync();
 
     /// <summary>
+    /// Asks the controller to fail all non-terminal executions of this adapter that started before
+    /// the given process start time. Called once on a fresh adapter startup to resolve executions
+    /// orphaned by the previous process (whose in-memory task was lost on restart), so they are not
+    /// left stuck in Running/Interrupted.
+    /// </summary>
+    /// <param name="processStartUtc">The adapter process start time (UTC)</param>
+    /// <returns>Number of orphaned executions failed, or 0 if reporting failed</returns>
+    Task<int> FailOrphanedExecutionsAsync(DateTime processStartUtc);
+
+    /// <summary>
     /// Reports the final result of an execution that was previously marked as interrupted.
     /// </summary>
     /// <param name="executionId">Unique execution identifier</param>
