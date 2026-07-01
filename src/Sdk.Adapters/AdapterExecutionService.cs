@@ -26,6 +26,10 @@ public class AdapterExecutionService : IAdapterHubCallbacks
     private readonly IPipelineRegistryService _pipelineRegistryService;
     private readonly SemaphoreSlim _configurationUpdateLock = new(1, 1);
 
+    // Captured once per process. Used on fresh startup to tell the controller which of this
+    // adapter's executions predate the current process and are therefore orphans (AB#4280).
+    private readonly DateTime _processStartUtc = DateTime.UtcNow;
+
     /// <summary>
     /// Creates a new instance of <see cref="AdapterExecutionService"/>.
     /// </summary>
@@ -276,6 +280,16 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                             new AdapterStartup { TenantId = tenantId, Configuration = configuration },
                             deploymentErrorMessages, cancellationToken);
                         _logger.Info("Startup of adapter done.");
+
+                        // Fresh process: resolve executions orphaned by the previous process.
+                        // Its in-memory tasks were lost on restart, so the controller fails any of
+                        // this adapter's Running/Interrupted executions that started before this
+                        // process began — they can no longer complete or report a result (AB#4280).
+                        if (_executionReporter != null)
+                        {
+                            _logger.Info("Resolving executions orphaned by a previous adapter process (if any).");
+                            await _executionReporter.FailOrphanedExecutionsAsync(_processStartUtc);
+                        }
                     }
                     else
                     {
@@ -524,9 +538,11 @@ public class AdapterExecutionService : IAdapterHubCallbacks
             }
         }
 
-        // Execution not found locally - report as completed (optimistic)
-        // This handles the case where the execution completed and was removed from memory
-        return (PipelineExecutionStatus.Completed, null);
+        // Execution not found locally. The task is gone (process restarted, or it was evicted
+        // from the bounded in-memory registry) and its true outcome is unknown. Report Failed
+        // rather than optimistically Completed: an execution that was interrupted mid-flight must
+        // never be recorded as a success (AB#4280).
+        return (PipelineExecutionStatus.Failed, null);
     }
 
     private IReadOnlyList<NodeDescriptorDto>? GetNodeDescriptorDtos()

@@ -104,6 +104,28 @@ public class AdapterPipelineExecutionReporter : IPipelineExecutionReporter
     }
 
     /// <inheritdoc />
+    public async Task<int> FailOrphanedExecutionsAsync(DateTime processStartUtc)
+    {
+        try
+        {
+            var failedCount = await _adapterHubClient.FailOrphanedExecutionsAsync(processStartUtc);
+            if (failedCount > 0)
+            {
+                _logger.LogInformation(
+                    "Controller failed {Count} execution(s) orphaned by the previous adapter process (started before {ProcessStartUtc})",
+                    failedCount, processStartUtc);
+            }
+
+            return failedCount;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to resolve orphaned executions on startup");
+            return 0;
+        }
+    }
+
+    /// <inheritdoc />
     public async Task ReportInterruptedExecutionResultAsync(
         Guid executionId,
         PipelineExecutionStatus status,

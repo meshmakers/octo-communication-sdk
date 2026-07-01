@@ -195,6 +195,65 @@ public class AdapterExecutionServiceTests
     }
 
     [Fact]
+    public async Task StartAsync_FreshStartup_ResolvesOrphanedExecutions()
+    {
+        // AB#4280: a fresh adapter process (isReconnect=false) must ask the controller to fail any
+        // of its executions that predate the process, since their in-memory tasks were lost on
+        // restart. The reconnect path (isReconnect=true) must NOT trigger orphan resolution — there
+        // the live local tasks are still owned by this process.
+        Func<bool, Task>? capturedReconnectFunc = null;
+        A.CallTo(() => _hubClient.StartAsync(A<Func<bool, Task>>._, A<CancellationToken>._))
+            .Invokes((Func<bool, Task> func, CancellationToken _) => capturedReconnectFunc = func)
+            .Returns(Task.CompletedTask);
+
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .Returns(CreateTestAdapterConfiguration());
+        A.CallTo(() => _adapterService.StartupAsync(A<AdapterStartup>._, A<List<DeploymentUpdateErrorMessageDto>>._, A<CancellationToken>._))
+            .Returns(true);
+        A.CallTo(() => _executionReporter.FailOrphanedExecutionsAsync(A<DateTime>._))
+            .Returns(Task.FromResult(0));
+        A.CallTo(() => _hubClient.SendDeploymentUpdateResultAsync(A<RtEntityId>._, A<DeploymentResult>._))
+            .Returns(Task.CompletedTask);
+
+        await _service.StartAsync(CancellationToken.None);
+        Assert.NotNull(capturedReconnectFunc);
+
+        // Act: fresh startup (not a reconnect)
+        await capturedReconnectFunc(false);
+
+        // Assert: orphan resolution was requested exactly once for the fresh process.
+        A.CallTo(() => _executionReporter.FailOrphanedExecutionsAsync(A<DateTime>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task StartAsync_Reconnect_DoesNotResolveOrphanedExecutions()
+    {
+        // The reconnect path keeps its live local tasks; orphan resolution must not run there.
+        Func<bool, Task>? capturedReconnectFunc = null;
+        A.CallTo(() => _hubClient.StartAsync(A<Func<bool, Task>>._, A<CancellationToken>._))
+            .Invokes((Func<bool, Task> func, CancellationToken _) => capturedReconnectFunc = func)
+            .Returns(Task.CompletedTask);
+
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .Returns(CreateTestAdapterConfiguration());
+        A.CallTo(() => _executionReporter.GetInterruptedExecutionIdsAsync())
+            .Returns(Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>()));
+        A.CallTo(() => _hubClient.SendDeploymentUpdateResultAsync(A<RtEntityId>._, A<DeploymentResult>._))
+            .Returns(Task.CompletedTask);
+
+        await _service.StartAsync(CancellationToken.None);
+        Assert.NotNull(capturedReconnectFunc);
+
+        // Act: reconnect
+        await capturedReconnectFunc(true);
+
+        // Assert: no orphan resolution on reconnect
+        A.CallTo(() => _executionReporter.FailOrphanedExecutionsAsync(A<DateTime>._))
+            .MustNotHaveHappened();
+    }
+
+    [Fact]
     public async Task AdapterConfigurationUpdatedAsync_UsesSelectivePipelineUpdate()
     {
         // Arrange
