@@ -50,8 +50,13 @@ public class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
                     var pipelineExecutionId = await context.StartExecutePipelineAsync(executeOptions, input);
                     await responseFunc(new ExecutePipelineResponse(true, null, pipelineExecutionId, startDateTime));
 
-                    // Wait for pipeline completion and report execution end to communication controller
-                    await context.EndExecutePipelineAsync(pipelineExecutionId);
+                    // AB#4279: Do not hold the RabbitMQ delivery ack open for the whole pipeline run.
+                    // A run exceeding the broker consumer_timeout (default 30 min) would tear down the
+                    // channel and drop this auto-delete queue, silently losing the execution. The pipeline
+                    // already runs as a detached background task and its final state (incl. Failed) is
+                    // reported out-of-band via IPipelineExecutionReporter, so completion is awaited here
+                    // decoupled from the bus handler — which now acks as soon as execution has started.
+                    _ = CompleteExecutionDetachedAsync(context, pipelineExecutionId, message.TenantId);
                 }
                 catch (Exception ex)
                 {
@@ -64,6 +69,28 @@ public class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
             });
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Awaits the running pipeline execution and reports its end state, decoupled from the bus
+    /// consumer so a long-running pipeline (AB#4279) does not hold the RabbitMQ delivery ack open
+    /// past the broker consumer_timeout. Exceptions are already surfaced as a Failed execution by
+    /// <see cref="ITriggerContext.EndExecutePipelineAsync" />; they are logged and swallowed here so
+    /// they never fault the (already-acked) consumer.
+    /// </summary>
+    private static async Task CompleteExecutionDetachedAsync(ITriggerContext context, Guid pipelineExecutionId,
+        string tenantId)
+    {
+        try
+        {
+            await context.EndExecutePipelineAsync(pipelineExecutionId);
+        }
+        catch (Exception ex)
+        {
+            context.NodeContext.Error(ex,
+                "[{TenantId}] Pipeline execution '{PipelineExecutionId}' failed after detached completion",
+                tenantId, pipelineExecutionId);
+        }
     }
 
     /// <inheritdoc />
