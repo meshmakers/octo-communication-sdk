@@ -26,8 +26,13 @@ public class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
     /// <inheritdoc />
     public Task StartAsync(ITriggerContext context)
     {
+        // The endpoint is keyed by the PIPELINE rtId, not the DataFlow rtId. Keying by DataFlow made
+        // two FromExecutePipelineCommand pipelines in the same DataFlow register the same receive
+        // endpoint ("A receive endpoint with the same key was already added"), so only the first
+        // deployed. ExecutePipeline always targets a specific pipeline, so the pipeline id is the
+        // correct scope. Must stay in sync with TriggerManagementService.StartExecutePipelineAsync.
         var address =
-            $"{PipelineQueueNames.ExecutePipelineCommand.ToLower()}-{context.TenantId.ToLower()}-data-flow-{context.DataFlowRtId.ToString()?.ToLower()}";
+            $"{PipelineQueueNames.ExecutePipelineCommand.ToLower()}-{context.TenantId.ToLower()}-pipeline-{context.PipelineRtEntityId.RtId.ToString()?.ToLower()}";
 
         _endpointHandle = eventHubControl.RegisterCommandConsumer<ExecutePipelineRequest>(address,
             async (message, responseFunc) =>
