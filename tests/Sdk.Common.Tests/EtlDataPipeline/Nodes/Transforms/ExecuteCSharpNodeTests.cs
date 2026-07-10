@@ -15,12 +15,14 @@ namespace Sdk.Common.Tests.EtlDataPipeline.Nodes.Transforms;
 
 public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFixture>
 {
-    private (IDataContext, INodeContext) PrepareTest(ExecuteCSharpNodeConfiguration configuration, JsonObject? testData = null)
+    private (IDataContext, INodeContext) PrepareTest(ExecuteCSharpNodeConfiguration configuration, JsonObject? testData = null,
+        IServiceProvider? serviceProvider = null)
     {
         var logger = A.Fake<IPipelineLogger>();
         var data = testData ?? new JsonObject();
         var dataContext = new DataContextImpl(JsonDocument.Parse(data.ToJsonString()));
-        var rootNodeContext = NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var services = serviceProvider ?? fixture.Services.BuildServiceProvider();
+        var rootNodeContext = NodeContext.CreateRootNodeContext(services, logger, dataContext);
         var nodeContext = rootNodeContext.RegisterChildNode("ExecuteCSharp", 0, configuration, dataContext);
         return (dataContext, nodeContext);
     }
@@ -383,9 +385,13 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var fn = A.Fake<NodeDelegate>();
         var node = new ExecuteCSharpNode(fn);
 
+        // Build the service provider once and share it across tasks so the test exercises
+        // the script-cache race, not concurrent ServiceProvider construction.
+        var serviceProvider = fixture.Services.BuildServiceProvider();
+
         var tasks = Enumerable.Range(0, 32).Select(i => Task.Run(async () =>
         {
-            var (dataContext, nodeContext) = PrepareTest(config, new JsonObject { ["count"] = i });
+            var (dataContext, nodeContext) = PrepareTest(config, new JsonObject { ["count"] = i }, serviceProvider);
             await node.ProcessObjectAsync(dataContext, nodeContext);
             Assert.Equal(i + 2, dataContext.Get<int>("$.result"));
         }));
@@ -428,5 +434,35 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         Assert.Equal(8, dc1.Get<int>("$.result"));
         Assert.Equal(12, dc2.Get<int>("$.result"));
         Assert.Equal(1, ExecuteCSharpNode.CompiledScriptCacheCount);
+    }
+
+    // An argument name is emitted as a bare C# identifier in the generated template, so a
+    // name that is not a valid identifier must fail fast with a clear error rather than a
+    // confusing Roslyn compilation error.
+    [Theory]
+    [InlineData("bad name")]
+    [InlineData("x;y")]
+    [InlineData("1abc")]
+    [InlineData("a\"b")]
+    public async Task ProcessObjectAsync_InvalidArgumentName_ThrowsClearError(string argName)
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "1",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = argName, Value = 1, DataType = AttributeValueTypesDto.Int }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var (dataContext, nodeContext) = PrepareTest(config);
+
+        var fn = A.Fake<NodeDelegate>();
+        var node = new ExecuteCSharpNode(fn);
+
+        var ex = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+        Assert.Contains("not a valid C# identifier", ex.Message);
     }
 }

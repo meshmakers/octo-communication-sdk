@@ -177,6 +177,12 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
             nodeContext.Error(error);
             throw new PipelineExecutionException($"[{nodeContext.NodePath}]: {error}");
         }
+        catch (PipelineExecutionException)
+        {
+            // Already a clear, node-scoped failure (e.g. invalid argument name) — surface
+            // it as-is instead of re-wrapping it as a generic "script execution failed".
+            throw;
+        }
         catch (Exception ex)
         {
             nodeContext.Error($"Script execution failed: {ex.Message}\nStackTrace: {ex.StackTrace}");
@@ -240,6 +246,17 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
 
         foreach (var arg in c.Arguments)
         {
+            // The name is emitted as a bare C# identifier and as a dictionary key, so a
+            // name that is not a valid identifier would otherwise surface as a confusing
+            // Roslyn compile error (or break the generated string). Fail fast with a clear
+            // message instead. Argument values themselves are never inlined (they flow via
+            // Args at run time), so there is no value-injection surface here.
+            if (!IsValidCSharpIdentifier(arg.Name))
+            {
+                throw new PipelineExecutionException(
+                    $"ExecuteCSharp argument name '{arg.Name}' is not a valid C# identifier.");
+            }
+
             var typeName = GetCSharpTypeName(arg.DataType);
             // Value comes from globals at run time (never inlined). Missing/null coalesces
             // to the type's default, keeping the declared type non-nullable so user code
@@ -380,5 +397,23 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
             AttributeValueTypesDto.DateTime => "DateTime",
             _ => "object"
         };
+    }
+
+    private static bool IsValidCSharpIdentifier(string name)
+    {
+        if (string.IsNullOrEmpty(name) || !(char.IsLetter(name[0]) || name[0] == '_'))
+        {
+            return false;
+        }
+
+        for (var i = 1; i < name.Length; i++)
+        {
+            if (!(char.IsLetterOrDigit(name[i]) || name[i] == '_'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
