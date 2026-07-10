@@ -15,17 +15,6 @@ namespace Sdk.Common.Tests.EtlDataPipeline.Nodes.Transforms;
 
 public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFixture>
 {
-    private readonly IEtlContext _etlContext = new DefaultEtlContext(
-        "test-tenant",
-        OctoObjectId.Parse("507f1f77bcf86cd799439011"),
-        Guid.NewGuid(),
-        new RtEntityId("TestModel/TestType", OctoObjectId.GenerateNewId()),
-        DateTime.UtcNow,
-        null,
-        new GlobalConfiguration(new List<ConfigurationDto>()),
-        new Dictionary<string, object?>()
-    );
-
     private (IDataContext, INodeContext) PrepareTest(ExecuteCSharpNodeConfiguration configuration, JsonObject? testData = null)
     {
         var logger = A.Fake<IPipelineLogger>();
@@ -48,7 +37,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -85,7 +74,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config, testData);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -110,7 +99,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config, testData);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -134,7 +123,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config, testData);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -157,7 +146,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -183,7 +172,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config, testData);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -202,7 +191,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await Assert.ThrowsAsync<PipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext)
@@ -225,7 +214,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await Assert.ThrowsAsync<PipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext)
@@ -245,7 +234,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await Assert.ThrowsAsync<PipelineExecutionException>(
             () => node.ProcessObjectAsync(dataContext, nodeContext)
@@ -265,7 +254,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -287,7 +276,7 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         };
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         var testData1 = new JsonObject { ["count"] = 5 };
         var (dataContext1, nodeContext1) = PrepareTest(config, testData1);
@@ -328,10 +317,116 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var (dataContext, nodeContext) = PrepareTest(config, testData);
 
         var fn = A.Fake<NodeDelegate>();
-        var node = new ExecuteCSharpNode(fn, _etlContext);
+        var node = new ExecuteCSharpNode(fn);
 
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         Assert.True(dataContext.Get<bool>("$.canDrive"));
+    }
+
+    // Regression guard for the compile-once fix: argument values flow through script
+    // globals at run time, so a node whose input changes every execution (like a
+    // per-tick simulator counter) must still compile its script exactly ONCE and reuse
+    // it. The previous implementation inlined values as literals, producing a distinct
+    // script — and a leaked compiled assembly — per changing value, which pegged CPU
+    // and grew memory without bound under a high-frequency pipeline.
+    [Fact]
+    public async Task ProcessObjectAsync_ChangingValues_CompilesOnceAndReuses()
+    {
+        ExecuteCSharpNode.ClearCompiledScriptCache();
+
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "counter + 1 /* compiles-once */",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "counter", ValuePath = "$.count", DataType = AttributeValueTypesDto.Int }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+
+        var fn = A.Fake<NodeDelegate>();
+        var node = new ExecuteCSharpNode(fn);
+
+        for (var i = 0; i < 50; i++)
+        {
+            var (dataContext, nodeContext) = PrepareTest(config, new JsonObject { ["count"] = i });
+            await node.ProcessObjectAsync(dataContext, nodeContext);
+            Assert.Equal(i + 1, dataContext.Get<int>("$.result"));
+        }
+
+        Assert.Equal(1, ExecuteCSharpNode.CompiledScriptCacheCount);
+    }
+
+    // Regression guard for the compile cache race: the process-wide cache is a
+    // ConcurrentDictionary whose entries are Lazy<Script> (ExecutionAndPublication).
+    // When many executions of the same template run concurrently (parallel ForEach
+    // iterations on a high-frequency pipeline), the compilation must still happen exactly
+    // once — never a thread-race that compiles the same script repeatedly.
+    [Fact]
+    public async Task ProcessObjectAsync_ConcurrentExecutions_CompilesExactlyOnce()
+    {
+        ExecuteCSharpNode.ClearCompiledScriptCache();
+
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "counter + 2 /* concurrent */",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "counter", ValuePath = "$.count", DataType = AttributeValueTypesDto.Int }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+
+        var fn = A.Fake<NodeDelegate>();
+        var node = new ExecuteCSharpNode(fn);
+
+        var tasks = Enumerable.Range(0, 32).Select(i => Task.Run(async () =>
+        {
+            var (dataContext, nodeContext) = PrepareTest(config, new JsonObject { ["count"] = i });
+            await node.ProcessObjectAsync(dataContext, nodeContext);
+            Assert.Equal(i + 2, dataContext.Get<int>("$.result"));
+        }));
+        await Task.WhenAll(tasks);
+
+        Assert.Equal(1, ExecuteCSharpNode.CompiledScriptCacheCount);
+    }
+
+    // The compiled-script cache is process-wide and keyed by the template text, so the
+    // SAME script used by different pipelines/machines — which differ only in node
+    // configuration such as rtIds, never in the script body — compiles once and is
+    // shared. Two independent node instances running identical code must yield exactly
+    // one cached compilation; this is what keeps the memory footprint flat as the number
+    // of simulated machines grows.
+    [Fact]
+    public async Task ProcessObjectAsync_SameScriptDifferentNodes_SharesSingleCompilation()
+    {
+        ExecuteCSharpNode.ClearCompiledScriptCache();
+
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "counter + 3 /* shared */",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "counter", ValuePath = "$.count", DataType = AttributeValueTypesDto.Int }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+
+        var node1 = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        var node2 = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+
+        var (dc1, nc1) = PrepareTest(config, new JsonObject { ["count"] = 5 });
+        await node1.ProcessObjectAsync(dc1, nc1);
+
+        var (dc2, nc2) = PrepareTest(config, new JsonObject { ["count"] = 9 });
+        await node2.ProcessObjectAsync(dc2, nc2);
+
+        Assert.Equal(8, dc1.Get<int>("$.result"));
+        Assert.Equal(12, dc2.Get<int>("$.result"));
+        Assert.Equal(1, ExecuteCSharpNode.CompiledScriptCacheCount);
     }
 }
