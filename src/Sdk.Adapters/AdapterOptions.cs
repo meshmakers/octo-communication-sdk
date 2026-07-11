@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace Meshmakers.Octo.Sdk.Common.Adapters;
 
 /// <summary>
@@ -80,6 +82,16 @@ public class AdapterOptions
     ///    Gets or sets the NLog configuration file
     /// </summary>
     public string NlogConfigPath { get; set; }
+
+    /// <summary>
+    ///     Minimum log level for the adapter, applied centrally by the SDK adapter host so every
+    ///     adapter shares the same default (Information) instead of the per-repo nlog.config
+    ///     <c>minlevel="Debug"</c>. The host wires NLog with <c>RemoveLoggerFactoryFilter = false</c>
+    ///     so this Microsoft.Extensions.Logging level actually governs NLog output. Override per
+    ///     deployment via <c>OCTO_ADAPTER__MINIMUMLOGLEVEL=Debug</c> (no image rebuild needed) when
+    ///     you need verbose troubleshooting.
+    /// </summary>
+    public LogLevel MinimumLogLevel { get; set; } = LogLevel.Information;
 
     /// <summary>
     /// Defines if the adapter should run as hosted service or be started manually (e.g only when a client connects)

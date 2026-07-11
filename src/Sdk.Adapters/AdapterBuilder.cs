@@ -121,8 +121,12 @@ public class AdapterBuilder
             services.AddLogging(loggingBuilder =>
             {
                 loggingBuilder.ClearProviders();
-                loggingBuilder.SetMinimumLevel(LogLevel.Trace);
-                loggingBuilder.AddNLog(startupOptions.NlogConfigPath);
+                // Central default: Information (override per deployment via OCTO_ADAPTER__MINIMUMLOGLEVEL).
+                // RemoveLoggerFactoryFilter=false makes NLog honour this minimum instead of only the
+                // per-repo nlog.config minlevel="Debug".
+                loggingBuilder.SetMinimumLevel(startupOptions.MinimumLogLevel);
+                LogManager.Setup().LoadConfigurationFromFile(startupOptions.NlogConfigPath);
+                loggingBuilder.AddNLog(new NLogProviderOptions { RemoveLoggerFactoryFilter = false });
             });
 
             services.AddDistributionEventHubWithOptions(s =>
