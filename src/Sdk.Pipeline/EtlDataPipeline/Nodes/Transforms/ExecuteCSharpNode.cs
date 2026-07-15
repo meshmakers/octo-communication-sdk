@@ -117,29 +117,6 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
     /// </summary>
     private static readonly ConcurrentDictionary<string, Lazy<Script<object>>> CompiledScripts = new();
 
-    /// <summary>
-    /// Script options shared by every compiled script, built once. Resolving the whole
-    /// loaded AppDomain into metadata references is not free, so doing it a single time
-    /// instead of on every compile avoids repeated enumeration/resolution work. Imports
-    /// are constant here; per-node <c>Usings</c> are emitted as <c>using</c> statements
-    /// in the script text.
-    ///
-    /// NOTE: sharing the reference set does NOT meaningfully lower memory — measured on
-    /// the maco simulator, the footprint is dominated by Roslyn binding all referenced
-    /// assemblies into per-<see cref="Microsoft.CodeAnalysis.Compilation"/> symbol
-    /// tables, which are retained per cached script and not shared. The lever for that
-    /// is narrowing the reference set (e.g. framework-only cut ~2.2GB→~1.3GB for 12
-    /// scripts) — deferred because it is a compatibility trade-off for scripts that
-    /// reference application/domain assemblies.
-    /// </summary>
-    private static readonly Lazy<ScriptOptions> SharedScriptOptions = new(() =>
-        ScriptOptions.Default
-            .AddImports("System")
-            .AddImports("System.Math")
-            .AddReferences(AppDomain.CurrentDomain.GetAssemblies()
-                .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
-                .Select(a => a.Location)));
-
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -202,8 +179,25 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
         {
             nodeContext.Debug("Compiling C# script");
 
+            // Options (imports + the full loaded-AppDomain reference set) are built HERE,
+            // inside the compile factory, so they are resolved once per DISTINCT script at
+            // the moment it first compiles — i.e. only on a cache miss, which after warmup
+            // is bounded by the number of distinct scripts and is rare. This keeps the
+            // enumeration off the per-execution hot path (the Lazy factory runs exactly
+            // once per template) while ensuring a script compiled later sees the AppDomain's
+            // CURRENT assemblies — a reference to an assembly loaded after an earlier compile
+            // resolves correctly, instead of being frozen out by a build-once shared set.
+            // The full AppDomain set (not a framework-only subset) is kept deliberately for
+            // backward compatibility with scripts that reference application/domain assemblies.
+            var scriptOptions = ScriptOptions.Default
+                .AddImports("System")
+                .AddImports("System.Math")
+                .AddReferences(AppDomain.CurrentDomain.GetAssemblies()
+                    .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
+                    .Select(a => a.Location));
+
             // Compile with the globals type so Args is in scope as a bare identifier.
-            var script = CSharpScript.Create<object>(code, SharedScriptOptions.Value, typeof(ExecuteCSharpGlobals));
+            var script = CSharpScript.Create<object>(code, scriptOptions, typeof(ExecuteCSharpGlobals));
             var compilation = script.Compile();
 
             if (compilation.Any())

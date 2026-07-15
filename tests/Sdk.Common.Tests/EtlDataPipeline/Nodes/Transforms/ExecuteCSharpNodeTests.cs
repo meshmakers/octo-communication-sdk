@@ -465,4 +465,59 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
             () => node.ProcessObjectAsync(dataContext, nodeContext));
         Assert.Contains("not a valid C# identifier", ex.Message);
     }
+
+    // Backward-compatibility guard for existing (adapter) scripts: a value-type argument
+    // is declared NON-nullable, so its bare identifier is usable directly in a boolean
+    // context — a comparison as a ternary/if condition (`count > 0 ? ...`). Declaring the
+    // argument nullable (int?) would make `count > 0` a `bool?`, which cannot be a ternary
+    // /if condition and would fail to compile HERE — silently breaking existing OEE scripts
+    // that branch on a counter. This test pins the non-nullable declaration: do NOT "fix"
+    // null handling by switching value-type arguments to nullable.
+    [Fact]
+    public async Task ProcessObjectAsync_ValueTypeArgumentInCondition_CompilesAndBranches()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "count > 0 ? \"producing\" : \"idle\"",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "count", ValuePath = "$.count", DataType = AttributeValueTypesDto.Int }
+            },
+            ReturnType = AttributeValueTypesDto.String,
+            TargetPath = "$.state"
+        };
+        var testData = new JsonObject { ["count"] = 7 };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("producing", dataContext.Get<string>("$.state"));
+    }
+
+    // Documents the deliberate behavior when a value-type argument's path is missing/null:
+    // the non-nullable declaration coalesces it to the type's default (0 here), so the
+    // script computes on the default rather than propagating null. This is the trade-off of
+    // keeping bare identifiers usable in non-null contexts (see the condition test above);
+    // it is pinned so any future change to null handling is a conscious edit, not drift.
+    [Fact]
+    public async Task ProcessObjectAsync_MissingValueTypeArgument_UsesTypeDefault()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "count + 1",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "count", ValuePath = "$.missing", DataType = AttributeValueTypesDto.Int }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var (dataContext, nodeContext) = PrepareTest(config);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(1, dataContext.Get<int>("$.result"));
+    }
 }
