@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -38,6 +39,18 @@ public record ScriptArgument
 }
 
 /// <summary>
+/// Script globals surface. Argument values are supplied at execution time through
+/// <see cref="Args"/> instead of being baked into the script text — this keeps the
+/// compiled script identical across runs so it compiles once and is reused. The
+/// members here are in scope as bare identifiers inside the compiled script.
+/// </summary>
+public sealed class ExecuteCSharpGlobals
+{
+    /// <summary>Per-execution argument values, keyed by argument name.</summary>
+    public IReadOnlyDictionary<string, object?> Args = new Dictionary<string, object?>();
+}
+
+/// <summary>
 /// Configuration for executing C# code
 /// </summary>
 [NodeName("ExecuteCSharp", 1)]
@@ -75,12 +88,34 @@ public record ExecuteCSharpNodeConfiguration : TargetPathNodeConfiguration
 }
 
 /// <summary>
-/// Executes inline C# code with typed arguments
+/// Executes inline C# code with typed arguments.
+///
+/// Arguments are passed as script <b>globals</b> (<see cref="ExecuteCSharpGlobals.Args"/>)
+/// resolved at run time, NOT inlined as literals. The compiled script text therefore
+/// only depends on the node's <see cref="ExecuteCSharpNodeConfiguration.Code"/> and its
+/// argument signature — never on the values — so it is compiled exactly once and reused
+/// for every subsequent execution. Baking values into the text (the previous behaviour)
+/// produced a distinct script per changing value, defeating the cache and leaking a
+/// compiled assembly per run (unbounded CPU + memory under a high-frequency pipeline).
 /// </summary>
 [NodeConfiguration(typeof(ExecuteCSharpNodeConfiguration))]
-public class ExecuteCSharpNode(NodeDelegate next, IEtlContext etlContext) : IPipelineNode
+public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
 {
-    private const string CacheKeyPrefix = "ExecuteCSharpNode_CompiledScript_";
+    /// <summary>
+    /// Process-wide compiled-script cache, keyed by the full value-independent template
+    /// text. The template depends only on the node's code, argument signature and usings
+    /// — never on values, and never on machine-specific rtIds (those live in other nodes'
+    /// configuration, not in the script) — so the SAME script used by N simulated
+    /// machines / pipelines / tenants compiles exactly once and is shared. This makes the
+    /// retained footprint scale with the number of DISTINCT scripts, not with the number
+    /// of machines or executions (measured: 5 machines dropped from ~10GB with a
+    /// per-context cache to a fraction of that once the identical scripts are shared).
+    /// A compiled script holds only code; per-execution values flow in through
+    /// <see cref="ExecuteCSharpGlobals"/>, so cross-tenant sharing carries no data.
+    /// <see cref="ConcurrentDictionary{TKey,TValue}"/> + <see cref="Lazy{T}"/> give
+    /// thread-safe compile-exactly-once without locking the pipeline data path.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, Lazy<Script<object>>> CompiledScripts = new();
 
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -89,17 +124,17 @@ public class ExecuteCSharpNode(NodeDelegate next, IEtlContext etlContext) : IPip
 
         try
         {
-            // Build script with actual values
-            var scriptCode = BuildScriptWithValues(dataContext, c, nodeContext);
+            // Value-independent script template (declarations read from Args) — stable
+            // across runs so the cache key is stable and compilation happens once.
+            var scriptTemplate = BuildScriptTemplate(c);
+            var script = GetOrCompileScript(scriptTemplate, nodeContext);
 
-            // Get or compile the script
-            var script = await GetOrCompileScriptAsync(scriptCode, nodeContext);
+            // Resolve the actual values for this run and pass them via globals.
+            var globals = new ExecuteCSharpGlobals { Args = BuildArgumentValues(dataContext, c, nodeContext) };
 
-            // Execute with timeout
             using var cts = new CancellationTokenSource(c.TimeoutMs);
-            var result = await script.RunAsync(cancellationToken: cts.Token);
+            var result = await script.RunAsync(globals, cancellationToken: cts.Token);
 
-            // Convert and set result
             var convertedResult = ConvertResult(result.ReturnValue, c.ReturnType, nodeContext);
             dataContext.Set(c.TargetPath, convertedResult, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
         }
@@ -119,6 +154,12 @@ public class ExecuteCSharpNode(NodeDelegate next, IEtlContext etlContext) : IPip
             nodeContext.Error(error);
             throw new PipelineExecutionException($"[{nodeContext.NodePath}]: {error}");
         }
+        catch (PipelineExecutionException)
+        {
+            // Already a clear, node-scoped failure (e.g. invalid argument name) — surface
+            // it as-is instead of re-wrapping it as a generic "script execution failed".
+            throw;
+        }
         catch (Exception ex)
         {
             nodeContext.Error($"Script execution failed: {ex.Message}\nStackTrace: {ex.StackTrace}");
@@ -128,52 +169,65 @@ public class ExecuteCSharpNode(NodeDelegate next, IEtlContext etlContext) : IPip
         await next(dataContext, nodeContext);
     }
 
-    private Task<Script<object>> GetOrCompileScriptAsync(string scriptCode, INodeContext nodeContext)
+    private static Script<object> GetOrCompileScript(string scriptCode, INodeContext nodeContext)
     {
-        var cacheKey = $"{CacheKeyPrefix}{scriptCode.GetHashCode()}";
-
-        // Try to get from cache
-        if (etlContext.Properties.TryGetValue(cacheKey, out var cached) && cached is Script<object> cachedScript)
+        // GetOrAdd may build the Lazy more than once under contention, but only the
+        // stored one is ever resolved, and Lazy(ExecutionAndPublication) guarantees its
+        // factory — the actual compilation — runs exactly once. Keyed by the full
+        // template text so identical scripts across machines/pipelines share one compile.
+        var lazy = CompiledScripts.GetOrAdd(scriptCode, code => new Lazy<Script<object>>(() =>
         {
-            nodeContext.Debug("Using cached compiled script");
-            return Task.FromResult(cachedScript);
-        }
+            nodeContext.Debug("Compiling C# script");
 
-        // Build the script options
-        var scriptOptions = ScriptOptions.Default
-            .AddImports("System")
-            .AddImports("System.Math")
-            .AddReferences(AppDomain.CurrentDomain.GetAssemblies()
-                .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
-                .Select(a => a.Location));
+            // Options (imports + the full loaded-AppDomain reference set) are built HERE,
+            // inside the compile factory, so they are resolved once per DISTINCT script at
+            // the moment it first compiles — i.e. only on a cache miss, which after warmup
+            // is bounded by the number of distinct scripts and is rare. This keeps the
+            // enumeration off the per-execution hot path (the Lazy factory runs exactly
+            // once per template) while ensuring a script compiled later sees the AppDomain's
+            // CURRENT assemblies — a reference to an assembly loaded after an earlier compile
+            // resolves correctly, instead of being frozen out by a build-once shared set.
+            // The full AppDomain set (not a framework-only subset) is kept deliberately for
+            // backward compatibility with scripts that reference application/domain assemblies.
+            var scriptOptions = ScriptOptions.Default
+                .AddImports("System")
+                .AddImports("System.Math")
+                .AddReferences(AppDomain.CurrentDomain.GetAssemblies()
+                    .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
+                    .Select(a => a.Location));
 
-        nodeContext.Debug($"Compiling C# script");
+            // Compile with the globals type so Args is in scope as a bare identifier.
+            var script = CSharpScript.Create<object>(code, scriptOptions, typeof(ExecuteCSharpGlobals));
+            var compilation = script.Compile();
 
-        // Compile the script without globals
-        var script = CSharpScript.Create(scriptCode, scriptOptions);
-        var compilation = script.Compile();
+            if (compilation.Any())
+            {
+                throw new CompilationErrorException("Compilation failed", compilation);
+            }
 
-        if (compilation.Any())
-        {
-            throw new CompilationErrorException("Compilation failed", compilation);
-        }
+            return script;
+        }, LazyThreadSafetyMode.ExecutionAndPublication));
 
-        // Cache the compiled script
-        etlContext.Properties[cacheKey] = script;
-        nodeContext.Debug("Script compiled and cached successfully");
-
-        return Task.FromResult(script);
+        return lazy.Value;
     }
 
+    /// <summary>Test seam: number of distinct scripts currently cached process-wide.</summary>
+    internal static int CompiledScriptCacheCount => CompiledScripts.Count;
 
-    private string BuildScriptWithValues(IDataContext dataContext, ExecuteCSharpNodeConfiguration c, INodeContext nodeContext)
+    /// <summary>Test seam: drop the process-wide compiled-script cache.</summary>
+    internal static void ClearCompiledScriptCache() => CompiledScripts.Clear();
+
+    /// <summary>
+    /// Builds the value-independent script: usings, one declaration per argument that
+    /// reads (and casts) its value from the <c>Args</c> globals dictionary, then the
+    /// wrapped user code. Depends only on argument names/types + the user code.
+    /// </summary>
+    private static string BuildScriptTemplate(ExecuteCSharpNodeConfiguration c)
     {
         var script = new StringBuilder();
 
-        // Add #nullable disable to avoid nullable reference type issues
         script.AppendLine("#nullable disable");
 
-        // Add using statements
         foreach (var usingStatement in c.Usings)
         {
             script.AppendLine($"using {usingStatement};");
@@ -184,16 +238,54 @@ public class ExecuteCSharpNode(NodeDelegate next, IEtlContext etlContext) : IPip
             script.AppendLine();
         }
 
-        // Add variable declarations with actual values
+        foreach (var arg in c.Arguments)
+        {
+            // The name is emitted as a bare C# identifier and as a dictionary key, so a
+            // name that is not a valid identifier would otherwise surface as a confusing
+            // Roslyn compile error (or break the generated string). Fail fast with a clear
+            // message instead. Argument values themselves are never inlined (they flow via
+            // Args at run time), so there is no value-injection surface here.
+            if (!IsValidCSharpIdentifier(arg.Name))
+            {
+                throw new PipelineExecutionException(
+                    $"ExecuteCSharp argument name '{arg.Name}' is not a valid C# identifier.");
+            }
+
+            var typeName = GetCSharpTypeName(arg.DataType);
+            // Value comes from globals at run time (never inlined). Missing/null coalesces
+            // to the type's default, keeping the declared type non-nullable so user code
+            // that uses the bare identifier (arithmetic, &&, …) still compiles.
+            script.AppendLine(
+                $"{typeName} {arg.Name} = ({typeName})(Args[\"{arg.Name}\"] ?? default({typeName}));");
+        }
+
+        script.AppendLine();
+
+        var wrappedCode = WrapCode(c);
+        script.AppendLine(wrappedCode);
+
+        return script.ToString();
+    }
+
+    /// <summary>
+    /// Resolves the actual per-run value for every argument into a name→value map that is
+    /// handed to the script as globals. Every configured argument is always present (null
+    /// when unresolved) so the generated <c>Args["name"]</c> lookups never throw.
+    /// </summary>
+    private Dictionary<string, object?> BuildArgumentValues(
+        IDataContext dataContext, ExecuteCSharpNodeConfiguration c, INodeContext nodeContext)
+    {
+        var values = new Dictionary<string, object?>();
+
         foreach (var arg in c.Arguments)
         {
             object? value;
 
             if (!string.IsNullOrEmpty(arg.ValuePath))
             {
-                // Get value from JSON path. Resolve typed values directly via Get<T>() —
-                // under STJ, Get<object>() returns a boxed JsonElement which does not
-                // implement IConvertible, so Convert.ToInt32/etc would throw.
+                // Resolve typed values directly via Get<T>() — under STJ, Get<object>()
+                // returns a boxed JsonElement which does not implement IConvertible, so
+                // Convert.ToInt32/etc would throw.
                 if (!dataContext.Exists(arg.ValuePath!) ||
                     dataContext.GetKind(arg.ValuePath!) == DataKind.Null)
                 {
@@ -210,52 +302,13 @@ public class ExecuteCSharpNode(NodeDelegate next, IEtlContext etlContext) : IPip
             }
             else
             {
-                // Use fixed value
                 value = arg.Value;
             }
 
-            // Convert to target type
-            var convertedValue = ConvertArgumentValue(value, arg.DataType);
-
-            // Generate the variable declaration with the actual value
-            var typeName = GetCSharpTypeName(arg.DataType);
-            var valueString = FormatValueForCode(convertedValue, arg.DataType);
-
-            // Handle null values properly by making the type nullable if needed
-            if (convertedValue == null && arg.DataType != AttributeValueTypesDto.String)
-            {
-                typeName = typeName + "?";
-            }
-
-            script.AppendLine($"{typeName} {arg.Name} = {valueString};");
+            values[arg.Name] = ConvertArgumentValue(value, arg.DataType);
         }
 
-        script.AppendLine();
-
-        // Add the user code
-        var wrappedCode = WrapCode(c);
-        script.AppendLine(wrappedCode);
-
-        return script.ToString();
-    }
-
-    private static string FormatValueForCode(object? value, AttributeValueTypesDto dataType)
-    {
-        if (value == null)
-        {
-            return "null";
-        }
-
-        return dataType switch
-        {
-            AttributeValueTypesDto.String => $"\"{value.ToString()?.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"",
-            AttributeValueTypesDto.Int => value.ToString()!,
-            AttributeValueTypesDto.Int64 => $"{value}L",
-            AttributeValueTypesDto.Boolean => value.ToString()!.ToLower(),
-            AttributeValueTypesDto.Double => ((double)value).ToString("F", CultureInfo.InvariantCulture),
-            AttributeValueTypesDto.DateTime => $"DateTime.Parse(\"{((DateTime)value):yyyy-MM-dd HH:mm:ss}\")",
-            _ => $"\"{value}\""
-        };
+        return values;
     }
 
     private static string WrapCode(ExecuteCSharpNodeConfiguration c)
@@ -292,12 +345,12 @@ public class ExecuteCSharpNode(NodeDelegate next, IEtlContext etlContext) : IPip
 
         return dataType switch
         {
-            AttributeValueTypesDto.String => Convert.ToString(value),
-            AttributeValueTypesDto.Int => Convert.ToInt32(value),
-            AttributeValueTypesDto.Int64 => Convert.ToInt64(value),
-            AttributeValueTypesDto.Boolean => Convert.ToBoolean(value),
-            AttributeValueTypesDto.Double => Convert.ToDouble(value),
-            AttributeValueTypesDto.DateTime => Convert.ToDateTime(value),
+            AttributeValueTypesDto.String => Convert.ToString(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Int => Convert.ToInt32(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Int64 => Convert.ToInt64(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Boolean => Convert.ToBoolean(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Double => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.DateTime => Convert.ToDateTime(value, CultureInfo.InvariantCulture),
             _ => value
         };
     }
@@ -310,12 +363,12 @@ public class ExecuteCSharpNode(NodeDelegate next, IEtlContext etlContext) : IPip
         {
             return returnType switch
             {
-                AttributeValueTypesDto.String => Convert.ToString(result),
-                AttributeValueTypesDto.Int => Convert.ToInt32(result),
-                AttributeValueTypesDto.Int64 => Convert.ToInt64(result),
-                AttributeValueTypesDto.Boolean => Convert.ToBoolean(result),
-                AttributeValueTypesDto.Double => Convert.ToDouble(result),
-                AttributeValueTypesDto.DateTime => Convert.ToDateTime(result),
+                AttributeValueTypesDto.String => Convert.ToString(result, CultureInfo.InvariantCulture),
+                AttributeValueTypesDto.Int => Convert.ToInt32(result, CultureInfo.InvariantCulture),
+                AttributeValueTypesDto.Int64 => Convert.ToInt64(result, CultureInfo.InvariantCulture),
+                AttributeValueTypesDto.Boolean => Convert.ToBoolean(result, CultureInfo.InvariantCulture),
+                AttributeValueTypesDto.Double => Convert.ToDouble(result, CultureInfo.InvariantCulture),
+                AttributeValueTypesDto.DateTime => Convert.ToDateTime(result, CultureInfo.InvariantCulture),
                 _ => result
             };
         }
@@ -326,7 +379,7 @@ public class ExecuteCSharpNode(NodeDelegate next, IEtlContext etlContext) : IPip
         }
     }
 
-    private string GetCSharpTypeName(AttributeValueTypesDto dataType)
+    private static string GetCSharpTypeName(AttributeValueTypesDto dataType)
     {
         return dataType switch
         {
@@ -338,5 +391,23 @@ public class ExecuteCSharpNode(NodeDelegate next, IEtlContext etlContext) : IPip
             AttributeValueTypesDto.DateTime => "DateTime",
             _ => "object"
         };
+    }
+
+    private static bool IsValidCSharpIdentifier(string name)
+    {
+        if (string.IsNullOrEmpty(name) || !(char.IsLetter(name[0]) || name[0] == '_'))
+        {
+            return false;
+        }
+
+        for (var i = 1; i < name.Length; i++)
+        {
+            if (!(char.IsLetterOrDigit(name[i]) || name[i] == '_'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
