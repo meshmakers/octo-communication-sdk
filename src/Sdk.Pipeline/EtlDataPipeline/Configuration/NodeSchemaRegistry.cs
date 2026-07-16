@@ -89,6 +89,7 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
         var supportsChildren = typeof(IChildNodeConfiguration).IsAssignableFrom(configType);
 
         var category = DeriveCategory(configType, nodeType, isTrigger);
+        var deprecatedAttr = configType.GetCustomAttribute<NodeDeprecatedAttribute>();
 
         string schemaJson;
         try
@@ -112,6 +113,7 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
             schemaJson = InjectXmlDescriptions(schemaJson, configType);
             schemaJson = InjectPropertyGroupExtensions(schemaJson, configType);
             schemaJson = InjectNodeKindExtension(schemaJson, configType);
+            schemaJson = InjectDeprecatedExtension(schemaJson, deprecatedAttr);
         }
         catch (Exception)
         {
@@ -119,7 +121,8 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
             schemaJson = "{}";
         }
 
-        return new NodeDescriptor(nodeName, version, category, isTrigger, supportsChildren, schemaJson);
+        return new NodeDescriptor(nodeName, version, category, isTrigger, supportsChildren, schemaJson,
+            deprecatedAttr != null, deprecatedAttr?.Message);
     }
 
     private static JsonObject ParseObject(string schemaJson)
@@ -215,6 +218,24 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
 
         var root = ParseObject(schemaJson);
         root["x-nodeKind"] = kind;
+        return SerializeObject(root);
+    }
+
+    /// <summary>
+    /// Injects the [NodeDeprecated] attribute as the node-level JSON Schema extensions
+    /// "x-deprecated" (true) and "x-deprecationMessage". Consumed by the graphical editor
+    /// to flag deprecated nodes. No-op when the config type has no [NodeDeprecated].
+    /// </summary>
+    private static string InjectDeprecatedExtension(string schemaJson, NodeDeprecatedAttribute? deprecatedAttr)
+    {
+        if (deprecatedAttr == null) return schemaJson;
+
+        var root = ParseObject(schemaJson);
+        root["x-deprecated"] = true;
+        if (!string.IsNullOrEmpty(deprecatedAttr.Message))
+        {
+            root["x-deprecationMessage"] = deprecatedAttr.Message;
+        }
         return SerializeObject(root);
     }
 

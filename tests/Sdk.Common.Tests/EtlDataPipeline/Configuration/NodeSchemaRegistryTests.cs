@@ -184,6 +184,26 @@ public record NodeKindNodeConfiguration : NodeConfiguration
     public string? Name { get; set; }
 }
 
+/// <summary>
+/// Test configuration carrying a [NodeDeprecated] attribute with a message.
+/// </summary>
+[NodeName("TestDeprecated", 1)]
+[NodeDeprecated("Use TestDeprecated@2 instead")]
+public record DeprecatedNodeConfiguration : NodeConfiguration
+{
+    public string? Name { get; set; }
+}
+
+/// <summary>
+/// Test configuration carrying a [NodeDeprecated] attribute without a message.
+/// </summary>
+[NodeName("TestDeprecatedNoMessage", 1)]
+[NodeDeprecated]
+public record DeprecatedWithoutMessageNodeConfiguration : NodeConfiguration
+{
+    public string? Name { get; set; }
+}
+
 #endregion
 
 public class NodeSchemaRegistryTests
@@ -768,6 +788,61 @@ public class NodeSchemaRegistryTests
         var schema = GetSchemaForConfig<NoEnumNodeConfiguration>("TestNoEnum@1");
 
         Assert.Null(schema["x-nodeKind"]);
+    }
+
+    #endregion
+
+    #region NodeDeprecated extension
+
+    [Fact]
+    public void BuildDescriptor_NodeDeprecatedAttribute_InjectsXDeprecatedAndMessage()
+    {
+        var schema = GetSchemaForConfig<DeprecatedNodeConfiguration>("TestDeprecated@1");
+
+        Assert.True(schema["x-deprecated"]?.GetValue<bool>());
+        Assert.Equal("Use TestDeprecated@2 instead", schema["x-deprecationMessage"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public void BuildDescriptor_NodeDeprecatedAttribute_SetsDescriptorFlags()
+    {
+        var registry = CreateRegistryWithConfig<DeprecatedNodeConfiguration>("TestDeprecated@1");
+        var descriptor = registry.GetDescriptor("TestDeprecated@1");
+
+        Assert.NotNull(descriptor);
+        Assert.True(descriptor.IsDeprecated);
+        Assert.Equal("Use TestDeprecated@2 instead", descriptor.DeprecationMessage);
+    }
+
+    [Fact]
+    public void BuildDescriptor_NodeDeprecatedWithoutMessage_InjectsXDeprecatedOnly()
+    {
+        var schema = GetSchemaForConfig<DeprecatedWithoutMessageNodeConfiguration>("TestDeprecatedNoMessage@1");
+
+        Assert.True(schema["x-deprecated"]?.GetValue<bool>());
+        Assert.Null(schema["x-deprecationMessage"]);
+
+        var registry =
+            CreateRegistryWithConfig<DeprecatedWithoutMessageNodeConfiguration>("TestDeprecatedNoMessage@1");
+        var descriptor = registry.GetDescriptor("TestDeprecatedNoMessage@1");
+        Assert.NotNull(descriptor);
+        Assert.True(descriptor.IsDeprecated);
+        Assert.Null(descriptor.DeprecationMessage);
+    }
+
+    [Fact]
+    public void BuildDescriptor_NoNodeDeprecatedAttribute_HasNoDeprecationMarkers()
+    {
+        var schema = GetSchemaForConfig<NoEnumNodeConfiguration>("TestNoEnum@1");
+
+        Assert.Null(schema["x-deprecated"]);
+        Assert.Null(schema["x-deprecationMessage"]);
+
+        var registry = CreateRegistryWithConfig<NoEnumNodeConfiguration>("TestNoEnum@1");
+        var descriptor = registry.GetDescriptor("TestNoEnum@1");
+        Assert.NotNull(descriptor);
+        Assert.False(descriptor.IsDeprecated);
+        Assert.Null(descriptor.DeprecationMessage);
     }
 
     #endregion
