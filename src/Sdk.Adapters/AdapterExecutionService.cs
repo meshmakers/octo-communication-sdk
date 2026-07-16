@@ -558,7 +558,9 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                 d.Category,
                 d.IsTrigger,
                 d.SupportsChildren,
-                d.ConfigurationSchemaJson)).ToList();
+                d.ConfigurationSchemaJson,
+                d.IsDeprecated,
+                d.DeprecationMessage)).ToList();
         }
         catch (Exception e)
         {

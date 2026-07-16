@@ -79,6 +79,12 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
         {
             rootNodeContext.Info("Executing pipeline");
 
+            foreach (var deprecatedNode in NodeDeprecationInspector.FindDeprecatedNodes(nodeDefinitionRoot))
+            {
+                rootNodeContext.Warning("Pipeline uses deprecated node {NodeQualifiedName}. {DeprecationMessage}",
+                    deprecatedNode.QualifiedName, deprecatedNode.Message ?? string.Empty);
+            }
+
             uint sequenceNumber = 0;
             foreach (var nodeConfiguration in nodeDefinitionRoot.Transformations.Reverse())
             {

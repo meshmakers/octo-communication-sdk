@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using Meshmakers.Common.Shared;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Microsoft.Extensions.Logging;
@@ -41,6 +42,14 @@ public sealed class PipelineRegistryService(
         if (configurationRoot.Triggers == null)
         {
             throw PipelineExecutionException.PipelineTriggerMissing(tenantId, pipelineConfiguration.PipelineRtEntityId);
+        }
+
+        foreach (var deprecatedNode in NodeDeprecationInspector.FindDeprecatedNodes(configurationRoot))
+        {
+            logger.LogWarning(
+                "Pipeline uses deprecated node {NodeQualifiedName}. TenantId: {TenantId}, PipelineRtEntityId: {PipelineRtEntityId}, DataFlowRtId: {DataFlowRtId}. {DeprecationMessage}",
+                deprecatedNode.QualifiedName, tenantId, pipelineConfiguration.PipelineRtEntityId,
+                pipelineConfiguration.DataFlowRtId, deprecatedNode.Message ?? string.Empty);
         }
 
         var globalConfiguration = new GlobalConfiguration(pipelineConfiguration.Configurations);
