@@ -15,7 +15,7 @@ public class PollingServiceTests
         var maxConcurrent = 0;
         var runs = 0;
 
-        var handle = service.RegisterCallback(TimeSpan.FromMilliseconds(20), async () =>
+        using var handle = service.RegisterCallback(TimeSpan.FromMilliseconds(20), async () =>
         {
             Interlocked.Increment(ref runs);
             var current = Interlocked.Increment(ref concurrent);
@@ -29,7 +29,6 @@ public class PollingServiceTests
         // Window covers several timer periods; without coalescing the slow callback
         // would overlap itself many times over.
         await Task.Delay(400, TestContext.Current.CancellationToken);
-        service.UnregisterCallback(handle);
 
         Assert.True(runs >= 2, $"expected the timer to fire multiple times, got {runs}");
         Assert.Equal(1, maxConcurrent);
@@ -41,14 +40,13 @@ public class PollingServiceTests
         var service = new PollingService(A.Fake<ILogger<PollingService>>());
 
         var runs = 0;
-        var handle = service.RegisterCallback(TimeSpan.FromMilliseconds(30), () =>
+        using var handle = service.RegisterCallback(TimeSpan.FromMilliseconds(30), () =>
         {
             Interlocked.Increment(ref runs);
             return Task.CompletedTask;
         });
 
         await Task.Delay(200, TestContext.Current.CancellationToken);
-        service.UnregisterCallback(handle);
 
         // Fast callbacks are never coalesced away — the gate only skips overlapping runs.
         Assert.True(runs >= 3, $"expected repeated ticks, got {runs}");

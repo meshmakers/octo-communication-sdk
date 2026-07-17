@@ -66,9 +66,14 @@ public class PollingService : IPollingService
             // floods the thread pool with piled-up executions.
             if (Interlocked.CompareExchange(ref pollingItem.IsExecuting, 1, 0) != 0)
             {
+                // Null until the first run actually records a start time; avoids logging
+                // a misleading DateTime.MinValue ("year 0001") on an early overlapping tick.
+                DateTime? lastRun = pollingItem.LastExecutionTime == DateTime.MinValue
+                    ? null
+                    : pollingItem.LastExecutionTime;
                 _logger.LogDebug(
-                    "Polling tick skipped; previous callback still running (interval {Interval}, last run {LastExecutionTime:O})",
-                    pollingItem.Interval, pollingItem.LastExecutionTime);
+                    "Polling tick skipped; previous callback still running (interval {Interval}, last run {LastRun:O})",
+                    pollingItem.Interval, lastRun);
                 return;
             }
 
