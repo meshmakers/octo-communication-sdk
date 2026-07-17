@@ -60,6 +60,18 @@ public class PollingService : IPollingService
 
         if (_callbacks.TryGetValue(handle, out var pollingItem))
         {
+            // Coalesce: if the previous callback for this handle is still running (the
+            // action is slower than the interval), skip this tick instead of stacking a
+            // second concurrent invocation. Otherwise a short interval over slow work
+            // floods the thread pool with piled-up executions.
+            if (Interlocked.CompareExchange(ref pollingItem.IsExecuting, 1, 0) != 0)
+            {
+                _logger.LogDebug(
+                    "Polling tick skipped; previous callback still running (interval {Interval}, last run {LastExecutionTime:O})",
+                    pollingItem.Interval, pollingItem.LastExecutionTime);
+                return;
+            }
+
             pollingItem.LastExecutionTime = DateTime.UtcNow;
             try
             {
@@ -74,6 +86,10 @@ public class PollingService : IPollingService
             {
                 // All exceptions must be caught in async void to prevent crashing the process.
                 _logger.LogError(ex, "Unhandled exception in polling callback");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref pollingItem.IsExecuting, 0);
             }
         }
     }
