@@ -66,17 +66,28 @@ public class PollingService : IPollingService
             // floods the thread pool with piled-up executions.
             if (Interlocked.CompareExchange(ref pollingItem.IsExecuting, 1, 0) != 0)
             {
-                // Null until the first run actually records a start time; avoids logging
-                // a misleading DateTime.MinValue ("year 0001") on an early overlapping tick.
-                DateTime? lastRun = pollingItem.LastExecutionTime == DateTime.MinValue
-                    ? null
-                    : pollingItem.LastExecutionTime;
-                _logger.LogDebug(
-                    "Polling tick skipped; previous callback still running (interval {Interval}, last run {LastRun:O})",
-                    pollingItem.Interval, lastRun);
+                // A skipped tick means the callback is slower than its interval and the
+                // trigger is under-running. Surface it at Warning (adapters log from
+                // Information up in production, so Debug would never be seen), but only
+                // once per fall-behind episode - a chronically slow trigger must not warn
+                // on every tick. The flag is re-armed once the callback catches up.
+                if (Interlocked.CompareExchange(ref pollingItem.SkipWarned, 1, 0) == 0)
+                {
+                    // Null until the first run actually records a start time; avoids logging
+                    // a misleading DateTime.MinValue ("year 0001") on an early overlapping tick.
+                    DateTime? lastRun = pollingItem.LastExecutionTime == DateTime.MinValue
+                        ? null
+                        : pollingItem.LastExecutionTime;
+                    _logger.LogWarning(
+                        "Polling tick skipped: callback is slower than its {Interval} interval, so the trigger is under-running (previous run still in flight, last started {LastRun:O}). Further skips are suppressed until it catches up.",
+                        pollingItem.Interval, lastRun);
+                }
+
                 return;
             }
 
+            // Caught up - a fresh run is starting, so re-arm the skip warning.
+            Interlocked.Exchange(ref pollingItem.SkipWarned, 0);
             pollingItem.LastExecutionTime = DateTime.UtcNow;
             try
             {

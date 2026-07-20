@@ -14,4 +14,11 @@ internal record PollingItem
     ///     instead of stacking a second concurrent invocation.
     /// </summary>
     public int IsExecuting;
+
+    /// <summary>
+    ///     0 = a skip warning may be logged, 1 = already warned for the current fall-behind
+    ///     episode. Set on the first coalesced tick and re-armed once the callback catches
+    ///     up, so a chronically slow trigger warns once per episode instead of every tick.
+    /// </summary>
+    public int SkipWarned;
 }
