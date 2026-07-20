@@ -16,9 +16,9 @@ internal record PollingItem
     public int IsExecuting;
 
     /// <summary>
-    ///     0 = a skip warning may be logged, 1 = already warned for the current fall-behind
-    ///     episode. Set on the first coalesced tick and re-armed once the callback catches
-    ///     up, so a chronically slow trigger warns once per episode instead of every tick.
+    ///     <see cref="DateTime.Ticks"/> (UTC) of the last logged skip warning, 0 if never.
+    ///     Accessed via Interlocked so a chronically under-running trigger warns at most once
+    ///     per throttle window instead of on every coalesced tick.
     /// </summary>
-    public int SkipWarned;
+    public long LastSkipWarnedTicks;
 }

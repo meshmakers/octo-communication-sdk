@@ -8,6 +8,9 @@ namespace Meshmakers.Octo.Sdk.Common.Services;
 /// </summary>
 public class PollingService : IPollingService
 {
+    /// <summary>At most one "tick skipped" warning is logged per trigger per this window.</summary>
+    private static readonly TimeSpan SkipWarnInterval = TimeSpan.FromMinutes(1);
+
     private readonly ConcurrentDictionary<PollingHandle, PollingItem> _callbacks;
     private readonly ILogger<PollingService> _logger;
 
@@ -68,10 +71,14 @@ public class PollingService : IPollingService
             {
                 // A skipped tick means the callback is slower than its interval and the
                 // trigger is under-running. Surface it at Warning (adapters log from
-                // Information up in production, so Debug would never be seen), but only
-                // once per fall-behind episode - a chronically slow trigger must not warn
-                // on every tick. The flag is re-armed once the callback catches up.
-                if (Interlocked.CompareExchange(ref pollingItem.SkipWarned, 1, 0) == 0)
+                // Information up in production, so Debug would never be seen), but throttle
+                // to at most one warning per SkipWarnInterval per trigger so a chronically
+                // slow trigger can't flood the log on every tick. The CompareExchange claims
+                // the slot so only one concurrent skipper logs.
+                var nowTicks = DateTime.UtcNow.Ticks;
+                var lastWarnedTicks = Interlocked.Read(ref pollingItem.LastSkipWarnedTicks);
+                if (nowTicks - lastWarnedTicks >= SkipWarnInterval.Ticks &&
+                    Interlocked.CompareExchange(ref pollingItem.LastSkipWarnedTicks, nowTicks, lastWarnedTicks) == lastWarnedTicks)
                 {
                     // Null until the first run actually records a start time; avoids logging
                     // a misleading DateTime.MinValue ("year 0001") on an early overlapping tick.
@@ -79,15 +86,13 @@ public class PollingService : IPollingService
                         ? null
                         : pollingItem.LastExecutionTime;
                     _logger.LogWarning(
-                        "Polling tick skipped: callback is slower than its {Interval} interval, so the trigger is under-running (previous run still in flight, last started {LastRun:O}). Further skips are suppressed until it catches up.",
+                        "Polling tick skipped: callback is slower than its {Interval} interval, so the trigger is under-running (previous run still in flight, last started {LastRun:O}). Further skip warnings for this trigger are throttled to at most once a minute.",
                         pollingItem.Interval, lastRun);
                 }
 
                 return;
             }
 
-            // Caught up - a fresh run is starting, so re-arm the skip warning.
-            Interlocked.Exchange(ref pollingItem.SkipWarned, 0);
             pollingItem.LastExecutionTime = DateTime.UtcNow;
             try
             {

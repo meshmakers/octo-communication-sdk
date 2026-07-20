@@ -32,11 +32,9 @@ public class PollingServiceTests
 
         Assert.True(runs >= 2, $"expected the timer to fire multiple times, got {runs}");
         Assert.Equal(1, maxConcurrent);
-        // Under-running is surfaced at Warning...
-        Assert.True(logger.WarningCount >= 1, "expected at least one skip warning");
-        // ...but throttled to once per fall-behind episode, not once per skipped tick.
-        Assert.True(logger.WarningCount <= runs + 1,
-            $"expected skip warnings ({logger.WarningCount}) to be bounded by runs ({runs}), not per-tick");
+        // Under-running is surfaced at Warning, but hard-throttled to at most once a minute
+        // per trigger: many ticks are skipped in this 400ms window, yet exactly one warns.
+        Assert.Equal(1, logger.WarningCount);
     }
 
     [Fact]
