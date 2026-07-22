@@ -1,9 +1,9 @@
 {{- define "octo-mesh.system-env" -}}
 - name: OCTO_SYSTEM__DATABASEHOST
-  value: {{ .Values.clusterDependencies.mongodbHost }}
+  value: {{ .Values.clusterDependencies.mongodbHost | quote }}
 {{- if .Values.clusterDependencies.mongodbReplicaSet }}
 - name: OCTO_SYSTEM__REPLICASETNAME
-  value: {{ .Values.clusterDependencies.mongodbReplicaSet }}
+  value: {{ .Values.clusterDependencies.mongodbReplicaSet | quote }}
 {{- end }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__DATABASEUSERPASSWORD" "value" .Values.secrets.databaseUser "legacyKey" "databaseUser" "context" .) }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__ADMINUSERPASSWORD" "value" .Values.secrets.databaseAdmin "legacyKey" "databaseAdmin" "context" .) }}
@@ -11,17 +11,17 @@
 
 {{- define "octo-mesh.broker-env" -}}
 - name: {{ printf "%s__BROKERHOST" (upper .name) }}
-  value: {{ .global.Values.clusterDependencies.rabbitMqHost }}
+  value: {{ .global.Values.clusterDependencies.rabbitMqHost | quote }}
 - name: {{ printf "%s__BROKERUSERNAME" (upper .name) }}
-  value: {{ .global.Values.clusterDependencies.rabbitMqUser }}
+  value: {{ .global.Values.clusterDependencies.rabbitMqUser | quote }}
 {{ include "octo-mesh.secretEnv" (dict "envName" (printf "%s__BROKERPASSWORD" (upper .name)) "value" .global.Values.secrets.rabbitmq "legacyKey" "rabbitmq" "context" .global) }}
 {{- end }}
 
 {{- define "octo-mesh.streamdata-env" -}}
 - name: {{ printf "%s__STREAMDATAHOST" (upper .name) }}
-  value: {{ .global.Values.clusterDependencies.streamDataHost }}
+  value: {{ .global.Values.clusterDependencies.streamDataHost | quote }}
 - name: {{ printf "%s__STREAMDATAUSER" (upper .name) }}
-  value: {{ .global.Values.clusterDependencies.streamDataUser }}
+  value: {{ .global.Values.clusterDependencies.streamDataUser | quote }}
 {{ include "octo-mesh.secretEnv" (dict "envName" (printf "%s__STREAMDATAPASSWORD" (upper .name)) "value" .global.Values.secrets.streamDataPassword "legacyKey" "streamDataPassword" "context" .global) }}
 {{- end }}
 
@@ -38,15 +38,15 @@
 {{ include "octo-mesh.streamdata-env" (dict "global" . "name" $name) }}
 {{- end }}
 - name: OCTO_ADAPTER__INSTANCEPREFIX
-  value: {{ .Values.instancePrefix }}
+  value: {{ .Values.instancePrefix | quote }}
 - name: OCTO_ADAPTER__TENANTID
-  value: {{ .Values.tenantId }}
+  value: {{ .Values.tenantId | quote }}
 - name: OCTO_ADAPTER__COMMUNICATIONCONTROLLERSERVICESURI
-  value: {{ .Values.communicationControllerServiceUri }}
+  value: {{ .Values.communicationControllerServiceUri | quote }}
 - name: OCTO_ADAPTER__ADAPTERCKTYPEID
   value: "System.Communication/Adapter"
 - name: OCTO_ADAPTER__ADAPTERRTID
-  value: {{ .Values.adapterRtId }}
+  value: {{ .Values.adapterRtId | quote }}
 - name: OCTO_ADAPTER__REPORTINGSERVICEURL
-  value: {{ .Values.reportingServiceUri }}
+  value: {{ .Values.reportingServiceUri | quote }}
 {{- end }}
