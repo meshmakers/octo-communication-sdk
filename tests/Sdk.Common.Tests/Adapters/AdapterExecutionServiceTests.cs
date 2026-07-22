@@ -296,6 +296,40 @@ public class AdapterExecutionServiceTests
     }
 
     [Fact]
+    public async Task AdapterConfigurationUpdatedAsync_NotifiesAdapterServiceBeforePipelineUpdate()
+    {
+        // Arrange
+        var deploymentResultSent = new TaskCompletionSource<bool>();
+
+        A.CallTo(() => _hubClient.SendDeploymentUpdateResultAsync(A<RtEntityId>._, A<DeploymentResult>._))
+            .Invokes(() => deploymentResultSent.TrySetResult(true))
+            .Returns(Task.CompletedTask);
+        A.CallTo(() => _adapterService.ConfigurationUpdatedAsync(
+                A<string>._, A<AdapterConfigurationDto>._, A<CancellationToken>._))
+            .Returns(Task.CompletedTask);
+        A.CallTo(() => _pipelineRegistryService.UpdatePipelinesAsync(
+                A<string>._, A<ICollection<PipelineConfigurationDto>>._, A<List<DeploymentUpdateErrorMessageDto>>._))
+            .Returns(true);
+
+        var configuration = CreateTestAdapterConfiguration();
+
+        // Act - runs on background thread
+        await _service.AdapterConfigurationUpdatedAsync("testTenant", configuration);
+
+        var completed = await Task.WhenAny(deploymentResultSent.Task, Task.Delay(5000, TestContext.Current.CancellationToken));
+        Assert.Equal(deploymentResultSent.Task, completed);
+
+        // Assert: the adapter service is notified of the adapter-level configuration update BEFORE
+        // the selective pipeline update runs, so a (re)registered pipeline sees the new configuration.
+        A.CallTo(() => _adapterService.ConfigurationUpdatedAsync(
+                "testTenant", configuration, A<CancellationToken>._))
+            .MustHaveHappenedOnceExactly()
+            .Then(A.CallTo(() => _pipelineRegistryService.UpdatePipelinesAsync(
+                    "testTenant", configuration.Pipelines, A<List<DeploymentUpdateErrorMessageDto>>._))
+                .MustHaveHappenedOnceExactly());
+    }
+
+    [Fact]
     public async Task PreUpdateTenantAsync_StopsAndRestartsAdapter()
     {
         // Arrange

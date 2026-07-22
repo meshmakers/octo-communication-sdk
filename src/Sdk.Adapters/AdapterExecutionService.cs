@@ -178,6 +178,12 @@ public class AdapterExecutionService : IAdapterHubCallbacks
         {
             List<DeploymentUpdateErrorMessageDto> deploymentErrorMessages = [];
 
+            // Apply the adapter-level configuration BEFORE the pipeline update so that any pipeline
+            // (re)registered by the selective update below immediately observes the new configuration.
+            // Pipelines are updated separately by UpdatePipelinesAsync; the adapter must not touch them here.
+            _logger.Info("Applying adapter configuration update for tenant {TenantId}", tenantId);
+            await _adapterService.ConfigurationUpdatedAsync(tenantId, adapterConfiguration, cancellationToken);
+
             _logger.Info("Starting selective pipeline update for tenant {TenantId}", tenantId);
             var stepStopwatch = Stopwatch.StartNew();
             var startupSuccess = await _pipelineRegistryService.UpdatePipelinesAsync(

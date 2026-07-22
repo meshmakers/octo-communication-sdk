@@ -28,4 +28,22 @@ public interface IAdapterService
     /// <param name="stoppingToken">The cancellation token to stop the operation of the adapter</param>
     /// <returns></returns>
     Task ShutdownAsync(AdapterShutdown adapterShutdown, CancellationToken stoppingToken);
+
+    /// <summary>
+    ///     Gets called when the adapter's configuration was updated at runtime
+    ///     (e.g. via "Update Configuration" in Refinery Studio) without a full restart.
+    /// </summary>
+    /// <remarks>
+    ///     Pipelines are updated selectively by the SDK independently of this call, so the adapter
+    ///     must not re-register or tear down pipelines here. Override this only to apply the updated
+    ///     adapter-level configuration (<see cref="AdapterConfigurationDto.AdapterConfiguration" />).
+    ///     The default implementation is a no-op, so adapters without adapter-level configuration are
+    ///     unaffected.
+    /// </remarks>
+    /// <param name="tenantId">Tenant identifier</param>
+    /// <param name="adapterConfiguration">The updated adapter configuration</param>
+    /// <param name="stoppingToken">The cancellation token to stop the operation of the adapter</param>
+    /// <returns></returns>
+    Task ConfigurationUpdatedAsync(string tenantId, AdapterConfigurationDto adapterConfiguration,
+        CancellationToken stoppingToken) => Task.CompletedTask;
 }
