@@ -31,6 +31,16 @@ public class AdapterHubCallbackService : IAdapterHubCallbacks, IAdapterHubCallba
     }
 
     /// <inheritdoc />
+    public async Task CkModelChangedAsync(string tenantId)
+    {
+        var callback = _adapterHubCallbacks;
+        if (callback != null)
+        {
+            await callback.CkModelChangedAsync(tenantId);
+        }
+    }
+
+    /// <inheritdoc />
     public void RegisterCallback(IAdapterHubCallbacks adapterHubCallbacks)
     {
         _adapterHubCallbacks = adapterHubCallbacks;

@@ -46,4 +46,20 @@ public interface IAdapterService
     /// <returns></returns>
     Task ConfigurationUpdatedAsync(string tenantId, AdapterConfigurationDto adapterConfiguration,
         CancellationToken stoppingToken) => Task.CompletedTask;
+
+    /// <summary>
+    ///     Gets called when the tenant's Construction Kit model may have changed (CK model import,
+    ///     cache clear). Adapters that hold an in-process CK model cache must invalidate it here so
+    ///     subsequent pipeline executions validate against the current model (AB#4456).
+    /// </summary>
+    /// <remarks>
+    ///     Default implementation is a no-op so adapters without a CK cache are unaffected.
+    ///     The adapter is not restarted; running pipelines keep their registrations.
+    /// </remarks>
+    /// <param name="tenantId">Tenant identifier</param>
+    /// <returns></returns>
+    Task CkModelChangedAsync(string tenantId)
+    {
+        return Task.CompletedTask;
+    }
 }

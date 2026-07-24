@@ -117,6 +117,27 @@ public class AdapterExecutionService : IAdapterHubCallbacks
     }
 
     /// <inheritdoc />
+    public async Task CkModelChangedAsync(string tenantId)
+    {
+        // The controller broadcasts this to every connected adapter (the adapter cache on the
+        // controller may be stale or wiped during a tenant update); only react for our own tenant.
+        if (!string.Equals(tenantId, _adapterOptions.Value.TenantId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _logger.Info("CkModelChangedAsync for tenant {TenantId}, invalidating CK model cache", tenantId);
+        try
+        {
+            await _adapterService.CkModelChangedAsync(tenantId);
+        }
+        catch (Exception e)
+        {
+            _logger.Error(e, "Error during CkModelChangedAsync for tenant {TenantId}", tenantId);
+        }
+    }
+
+    /// <inheritdoc />
     public Task AdapterConfigurationUpdatedAsync(string tenantId, AdapterConfigurationDto adapterConfiguration)
     {
         _logger.Info("AdapterConfigurationUpdatedAsync for tenant {TenantId}", tenantId);
