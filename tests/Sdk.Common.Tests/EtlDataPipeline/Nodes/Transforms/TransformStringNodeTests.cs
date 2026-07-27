@@ -574,4 +574,98 @@ public class TransformStringNodeTests(NodeFixture fixture) : IClassFixture<NodeF
         A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
         Assert.Equal("Hello 世界 مرحبا мир 🌍", dataContext.Get<string>("$.unicode.processed"));
     }
+
+    private (IDataContext, INodeContext) PrepareRegexTest(TransformStringNodeConfiguration configuration)
+    {
+        var logger = A.Fake<IPipelineLogger>();
+        var seed = new
+        {
+            items = new[]
+            {
+                // Foreign-currency card purchase: bank prints the original amount + currency, then the fee/rate.
+                new { purpose = "E-COMM 24,00 USD K2 31.08. 20:28 TAILSCALE TORONTO M5V 3S5 124 SPESEN: 1,25 KURS: 1,160408 VOM:29.08.2025" },
+                new { purpose = "E-COMM 1.234,56 USD K1 06.07. 00:35 JASPER.AI SAN FRANCISCO 94105 840 SPESEN: 11,20" },
+                // Domestic EUR purchase: no fee/conversion; still an amount+country token.
+                new { purpose = "E-COMM 22,32 AT K2 24.02. 20:51 TESLA INC. VIENNA 1010" },
+                // Not a card purpose at all — pattern must not match.
+                new { purpose = "Kontoführung" }
+            }
+        };
+        var json = JsonSerializer.Serialize(seed, SystemTextJsonOptions.Default);
+        var dataContext = new DataContextImpl(JsonDocument.Parse(json));
+        var rootNodeContext = NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("TransformString", 0, configuration, dataContext);
+        return (dataContext, nodeContext);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_RegexExtract_String_OK()
+    {
+        var configuration = new TransformStringNodeConfiguration
+        {
+            Path = "$.items[*]",
+            SourcePath = "$.purpose",
+            TargetPath = "$.amountText",
+            Operation = StringOperationDto.RegexExtract,
+            Pattern = @"^E-COMM\s+([0-9.]+,[0-9]{2})\s"
+        };
+
+        var (dataContext, nodeContext) = PrepareRegexTest(configuration);
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new TransformStringNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("24,00", dataContext.Get<string>("$.items[0].amountText"));
+        Assert.Equal("1.234,56", dataContext.Get<string>("$.items[1].amountText"));
+        Assert.Equal("22,32", dataContext.Get<string>("$.items[2].amountText"));
+        // No match -> null, so a downstream amount filter simply finds no candidate.
+        Assert.Equal(DataKind.Null, dataContext.GetKind("$.items[3].amountText"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_RegexExtract_AsDecimal_OK()
+    {
+        var configuration = new TransformStringNodeConfiguration
+        {
+            Path = "$.items[*]",
+            SourcePath = "$.purpose",
+            TargetPath = "$.amount",
+            Operation = StringOperationDto.RegexExtract,
+            Pattern = @"^E-COMM\s+([0-9.]+,[0-9]{2})\s",
+            AsDecimal = true,
+            GroupSeparator = ".",
+            DecimalSeparator = ","
+        };
+
+        var (dataContext, nodeContext) = PrepareRegexTest(configuration);
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new TransformStringNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        // Written as a JSON number so a GrossTotal Equals field-filter can compare against it.
+        Assert.Equal(24.00, dataContext.Get<double>("$.items[0].amount"));
+        Assert.Equal(1234.56, dataContext.Get<double>("$.items[1].amount"));
+        Assert.Equal(22.32, dataContext.Get<double>("$.items[2].amount"));
+        Assert.Equal(DataKind.Null, dataContext.GetKind("$.items[3].amount"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_RegexExtract_MissingPattern_Throws()
+    {
+        var configuration = new TransformStringNodeConfiguration
+        {
+            Path = "$.items[*]",
+            SourcePath = "$.purpose",
+            TargetPath = "$.amount",
+            Operation = StringOperationDto.RegexExtract
+        };
+
+        var (dataContext, nodeContext) = PrepareRegexTest(configuration);
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new TransformStringNode(fn);
+
+        await Assert.ThrowsAsync<PipelineExecutionException>(() => testee.ProcessObjectAsync(dataContext, nodeContext));
+    }
 }

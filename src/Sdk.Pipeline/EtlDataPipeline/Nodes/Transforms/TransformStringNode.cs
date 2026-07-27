@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.JsonPath;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -27,6 +29,14 @@ public enum StringOperationDto
     SubstringFromEnd = 6,
     /// <summary>Extracts a substring starting at a specific position with optional length.</summary>
     Substring = 7,
+    /// <summary>
+    /// Extracts a value from the string with a regular expression. Returns the capture group given by
+    /// <see cref="TransformStringNodeConfiguration.GroupIndex"/> (default 1; 0 = whole match), or null when
+    /// the pattern does not match. With <see cref="TransformStringNodeConfiguration.AsDecimal"/> the captured
+    /// text is normalized (strip <see cref="TransformStringNodeConfiguration.GroupSeparator"/>, replace
+    /// <see cref="TransformStringNodeConfiguration.DecimalSeparator"/> with '.') and written as a JSON number.
+    /// </summary>
+    RegexExtract = 8,
 }
 
 /// <summary>
@@ -58,6 +68,37 @@ public record TransformStringNodeConfiguration : SourceTargetPathNodeConfigurati
     /// </summary>
     [PropertyGroup("Options", 2)]
     public int? Length { get; init; }
+
+    /// <summary>
+    /// The regular expression used by the <see cref="StringOperationDto.RegexExtract"/> operation.
+    /// </summary>
+    [PropertyGroup("Options", 3)]
+    public string? Pattern { get; init; }
+
+    /// <summary>
+    /// The capture group returned by <see cref="StringOperationDto.RegexExtract"/> (0 = whole match). Defaults to 1.
+    /// </summary>
+    [PropertyGroup("Options", 4)]
+    public int GroupIndex { get; init; } = 1;
+
+    /// <summary>
+    /// When true, the <see cref="StringOperationDto.RegexExtract"/> result is parsed as an invariant decimal and
+    /// written as a JSON number instead of a string.
+    /// </summary>
+    [PropertyGroup("Options", 5)]
+    public bool AsDecimal { get; init; }
+
+    /// <summary>
+    /// Digit-grouping separator stripped from the captured text before decimal parsing (e.g. "." for "1.234,56").
+    /// </summary>
+    [PropertyGroup("Options", 6)]
+    public string? GroupSeparator { get; init; }
+
+    /// <summary>
+    /// Decimal separator in the captured text, replaced with '.' before invariant parsing (e.g. "," for "24,00").
+    /// </summary>
+    [PropertyGroup("Options", 7)]
+    public string? DecimalSeparator { get; init; }
 }
 
 /// <summary>
@@ -95,7 +136,7 @@ public class TransformStringNode(NodeDelegate next) : IPipelineNode
                     ? sourceTokenValue.GetValue<string>()
                     : sourceTokenValue.ToJsonString();
                 var result = ApplyStringOperation(sourceValue, c, nodeContext);
-                matchCtx.Set(targetPath, JsonValue.Create(result));
+                matchCtx.Set(targetPath, result);
             }
             else
             {
@@ -113,20 +154,77 @@ public class TransformStringNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext).ConfigureAwait(false);
     }
 
-    private static string ApplyStringOperation(string input, TransformStringNodeConfiguration config, INodeContext nodeContext)
+    private static JsonNode? ApplyStringOperation(string input, TransformStringNodeConfiguration config, INodeContext nodeContext)
     {
         return config.Operation switch
         {
-            StringOperationDto.Trim => input.Trim(),
-            StringOperationDto.TrimStart => input.TrimStart(),
-            StringOperationDto.TrimEnd => input.TrimEnd(),
-            StringOperationDto.ToUpper => input.ToUpper(),
-            StringOperationDto.ToLower => input.ToLower(),
-            StringOperationDto.SubstringFromStart => GetSubstringFromStart(input, config, nodeContext),
-            StringOperationDto.SubstringFromEnd => GetSubstringFromEnd(input, config, nodeContext),
-            StringOperationDto.Substring => GetSubstring(input, config, nodeContext),
+            StringOperationDto.Trim => JsonValue.Create(input.Trim()),
+            StringOperationDto.TrimStart => JsonValue.Create(input.TrimStart()),
+            StringOperationDto.TrimEnd => JsonValue.Create(input.TrimEnd()),
+            StringOperationDto.ToUpper => JsonValue.Create(input.ToUpper()),
+            StringOperationDto.ToLower => JsonValue.Create(input.ToLower()),
+            StringOperationDto.SubstringFromStart => JsonValue.Create(GetSubstringFromStart(input, config, nodeContext)),
+            StringOperationDto.SubstringFromEnd => JsonValue.Create(GetSubstringFromEnd(input, config, nodeContext)),
+            StringOperationDto.Substring => JsonValue.Create(GetSubstring(input, config, nodeContext)),
+            StringOperationDto.RegexExtract => ApplyRegexExtract(input, config, nodeContext),
             _ => throw new NotSupportedException($"String operation {config.Operation} is not supported")
         };
+    }
+
+    /// <summary>
+    /// Applies <see cref="TransformStringNodeConfiguration.Pattern"/> to the input and returns the requested
+    /// capture group. Returns null when the pattern does not match (so a downstream filter simply finds no
+    /// candidate). With <see cref="TransformStringNodeConfiguration.AsDecimal"/> the captured text is normalized
+    /// and returned as a JSON number; if it does not parse, null is returned.
+    /// </summary>
+    private static JsonNode? ApplyRegexExtract(string input, TransformStringNodeConfiguration config, INodeContext nodeContext)
+    {
+        if (string.IsNullOrEmpty(config.Pattern))
+        {
+            nodeContext.Error("Pattern property is required for RegexExtract operation");
+            throw new PipelineExecutionException($"[{nodeContext.NodePath}]: Pattern property is required for RegexExtract operation");
+        }
+
+        Match match;
+        try
+        {
+            match = Regex.Match(input, config.Pattern, RegexOptions.None, TimeSpan.FromSeconds(1));
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            nodeContext.Warning("RegexExtract pattern timed out on the input, returning null");
+            return null;
+        }
+
+        if (!match.Success || config.GroupIndex < 0 || config.GroupIndex >= match.Groups.Count)
+        {
+            return null;
+        }
+
+        var group = match.Groups[config.GroupIndex];
+        if (!group.Success)
+        {
+            return null;
+        }
+
+        if (!config.AsDecimal)
+        {
+            return JsonValue.Create(group.Value);
+        }
+
+        var normalized = group.Value;
+        if (!string.IsNullOrEmpty(config.GroupSeparator))
+        {
+            normalized = normalized.Replace(config.GroupSeparator, string.Empty);
+        }
+        if (!string.IsNullOrEmpty(config.DecimalSeparator))
+        {
+            normalized = normalized.Replace(config.DecimalSeparator, ".");
+        }
+
+        return double.TryParse(normalized, NumberStyles.Any, CultureInfo.InvariantCulture, out var number)
+            ? JsonValue.Create(number)
+            : null;
     }
 
     private static string GetSubstringFromStart(string input, TransformStringNodeConfiguration config, INodeContext nodeContext)
