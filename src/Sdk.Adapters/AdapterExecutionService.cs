@@ -151,49 +151,65 @@ public class AdapterExecutionService : IAdapterHubCallbacks
         return Task.CompletedTask;
     }
 
-    private static readonly TimeSpan ConfigurationUpdateLockTimeout = TimeSpan.FromSeconds(90);
+    internal TimeSpan ConfigurationUpdateLockTimeout { get; set; } = TimeSpan.FromSeconds(90);
+
+    private readonly object _pendingConfigurationGate = new();
+    private (string TenantId, AdapterConfigurationDto Configuration)? _pendingConfigurationUpdate;
 
     private async Task ApplyConfigurationUpdateAsync(string tenantId, AdapterConfigurationDto adapterConfiguration)
     {
-        var totalStopwatch = Stopwatch.StartNew();
-        var cancellationToken = CancellationToken.None;
+        // Last-writer-wins: the newest update is parked in a one-element slot and drained by
+        // whoever holds the lock, so a lock timeout can no longer discard an update and leave
+        // the adapter permanently on a stale configuration (AB#4559).
+        lock (_pendingConfigurationGate)
+        {
+            _pendingConfigurationUpdate = (tenantId, adapterConfiguration);
+        }
 
         _logger.Info("Waiting to acquire configuration update lock for tenant {TenantId}", tenantId);
         var lockStopwatch = Stopwatch.StartNew();
-        if (!await _configurationUpdateLock.WaitAsync(ConfigurationUpdateLockTimeout, cancellationToken))
+        if (!await _configurationUpdateLock.WaitAsync(ConfigurationUpdateLockTimeout, CancellationToken.None))
         {
-            _logger.Error(
+            _logger.Warn(
                 "Timed out after {ElapsedMs}ms waiting for configuration update lock for tenant {TenantId}. " +
-                "Another configuration update is likely still in progress.",
+                "The update stays queued and is applied by the in-progress update when it completes.",
                 lockStopwatch.ElapsedMilliseconds, tenantId);
-            try
-            {
-                var rtEntityId = GetAdapterRtEntityId();
-                await _hubClient.SendDeploymentUpdateResultAsync(rtEntityId,
-                    new DeploymentResult
-                    {
-                        IsSuccess = false,
-                        ErrorMessages =
-                        [
-                            new DeploymentUpdateErrorMessageDto
-                            {
-                                ErrorCategory = DeploymentErrorCategories.Uncategorized,
-                                ErrorMessage =
-                                    $"Configuration update lock timeout after {ConfigurationUpdateLockTimeout.TotalSeconds}s"
-                            }
-                        ]
-                    });
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Failed to send lock timeout error result for tenant {TenantId}", tenantId);
-            }
-
             return;
         }
 
         _logger.Info("Acquired configuration update lock for tenant {TenantId} after {ElapsedMs}ms",
             tenantId, lockStopwatch.ElapsedMilliseconds);
+
+        try
+        {
+            while (true)
+            {
+                (string TenantId, AdapterConfigurationDto Configuration)? pending;
+                lock (_pendingConfigurationGate)
+                {
+                    pending = _pendingConfigurationUpdate;
+                    _pendingConfigurationUpdate = null;
+                }
+
+                if (pending == null)
+                {
+                    break;
+                }
+
+                await ApplyConfigurationUpdateCoreAsync(pending.Value.TenantId, pending.Value.Configuration);
+            }
+        }
+        finally
+        {
+            _configurationUpdateLock.Release();
+        }
+    }
+
+    private async Task ApplyConfigurationUpdateCoreAsync(string tenantId,
+        AdapterConfigurationDto adapterConfiguration)
+    {
+        var totalStopwatch = Stopwatch.StartNew();
+        var cancellationToken = CancellationToken.None;
 
         try
         {
@@ -218,13 +234,13 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                 new DeploymentResult { IsSuccess = startupSuccess, ErrorMessages = deploymentErrorMessages });
 
             _logger.Info(
-                "Configuration update completed for tenant {TenantId} in {TotalElapsedMs}ms (lock wait: {LockWaitMs}ms)",
-                tenantId, totalStopwatch.ElapsedMilliseconds, lockStopwatch.ElapsedMilliseconds);
+                "Configuration update completed for tenant {TenantId} in {TotalElapsedMs}ms",
+                tenantId, totalStopwatch.ElapsedMilliseconds);
         }
         catch (Exception e)
         {
             _logger.Error(e,
-                "Error during ApplyConfigurationUpdateAsync for tenant {TenantId} after {ElapsedMs}ms",
+                "Error during configuration update for tenant {TenantId} after {ElapsedMs}ms",
                 tenantId, totalStopwatch.ElapsedMilliseconds);
             try
             {
@@ -244,10 +260,6 @@ public class AdapterExecutionService : IAdapterHubCallbacks
             {
                 _logger.Error(ex, "Failed to send deployment error result for tenant {TenantId}", tenantId);
             }
-        }
-        finally
-        {
-            _configurationUpdateLock.Release();
         }
     }
 

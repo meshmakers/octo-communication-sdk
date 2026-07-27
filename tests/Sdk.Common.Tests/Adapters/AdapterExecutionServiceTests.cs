@@ -330,6 +330,76 @@ public class AdapterExecutionServiceTests
     }
 
     [Fact]
+    public async Task AdapterConfigurationUpdatedAsync_LockTimeout_UpdateIsAppliedByInProgressUpdate()
+    {
+        // AB#4559: an update that runs into the configuration-update lock timeout must not be
+        // discarded. It stays queued (last-writer-wins) and is drained by the in-progress update.
+        _service.ConfigurationUpdateLockTimeout = TimeSpan.FromMilliseconds(100);
+
+        var firstUpdateEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstUpdate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var appliedPipelines = new List<ICollection<PipelineConfigurationDto>>();
+
+        A.CallTo(() => _pipelineRegistryService.UpdatePipelinesAsync(
+                A<string>._, A<ICollection<PipelineConfigurationDto>>._, A<List<DeploymentUpdateErrorMessageDto>>._))
+            .ReturnsLazily(async (string _, ICollection<PipelineConfigurationDto> pipelines,
+                List<DeploymentUpdateErrorMessageDto> _) =>
+            {
+                lock (appliedPipelines)
+                {
+                    appliedPipelines.Add(pipelines);
+                }
+
+                firstUpdateEntered.TrySetResult();
+                await releaseFirstUpdate.Task;
+                return true;
+            });
+
+        var firstConfiguration = CreateTestAdapterConfiguration();
+        var secondConfiguration = CreateTestAdapterConfiguration();
+
+        // Act: first update blocks inside the pipeline update while holding the lock
+        await _service.AdapterConfigurationUpdatedAsync("testTenant", firstConfiguration);
+        var entered = await Task.WhenAny(firstUpdateEntered.Task, Task.Delay(5000, TestContext.Current.CancellationToken));
+        Assert.Equal(firstUpdateEntered.Task, entered);
+
+        // Second update arrives, waits on the lock and runs into the 100ms timeout
+        await _service.AdapterConfigurationUpdatedAsync("testTenant", secondConfiguration);
+        await Task.Delay(500, TestContext.Current.CancellationToken);
+
+        // Unblock the first update; it must drain and apply the queued second update
+        releaseFirstUpdate.TrySetResult();
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (appliedPipelines)
+            {
+                if (appliedPipelines.Contains(secondConfiguration.Pipelines))
+                {
+                    break;
+                }
+            }
+
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        }
+
+        // Assert: both configurations were applied, the timed-out one was NOT discarded
+        lock (appliedPipelines)
+        {
+            Assert.Equal(2, appliedPipelines.Count);
+            Assert.Same(firstConfiguration.Pipelines, appliedPipelines[0]);
+            Assert.Same(secondConfiguration.Pipelines, appliedPipelines[1]);
+        }
+
+        // And no failure result was sent for the lock timeout
+        A.CallTo(() => _hubClient.SendDeploymentUpdateResultAsync(
+                A<RtEntityId>._,
+                A<DeploymentResult>.That.Matches(r => !r.IsSuccess)))
+            .MustNotHaveHappened();
+    }
+
+    [Fact]
     public async Task PreUpdateTenantAsync_StopsAndRestartsAdapter()
     {
         // Arrange

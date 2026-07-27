@@ -354,7 +354,102 @@ public class PipelineRegistryServiceTests
         Assert.True(_service.IsRegistered(tenantId, secondConfig.PipelineRtEntityId));
     }
 
-    private void SetupTriggerNodeMocks()
+    [Fact]
+    public async Task RegisterPipelineAsync_ExistingRegistration_ReplacesStaleRegistrationAndStopsOldTriggers()
+    {
+        // AB#4559: a re-registration without prior unregister must replace the surviving
+        // registration (old GlobalConfiguration) instead of silently keeping it while the DTO map
+        // already holds the new configuration.
+        var tenantId = _faker.Random.Guid().ToString();
+        var pipelineRtEntityId = new RtEntityId("TestModel/TestType", OctoObjectId.GenerateNewId());
+        var dataFlowRtId = OctoObjectId.GenerateNewId();
+        var configurationRtId = OctoObjectId.GenerateNewId();
+        var oldConfig = new PipelineConfigurationDto(dataFlowRtId, pipelineRtEntityId, false, "test-configuration",
+            [new ConfigurationDto(configurationRtId, new RtCkId<CkTypeId>("TestModel/TestConfig"), "ApiConfig", "\"old\"")]);
+        var newConfig = new PipelineConfigurationDto(dataFlowRtId, pipelineRtEntityId, false, "test-configuration",
+            [new ConfigurationDto(configurationRtId, new RtCkId<CkTypeId>("TestModel/TestConfig"), "ApiConfig", "\"new\"")]);
+
+        A.CallTo(() => _configurationSerializer.DeserializeAsync(A<string>._))
+            .Returns(CreateTestNodeDefinitionRoot());
+        var triggerNode = SetupTriggerNodeMocks();
+
+        await _service.RegisterPipelineAsync(tenantId, oldConfig);
+
+        // Act: register again without unregistering first (the stale-registration path)
+        await _service.RegisterPipelineAsync(tenantId, newConfig);
+
+        // Assert: the active registration serves the NEW configuration, the old triggers are stopped
+        Assert.True(_service.TryGetPipelineRegistration(tenantId, pipelineRtEntityId, out var registration));
+        Assert.Equal("\"new\"", registration!.GlobalConfiguration.GetRawJson("ApiConfig"));
+        A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => triggerNode.StartAsync(A<ITriggerContext>._)).MustHaveHappenedTwiceExactly();
+
+        // A further selective update with the identical configuration is correctly detected as
+        // unchanged — no additional trigger start.
+        var errorMessages = new List<DeploymentUpdateErrorMessageDto>();
+        var success = await _service.UpdatePipelinesAsync(tenantId, [newConfig], errorMessages);
+        Assert.True(success);
+        Assert.Empty(errorMessages);
+        A.CallTo(() => triggerNode.StartAsync(A<ITriggerContext>._)).MustHaveHappenedTwiceExactly();
+    }
+
+    [Fact]
+    public async Task UpdatePipelinesAsync_ChangedConfiguration_MaterializesNewGlobalConfiguration()
+    {
+        // AB#4559 signature: after a config entity change, a redeploy must materialize the new
+        // GlobalConfiguration for executions.
+        var tenantId = _faker.Random.Guid().ToString();
+        var pipelineRtEntityId = new RtEntityId("TestModel/TestType", OctoObjectId.GenerateNewId());
+        var dataFlowRtId = OctoObjectId.GenerateNewId();
+        var configurationRtId = OctoObjectId.GenerateNewId();
+        var oldConfig = new PipelineConfigurationDto(dataFlowRtId, pipelineRtEntityId, false, "test-configuration",
+            [new ConfigurationDto(configurationRtId, new RtCkId<CkTypeId>("TestModel/TestConfig"), "ApiConfig", "\"old\"")]);
+        var newConfig = new PipelineConfigurationDto(dataFlowRtId, pipelineRtEntityId, false, "test-configuration",
+            [new ConfigurationDto(configurationRtId, new RtCkId<CkTypeId>("TestModel/TestConfig"), "ApiConfig", "\"new\"")]);
+
+        A.CallTo(() => _configurationSerializer.DeserializeAsync(A<string>._))
+            .Returns(CreateTestNodeDefinitionRoot());
+        var triggerNode = SetupTriggerNodeMocks();
+
+        await _service.RegisterPipelineAsync(tenantId, oldConfig);
+
+        // Act
+        var errorMessages = new List<DeploymentUpdateErrorMessageDto>();
+        var success = await _service.UpdatePipelinesAsync(tenantId, [newConfig], errorMessages);
+
+        // Assert
+        Assert.True(success);
+        Assert.True(_service.TryGetPipelineRegistration(tenantId, pipelineRtEntityId, out var registration));
+        Assert.Equal("\"new\"", registration!.GlobalConfiguration.GetRawJson("ApiConfig"));
+        A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task RegisterPipelinesAsync_SurvivingRegistrations_StopsTheirTriggerNodes()
+    {
+        // AB#4559: the full re-registration must stop trigger nodes of surviving registrations
+        // instead of clearing the dictionaries and leaking the running nodes.
+        var tenantId = _faker.Random.Guid().ToString();
+        var firstConfig = CreateTestPipelineConfiguration();
+        var secondConfig = CreateTestPipelineConfiguration();
+
+        A.CallTo(() => _configurationSerializer.DeserializeAsync(A<string>._))
+            .Returns(CreateTestNodeDefinitionRoot());
+        var triggerNode = SetupTriggerNodeMocks();
+
+        await _service.RegisterPipelineAsync(tenantId, firstConfig);
+
+        // Act
+        var errorMessages = new List<DeploymentUpdateErrorMessageDto>();
+        await _service.RegisterPipelinesAsync(tenantId, [secondConfig], errorMessages);
+
+        // Assert: the first pipeline's trigger nodes were stopped, not leaked
+        A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._)).MustHaveHappenedOnceExactly();
+        Assert.False(_service.IsRegistered(tenantId, firstConfig.PipelineRtEntityId));
+        Assert.True(_service.IsRegistered(tenantId, secondConfig.PipelineRtEntityId));
+    }
+
+    private ITriggerPipelineNode SetupTriggerNodeMocks()
     {
         var triggerNode = A.Fake<ITriggerPipelineNode>();
         var nodeLookupService = A.Fake<INodeLookupService>();
@@ -372,5 +467,7 @@ public class PipelineRegistryServiceTests
         A.CallTo(() => contextCreatorService.CreateTriggerContext(
                 A<string>._, A<OctoObjectId>._, A<RtEntityId>._, A<INodeContext>._, A<IGlobalConfiguration>._))
             .Returns(triggerContext);
+
+        return triggerNode;
     }
 }
