@@ -104,10 +104,12 @@ public record IfNodeConfiguration : PathNodeConfiguration, IChildNodeConfigurati
     public object? Value { get; set; }
 
     /// <summary>
-    /// Defines the value type
+    /// Defines the value type. Defaults to <see cref="AttributeValueTypesDto.String"/>, matching
+    /// <see cref="SwitchNodeConfiguration"/> — the enum has no member for 0, so leaving this unset
+    /// previously failed the node at execution time.
     /// </summary>
     [PropertyGroup("Options", 2)]
-    public AttributeValueTypesDto ValueType { get; set; }
+    public AttributeValueTypesDto ValueType { get; set; } = AttributeValueTypesDto.String;
 }
 
 /// <summary>

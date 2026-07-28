@@ -491,6 +491,45 @@ public class IfNodeTests(NodeFixture fixture)
         Assert.Equal(1, dataContext.Get<int>("$.Result"));
     }
 
+    /// <summary>
+    /// Omitting "valueType" in YAML leaves the property at its default. That used to be the
+    /// undefined enum value 0, which made the node throw ValueTypeNotSupported at execution time;
+    /// it now defaults to String, like Switch@1.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_ValueTypeNotConfigured_DefaultsToString()
+    {
+        IfNodeConfiguration ifNodeConfiguration = new()
+        {
+            Path = "$.StringValue",
+            Value = "test",
+            Operator = CompareOperator.Equals,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration
+                {
+                    TargetPath = "$.Result"
+                }
+            }
+        };
+
+        Assert.Equal(AttributeValueTypesDto.String, ifNodeConfiguration.ValueType);
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+        A.CallTo(() => testCounter.GetNext()).Returns(1);
+
+        var (dataContext, nodeContext) = PrepareTest(ifNodeConfiguration);
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new IfNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        Assert.Equal(1, dataContext.Get<int>("$.Result"));
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_StartsWith_NullValues_OK()
     {
