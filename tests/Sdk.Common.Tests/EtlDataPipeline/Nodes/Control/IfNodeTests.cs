@@ -526,6 +526,7 @@ public class IfNodeTests(NodeFixture fixture)
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
         A.CallTo(() => testCounter.GetNext()).MustHaveHappenedOnceExactly();
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
         Assert.Equal(1, dataContext.Get<int>("$.Result"));
     }
 
