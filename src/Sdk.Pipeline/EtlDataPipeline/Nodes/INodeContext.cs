@@ -30,6 +30,16 @@ public interface INodeContext
     IPipelineExecutionMode? PipelineExecutionMode { get; }
 
     /// <summary>
+    /// Per-execution scratch space for large binary artifacts. Nodes that produce or
+    /// consume big binaries (merged PDFs, ZIP archives) write them to scratch files and
+    /// pass a small handle token through the data context instead of base64, avoiding the
+    /// LOH pressure that carrying the bytes inline causes. Null when the executor did not
+    /// provide one (e.g. some test harnesses) — a node that requires scratch mode must
+    /// guard for null and fall back to inline handling or fail with a clear message.
+    /// </summary>
+    IPipelineScratchSpace? ScratchSpace { get; }
+
+    /// <summary>
     /// Parent node context. If it is null, then it is the root node.
     /// </summary>
     INodeContext? Parent { get; }

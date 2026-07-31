@@ -28,16 +28,19 @@ public class NodeContext : INodeContext
     /// <param name="nodeConfiguration">The node configuration</param>
     /// <param name="pipelineDebugger">Optional debugger for the pipeline</param>
     /// <param name="pipelineExecutionMode">Optional per-execution mode flags (e.g. dry-run)</param>
+    /// <param name="scratchSpace">Optional per-execution scratch space for large binaries</param>
     private NodeContext(INodeContext? parent, string? nodeQualifiedName, uint sequenceNumber,
         IServiceProvider serviceProvider,
         IPipelineLogger pipelineLogger, INodeConfiguration? nodeConfiguration,
         IPipelineDebugger? pipelineDebugger = null,
-        IPipelineExecutionMode? pipelineExecutionMode = null)
+        IPipelineExecutionMode? pipelineExecutionMode = null,
+        IPipelineScratchSpace? scratchSpace = null)
     {
         Parent = parent;
         ServiceProvider = serviceProvider;
         PipelineDebugger = pipelineDebugger;
         PipelineExecutionMode = pipelineExecutionMode;
+        ScratchSpace = scratchSpace;
         _logger = pipelineLogger;
         _configurationNode = nodeConfiguration;
 
@@ -66,6 +69,9 @@ public class NodeContext : INodeContext
 
     /// <inheritdoc />
     public IPipelineExecutionMode? PipelineExecutionMode { get; }
+
+    /// <inheritdoc />
+    public IPipelineScratchSpace? ScratchSpace { get; }
 
     /// <inheritdoc />
     public INodeContext? Parent { get; }
@@ -175,7 +181,7 @@ public class NodeContext : INodeContext
     {
         var nodeContext = new NodeContext(this, null, sequenceNumber, ServiceProvider, _logger,
             nodeConfiguration,
-            PipelineDebugger, PipelineExecutionMode);
+            PipelineDebugger, PipelineExecutionMode, ScratchSpace);
         PipelineDebugger?.LogInput(nodeContext.NodeId, nodeContext.NodePath, null, sequenceNumber,
             ((IDebugSnapshotSource)dataContext).GetDebugSnapshot());
         return nodeContext;
@@ -188,7 +194,7 @@ public class NodeContext : INodeContext
     {
         var nodeContext = new NodeContext(this, nodeQualifiedName, sequenceNumber, ServiceProvider, _logger,
             nodeConfiguration,
-            PipelineDebugger, PipelineExecutionMode);
+            PipelineDebugger, PipelineExecutionMode, ScratchSpace);
         PipelineDebugger?.LogInput(nodeContext.NodeId, nodeContext.NodePath, nodeConfiguration.Description,
             sequenceNumber,
             ((IDebugSnapshotSource)dataContext).GetDebugSnapshot());
@@ -201,7 +207,7 @@ public class NodeContext : INodeContext
     {
         var nodeContext = new NodeContext(this, qualifiedName, 0, ServiceProvider, _logger,
             nodeConfiguration,
-            PipelineDebugger, PipelineExecutionMode);
+            PipelineDebugger, PipelineExecutionMode, ScratchSpace);
         PipelineDebugger?.LogInput(nodeContext.NodeId, nodeContext.NodePath, nodeConfiguration.Description, 0,
             ((IDebugSnapshotSource)dataContext).GetDebugSnapshot());
         return nodeContext;
@@ -214,11 +220,12 @@ public class NodeContext : INodeContext
     public static NodeContext CreateRootNodeContext(IServiceProvider serviceProvider, IPipelineLogger pipelineLogger,
         IDataContext dataContext,
         IPipelineDebugger? pipelineDebugger = null,
-        IPipelineExecutionMode? pipelineExecutionMode = null)
+        IPipelineExecutionMode? pipelineExecutionMode = null,
+        IPipelineScratchSpace? scratchSpace = null)
     {
         var nodeContext =
             CreateRootNodeContext(serviceProvider, pipelineLogger, "PipelineExecution", null, pipelineDebugger,
-                pipelineExecutionMode);
+                pipelineExecutionMode, scratchSpace);
         pipelineDebugger?.LogInput(nodeContext.NodeId, nodeContext.NodePath, null, 0, ((IDebugSnapshotSource)dataContext).GetDebugSnapshot());
         return nodeContext;
     }
@@ -232,15 +239,17 @@ public class NodeContext : INodeContext
     /// <param name="nodeConfiguration"></param>
     /// <param name="pipelineDebugger"></param>
     /// <param name="pipelineExecutionMode"></param>
+    /// <param name="scratchSpace"></param>
     /// <returns></returns>
     public static NodeContext CreateRootNodeContext(IServiceProvider serviceProvider, IPipelineLogger pipelineLogger,
         string nodeQualifiedName,
         INodeConfiguration? nodeConfiguration, IPipelineDebugger? pipelineDebugger = null,
-        IPipelineExecutionMode? pipelineExecutionMode = null)
+        IPipelineExecutionMode? pipelineExecutionMode = null,
+        IPipelineScratchSpace? scratchSpace = null)
     {
         var nodeContext =
             new NodeContext(null, nodeQualifiedName, 0, serviceProvider, pipelineLogger, nodeConfiguration,
-                pipelineDebugger, pipelineExecutionMode);
+                pipelineDebugger, pipelineExecutionMode, scratchSpace);
         return nodeContext;
     }
 }

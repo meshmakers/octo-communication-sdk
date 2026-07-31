@@ -48,8 +48,15 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
         // or the overlay's _lifted JsonNode), so disposal after the return value is
         // computed is safe.
         using var dataContext = CreateDataContextFromValue(value);
+
+        // Per-execution scratch space for large binary artifacts. Execution-scoped:
+        // handles are only valid within this execution; nodes must persist/stream any
+        // result before returning. Disposed (its temp directory deleted) when this
+        // method exits, on both the success and the exception path.
+        await using var scratchSpace = new PipelineScratchSpace();
+
         var rootNodeContext = NodeContext.CreateRootNodeContext(serviceProvider, logger, dataContext, pipelineDebugger,
-            executionMode);
+            executionMode, scratchSpace);
 
         pipelineDebugger?.BeginPipelineExecution();
 
