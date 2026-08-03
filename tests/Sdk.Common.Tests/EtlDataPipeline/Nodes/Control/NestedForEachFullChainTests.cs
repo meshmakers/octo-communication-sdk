@@ -189,13 +189,15 @@ public class NestedForEachFullChainTests
 
     /// <summary>
     /// Debug-capture analogue of <see cref="NestedForEach_GrandparentFull_ResolvesRootConfig"/>:
-    /// the pipeline debugger must expose the SAME grandparent alias chain that the read path
-    /// resolves. A node inside the INNER ForEach must capture "$.full.full" (the ROOT context) in
-    /// its snapshot, so the refinery-studio debug views show it — exactly as the old Newtonsoft
-    /// pipeline did. Guards that the debug snapshot folds aliases transitively, not just one level.
+    /// the READ path keeps resolving the grandparent alias chain, but the debug snapshot must
+    /// NOT embed the alias VALUES — "$.full" is the whole (grand)parent document, and folding it
+    /// into every per-iteration capture made debug-mode memory grow ~quadratically with iteration
+    /// count and OOM-killed the adapter on large nested runs (AB#4662). Iteration snapshots carry
+    /// a compact placeholder instead; the document itself remains visible in the parent node's
+    /// own snapshot.
     /// </summary>
     [Fact]
-    public async Task NestedForEach_GrandparentFull_AppearsInDebugSnapshot()
+    public async Task NestedForEach_AliasesInDebugSnapshots_AreCompactPlaceholders()
     {
         var fixture = CreateFixture();
         var serviceProvider = fixture.Services.BuildServiceProvider();
@@ -213,20 +215,25 @@ public class NestedForEachFullChainTests
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
-        // Across all captured snapshots, at least one inner-loop node must carry the full
-        // grandparent chain: $.full.full.Configuration.taxRate == the ROOT taxRate.
         var snapshots = debugger.GetDebugInformation().DebugPoints
             .SelectMany(dp => new[] { dp.Input, dp.Output })
             .Where(s => s is not null)
             .Select(s => JsonNode.Parse(s!)!.AsObject())
             .ToList();
 
-        static bool HasGrandparentTaxRate(JsonObject snapshot)
-        {
-            var taxRate = snapshot["full"]?["full"]?["Configuration"]?["taxRate"];
-            return taxRate is not null && taxRate.GetValue<double>() == RootTaxRate;
-        }
+        static bool HasAliasPlaceholder(JsonObject snapshot) =>
+            snapshot["full"] is JsonValue v &&
+            v.TryGetValue<string>(out var s) &&
+            s.Contains("omitted from debug snapshot");
 
-        Assert.Contains(snapshots, HasGrandparentTaxRate);
+        static bool EmbedsGrandparentDocument(JsonObject snapshot) =>
+            snapshot["full"] is JsonObject fullObj &&
+            fullObj["full"] is JsonObject grandObj &&
+            grandObj["Configuration"]?["taxRate"] is not null;
+
+        // Iteration snapshots must mark the alias with a compact placeholder ...
+        Assert.Contains(snapshots, HasAliasPlaceholder);
+        // ... and no snapshot may embed the (grand)parent document as an alias value anymore.
+        Assert.DoesNotContain(snapshots, EmbedsGrandparentDocument);
     }
 }

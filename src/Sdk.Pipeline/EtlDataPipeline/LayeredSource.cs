@@ -268,6 +268,37 @@ internal sealed class LayeredSource : IReadSource
         return root;
     }
 
+    /// <inheritdoc />
+    public JsonNode? GetDebugSnapshotNode()
+    {
+        var baseNode = TryGetNode("$");
+        if (_aliases.Count == 0 || baseNode is not JsonObject obj)
+        {
+            return baseNode;
+        }
+
+        // Same shape as GetEffectiveNode("$") but with placeholder strings in place of the alias
+        // VALUES: an iteration child's "$.full" is the whole (grand)parent document, and folding
+        // it into every per-iteration debug snapshot made debug-mode memory grow ~quadratically
+        // with iteration count (AB#4662). The full document stays visible in the parent node's
+        // own snapshot, so the placeholder loses no information a debugging operator needs.
+        var root = (JsonObject)obj.DeepClone();
+        foreach (var kvp in _aliases)
+        {
+            if (!kvp.Key.StartsWith("$.", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            var name = kvp.Key.Substring(2);
+            if (name.Contains('.') || name.Contains('['))
+            {
+                continue;
+            }
+            root[name] = $"<alias '{kvp.Key}' omitted from debug snapshot - see parent node>";
+        }
+        return root;
+    }
+
     /// <summary>
     /// Returns the single top-level property name a JSONPath can descend into, or
     /// <c>null</c> when the path's first segment is a wildcard, index, filter, or

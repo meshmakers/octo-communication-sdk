@@ -97,10 +97,11 @@ public class ForNode(NodeDelegate next) : ChildNodeBase
             var arrayNext = new NodeDelegate((dc, nc) =>
             {
                 itemNodeContext.Unregister(dc);
+                // Get<JsonNode> already returns an exclusively-owned clone — no further copy needed.
                 var produced = dc.Get<JsonNode>("$");
                 if (produced is not null)
                 {
-                    targetArray.Add(produced.DeepClone());
+                    targetArray.Add(produced);
                 }
 
                 return Task.CompletedTask;
@@ -115,10 +116,12 @@ public class ForNode(NodeDelegate next) : ChildNodeBase
             await ProcessChildTransformationsAsSequenceAsync(itemDataContext, itemNodeContext, arrayNext, c);
         });
 
+        // Bag items are exclusively owned and parentless — attach directly instead of doubling
+        // the peak memory of the loop result with a second full copy (AB#4662).
         var resultArray = new JsonArray();
         foreach (var item in targetArray)
         {
-            resultArray.Add(item?.DeepClone());
+            resultArray.Add(item);
         }
         dataContext.Set(c.TargetPath, resultArray, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 

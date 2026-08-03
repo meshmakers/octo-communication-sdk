@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
+using System.Threading;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
@@ -28,8 +29,28 @@ public class DefaultPipelineDebugger : IPipelineDebugger
     /// </summary>
     private const int MaxSnapshotBytes = 4 * 1024 * 1024;
 
+    /// <summary>
+    /// Placeholder stored once the total capture budget is exhausted (see
+    /// <see cref="MaxTotalRetainedSnapshotChars"/>).
+    /// </summary>
+    private const string TotalBudgetPlaceholder =
+        "<debug snapshot omitted: total debug capture budget exhausted>";
+
     private readonly DebugPipelineLogger _debugPipelineLogger;
     private readonly ConcurrentDictionary<string, DebugPointDto> _debugPoints = new();
+    private long _retainedSnapshotChars;
+
+    /// <summary>
+    /// Upper bound for the TOTAL characters retained across ALL captured snapshots of one
+    /// execution. Loop nodes register a debug point per ITERATION (the node id embeds the
+    /// iteration index), so the per-snapshot cap alone still let overall capture grow without
+    /// bound on large runs and OOM-kill the adapter (AB#4662: a 4-level nested ForEach over a
+    /// few thousand entities exhausted a 3Gi pod). Once the budget is exhausted, later captures
+    /// store <see cref="TotalBudgetPlaceholder"/> instead — the earliest iterations win, which
+    /// is what an operator stepping through a loop inspects anyway. ~32M chars ≈ 64 MB retained.
+    /// Internal-settable for tests.
+    /// </summary>
+    internal long MaxTotalRetainedSnapshotChars { get; set; } = 32 * 1024 * 1024;
 
     /// <summary>
     /// The pipeline runtime entity id
@@ -74,18 +95,43 @@ public class DefaultPipelineDebugger : IPipelineDebugger
         return Task.CompletedTask;
     }
 
-    private static string? SerializeSnapshot(JsonNode? data)
+    private string? SerializeSnapshot(JsonNode? data)
     {
         if (data == null) return null;
 
+        // Total-budget gate BEFORE serialising: once exhausted, later captures skip the whole
+        // clone/serialize cost and retain only a short placeholder (see
+        // MaxTotalRetainedSnapshotChars). Placeholders are charged like any other retained
+        // string so the replace-discount accounting in LogInput/LogOutput stays symmetric.
+        var result = Interlocked.Read(ref _retainedSnapshotChars) >= MaxTotalRetainedSnapshotChars
+            ? TotalBudgetPlaceholder
+            : SerializeSnapshotCore(data);
+        Interlocked.Add(ref _retainedSnapshotChars, result.Length);
+        return result;
+    }
+
+    /// <summary>
+    /// Credits the budget back for a snapshot string that is being replaced on an existing
+    /// debug point, so re-captures of the same node id don't double-charge.
+    /// </summary>
+    private void DiscountRetained(string? replaced)
+    {
+        if (replaced is not null)
+        {
+            Interlocked.Add(ref _retainedSnapshotChars, -replaced.Length);
+        }
+    }
+
+    private static string SerializeSnapshotCore(JsonNode data)
+    {
         // Debug capture must NEVER crash pipeline execution. SerializeSnapshot is the single choke
         // point for LogInput/LogOutput/RecordDryRunIntent, so all bounding and backstopping lives here.
         //
         // No DeepClone before serialising: writing is read-only and runs synchronously here, so the
         // node is fully consumed at capture time before any later mutation. NodeContext's debug capture
         // passes IDebugSnapshotSource.GetDebugSnapshot(), which already returns an owned clone for an
-        // iteration child (aliases folded in) and the live "$" view on a root context (safe to read once
-        // synchronously). Cloning again copied a whole document tree for nothing.
+        // iteration child (alias placeholders folded in) and the live "$" view on a root context (safe
+        // to read once synchronously). Cloning again copied a whole document tree for nothing.
         try
         {
             using var stream = new ByteBudgetStream(MaxSnapshotBytes);
@@ -203,6 +249,7 @@ public class DefaultPipelineDebugger : IPipelineDebugger
             Input = SerializeSnapshot(inputData)
         }, (key, value) =>
         {
+            DiscountRetained(value.Input);
             value.Input = SerializeSnapshot(inputData);
             return value;
         });
@@ -216,6 +263,7 @@ public class DefaultPipelineDebugger : IPipelineDebugger
             Output = SerializeSnapshot(outputData)
         }, (key, value) =>
         {
+            DiscountRetained(value.Output);
             value.Output = SerializeSnapshot(outputData);
             return value;
         });
@@ -232,6 +280,7 @@ public class DefaultPipelineDebugger : IPipelineDebugger
             DryRunNodeTypeName = nodeTypeName
         }, (key, value) =>
         {
+            DiscountRetained(value.DryRunIntent);
             value.DryRunIntent = serialised;
             value.DryRunNodeTypeName = nodeTypeName;
             return value;

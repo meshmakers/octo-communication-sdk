@@ -621,14 +621,16 @@ public sealed class DataContextImpl : IDataContext, IIterationContextFactory, ID
 
     bool IDataContextFallbackSource.IsPathTombstoned(string path) => _source.IsPathTombstoned(path);
 
-    // IDebugSnapshotSource — folds the source's synthetic top-level aliases (e.g. an iteration
-    // child's "$.full") into the "$" snapshot, which plain Get<JsonNode>("$")/TryGetNode omit.
-    // No defensive DeepClone: on an iteration child GetEffectiveNode already returns an owned
-    // clone, and the debugger serialises the node synchronously and read-only at capture time
-    // (see DefaultPipelineDebugger.SerializeSnapshot), so a shared root node is consumed before
-    // any later mutation. This whole call is reached only via PipelineDebugger?. — when debugging
-    // is off it is never evaluated, so it allocates nothing on the non-debug pipeline path.
-    JsonNode? IDebugSnapshotSource.GetDebugSnapshot() => _source.GetEffectiveNode("$");
+    // IDebugSnapshotSource — the source's synthetic top-level aliases (e.g. an iteration child's
+    // "$.full") appear in the snapshot as short PLACEHOLDER strings, not values: the alias is the
+    // whole parent document, and folding it into every per-iteration capture made debug-mode
+    // memory grow ~quadratically with iteration count (AB#4662). No defensive DeepClone: on an
+    // iteration child GetDebugSnapshotNode already returns an owned clone, and the debugger
+    // serialises the node synchronously and read-only at capture time (see
+    // DefaultPipelineDebugger.SerializeSnapshot), so a shared root node is consumed before any
+    // later mutation. This whole call is reached only via PipelineDebugger?. — when debugging is
+    // off it is never evaluated, so it allocates nothing on the non-debug pipeline path.
+    JsonNode? IDebugSnapshotSource.GetDebugSnapshot() => _source.GetDebugSnapshotNode();
 
     /// <summary>
     /// Releases the <see cref="JsonDocument"/> owned by this context, if any. Idempotent.

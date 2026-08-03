@@ -46,6 +46,18 @@ internal interface IReadSource
     /// </summary>
     JsonNode? GetEffectiveNode(string path);
 
+    /// <summary>
+    /// Debug-capture variant of <see cref="GetEffectiveNode"/> over <c>"$"</c>: resolves the
+    /// source's root view but folds a short placeholder STRING for each top-level alias instead
+    /// of the alias's value. An iteration child's aliases (e.g. <c>"$.full"</c>) carry the WHOLE
+    /// parent document — folding their values into every per-iteration debug snapshot made
+    /// debug-mode memory grow ~quadratically with iteration count (AB#4662). The alias content
+    /// remains visible in the parent node's own snapshot. Execution reads are unaffected —
+    /// <see cref="GetEffectiveNode"/> keeps folding real values. On a source without aliases
+    /// this equals <see cref="TryGetNode"/> over <c>"$"</c>.
+    /// </summary>
+    JsonNode? GetDebugSnapshotNode();
+
     /// <summary>Returns the <see cref="DataKind"/> classification of the value at <paramref name="path"/>.</summary>
     DataKind GetKind(string path);
 

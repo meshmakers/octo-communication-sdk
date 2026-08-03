@@ -41,6 +41,9 @@ internal sealed class ElementSource : IReadSource
     // overlay-or-base resolution.
     public JsonNode? GetEffectiveNode(string path) => TryGetNode(path);
 
+    // A root context has no aliases — the debug snapshot is the plain "$" view.
+    public JsonNode? GetDebugSnapshotNode() => TryGetNode("$");
+
     public DataKind GetKind(string path)
     {
         if (_overlay.HasWrites)

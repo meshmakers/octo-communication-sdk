@@ -138,8 +138,11 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         }).ConfigureAwait(false);
 #endif
 
+        // The bag items are exclusively owned (see arrayNext above) and parentless, so they can be
+        // attached to the result array directly. Cloning here doubled the peak memory of every
+        // ForEach result for the rest of the run (AB#4662).
         var resultArray = new JsonArray();
-        foreach (var item in collected) resultArray.Add(item?.DeepClone());
+        foreach (var item in collected) resultArray.Add(item);
         dataContext.Set(c.TargetPath, resultArray, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, rootNodeContext);
@@ -168,8 +171,9 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         var arrayNext = new NodeDelegate((ds, _) =>
         {
             itemNodeContext.Unregister(ds);
+            // Get<JsonNode> already returns an exclusively-owned clone — no further copy needed.
             var mergeItem = ds.Get<JsonNode>(c.MergePath);
-            if (mergeItem is not null) collected.Add(mergeItem.DeepClone());
+            if (mergeItem is not null) collected.Add(mergeItem);
             return Task.CompletedTask;
         });
 
