@@ -252,12 +252,24 @@ public sealed class PipelineRegistryService(
                 pipelineConfigurations.Count - toAddOrUpdate.Count,
                 toAddOrUpdate.Count, toRemove.Count);
 
-            // Unregister removed pipelines
+            // Unregister removed pipelines. A single trigger's StopAsync throwing must not abort
+            // the whole selective update (AB#4761) — log and continue, mirroring the tolerant
+            // unregister loop in RegisterPipelinesAsync. A stale registration left behind here is
+            // replaced idempotently on the next re-registration.
             foreach (var pipelineId in toRemove)
             {
                 logger.LogInformation("Removing pipeline {PipelineRtEntityId} for tenant {TenantId}",
                     pipelineId, tenantId);
-                await UnregisterPipelineCoreAsync(tenantId, pipelineId);
+                try
+                {
+                    await UnregisterPipelineCoreAsync(tenantId, pipelineId);
+                }
+                catch (Exception e)
+                {
+                    logger.LogWarning(e,
+                        "Failed to stop removed pipeline {PipelineRtEntityId} (tenant {TenantId}); continuing selective update",
+                        pipelineId, tenantId);
+                }
             }
 
             // Unregister changed pipelines before re-registering
@@ -267,7 +279,18 @@ public sealed class PipelineRegistryService(
                 {
                     logger.LogInformation("Re-registering changed pipeline {PipelineRtEntityId} for tenant {TenantId}",
                         config.PipelineRtEntityId, tenantId);
-                    await UnregisterPipelineCoreAsync(tenantId, config.PipelineRtEntityId);
+                    // Same AB#4761 tolerance: a failed unregister must not abort the update. The
+                    // subsequent re-registration replaces any surviving registration idempotently.
+                    try
+                    {
+                        await UnregisterPipelineCoreAsync(tenantId, config.PipelineRtEntityId);
+                    }
+                    catch (Exception e)
+                    {
+                        logger.LogWarning(e,
+                            "Failed to stop changed pipeline {PipelineRtEntityId} (tenant {TenantId}) before re-registration; continuing",
+                            config.PipelineRtEntityId, tenantId);
+                    }
                 }
                 else
                 {

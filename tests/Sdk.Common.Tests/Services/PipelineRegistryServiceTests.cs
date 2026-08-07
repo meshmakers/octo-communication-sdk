@@ -449,6 +449,39 @@ public class PipelineRegistryServiceTests
         Assert.True(_service.IsRegistered(tenantId, secondConfig.PipelineRtEntityId));
     }
 
+    [Fact]
+    public async Task UpdatePipelinesAsync_RemovedPipelineTriggerStopThrows_DoesNotAbortBatch()
+    {
+        // AB#4761: a removed pipeline whose trigger StopAsync throws (e.g. a FromMicrosoftGraphEmail
+        // node whose polling task faulted) must NOT abort the whole selective update. Before the
+        // fix the throw propagated out of UpdatePipelinesAsync and flipped the adapter to
+        // ConfigurationState=Error; now the update logs and continues, still registering the other
+        // pipelines, and never throws.
+        var tenantId = _faker.Random.Guid().ToString();
+        var toRemoveConfig = CreateTestPipelineConfiguration();
+        var newConfig = CreateTestPipelineConfiguration();
+
+        A.CallTo(() => _configurationSerializer.DeserializeAsync(A<string>._))
+            .Returns(CreateTestNodeDefinitionRoot());
+        var triggerNode = SetupTriggerNodeMocks();
+        A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._))
+            .Throws(new InvalidOperationException("trigger stop boom"));
+
+        // Register the pipeline that the update will drop (its unregister will throw).
+        await _service.RegisterPipelineAsync(tenantId, toRemoveConfig);
+
+        // Act: selective update that removes toRemoveConfig and adds newConfig.
+        var errorMessages = new List<DeploymentUpdateErrorMessageDto>();
+        var exception = await Record.ExceptionAsync(() =>
+            _service.UpdatePipelinesAsync(tenantId, [newConfig], errorMessages));
+
+        // Assert: the failing unregister did not abort the batch — no throw, the new pipeline is
+        // registered, and the failing StopAsync was actually attempted.
+        Assert.Null(exception);
+        Assert.True(_service.IsRegistered(tenantId, newConfig.PipelineRtEntityId));
+        A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._)).MustHaveHappened();
+    }
+
     private ITriggerPipelineNode SetupTriggerNodeMocks()
     {
         var triggerNode = A.Fake<ITriggerPipelineNode>();
