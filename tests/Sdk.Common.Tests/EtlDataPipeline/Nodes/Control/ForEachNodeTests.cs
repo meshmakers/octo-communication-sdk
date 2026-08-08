@@ -68,6 +68,51 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_ResultArray_PreservesSourceOrder()
+    {
+        // Regression (AB#4760): results were materialized straight from the
+        // ConcurrentBag, whose enumeration order is undefined (LIFO per thread),
+        // scrambling the result array relative to the source array. Order must
+        // hold regardless of scheduling — exercised with unlimited parallelism.
+        ForEachNodeConfiguration forEachNodeConfiguration = new()
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            MaxDegreeOfParallelism = -1,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration
+                {
+                    TargetPath = "$.unused",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var items = string.Join(",", Enumerable.Range(0, 32));
+        var dataContext = new DataContextImpl(JsonDocument.Parse($"{{\"Items\":[{items}]}}"));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext =
+            rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(32, dataContext.Length("$.Result"));
+        for (var i = 0; i < 32; i++)
+        {
+            Assert.Equal(i, dataContext.Get<int>($"$.Result[{i}]"));
+        }
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_SourceNull_Fail()
     {
         ForEachNodeConfiguration forEachNodeConfiguration = new()

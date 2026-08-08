@@ -85,7 +85,12 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         var factory = (IIterationContextFactory)dataContext;
         var aliases = factory.ResolveAliasElements(new[] { (c.FullDocumentPath, c.Path) });
 
-        var collected = new ConcurrentBag<JsonNode?>();
+        // Collected WITH the iteration index: ConcurrentBag enumeration is unordered
+        // (LIFO per thread), so materializing it directly scrambled the result array
+        // relative to the source array — fatal for order-dependent consumers such as
+        // page merges (AB#4760). Null merge results are skipped, matching the old
+        // behavior, so the result is the ordered sequence of non-null items.
+        var collected = new ConcurrentBag<(uint Index, JsonNode Item)>();
 
         var maxDop = c.MaxDegreeOfParallelism switch
         {
@@ -140,9 +145,10 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
 
         // The bag items are exclusively owned (see arrayNext above) and parentless, so they can be
         // attached to the result array directly. Cloning here doubled the peak memory of every
-        // ForEach result for the rest of the run (AB#4662).
+        // ForEach result for the rest of the run (AB#4662). Ordered by iteration index so the
+        // result array matches the source array order regardless of scheduling.
         var resultArray = new JsonArray();
-        foreach (var item in collected) resultArray.Add(item);
+        foreach (var (_, item) in collected.OrderBy(x => x.Index)) resultArray.Add(item);
         dataContext.Set(c.TargetPath, resultArray, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, rootNodeContext);
@@ -155,7 +161,7 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         uint index,
         ForEachNodeConfiguration c,
         INodeContext rootNodeContext,
-        ConcurrentBag<JsonNode?> collected)
+        ConcurrentBag<(uint Index, JsonNode Item)> collected)
     {
         // Seed the iteration item at the configured KeyPath (default "$.key") rather
         // than at the child's root. Many pipelines and the default MergePath ($.key)
@@ -173,7 +179,7 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
             itemNodeContext.Unregister(ds);
             // Get<JsonNode> already returns an exclusively-owned clone — no further copy needed.
             var mergeItem = ds.Get<JsonNode>(c.MergePath);
-            if (mergeItem is not null) collected.Add(mergeItem);
+            if (mergeItem is not null) collected.Add((index, mergeItem));
             return Task.CompletedTask;
         });
 
