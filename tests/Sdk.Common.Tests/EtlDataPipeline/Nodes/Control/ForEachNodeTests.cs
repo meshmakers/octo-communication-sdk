@@ -839,6 +839,328 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
         for (var i = 0; i < itemCount; i++) Assert.Equal(i, observed[i]);
     }
 
+    // ---- Iteration error handling ---------------------------------------------------
+    // Without continueOnError the first iteration error aborts the loop (characterized
+    // below); with continueOnError the remaining iterations and next() still run and the
+    // node reports the collected errors afterwards by failing the execution.
+
+    [Fact]
+    public async Task ProcessObjectAsync_IterationThrows_Default_AbortsLoopAndPropagatesUnchanged()
+    {
+        // Characterization of the pre-existing behavior: a poisoned first element stops
+        // the whole loop — later elements never run, next() is never called, and the
+        // child exception propagates unchanged.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 3 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            MaxDegreeOfParallelism = 1, // sequential: deterministic abort point
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 1,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await Assert.ThrowsAsync<MyCustomException>(() => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        // No later iteration ran, nothing was merged, next() never ran.
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+        Assert.False(dataContext.Exists("$.Result"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ContinueOnError_ProcessesRemainingItemsAndFailsAfterNext()
+    {
+        // P1 acceptance: with continueOnError a poisoned first element no longer starves
+        // the remaining elements — they are processed, the merged result carries them in
+        // source order, next() runs, and the node reports the collected failure afterwards
+        // by failing the execution with an aggregated error.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 3 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            MaxDegreeOfParallelism = 1, // the AR/BE pin — sequential processing
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 1,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        // Elements 2 and 3 were processed and merged in source order.
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappened(2, Times.Exactly);
+        Assert.Equal(2, dataContext.Length("$.Result"));
+        Assert.Equal(2, dataContext.Get<int>("$.Result[0]"));
+        Assert.Equal(3, dataContext.Get<int>("$.Result[1]"));
+
+        // Downstream nodes ran before the node reported the failure.
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+
+        // The aggregated error names the failed iteration and carries the child exception.
+        Assert.Contains("1 of 3", exception.Message);
+        Assert.Contains("[0]", exception.Message);
+        var aggregate = Assert.IsType<AggregateException>(exception.InnerException);
+        Assert.IsType<MyCustomException>(Assert.Single(aggregate.InnerExceptions));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ContinueOnError_NoFailures_BehavesLikeDefault()
+    {
+        // Guard: with continueOnError enabled but nothing failing, the node must behave
+        // exactly as without the option — full result, next() once, no exception.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 3 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            MaxDegreeOfParallelism = 1,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = -999, // never matches
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappened(3, Times.Exactly);
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        Assert.Equal(3, dataContext.Length("$.Result"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ContinueOnError_AllItemsFail_EmptyResultNextRansReportsAll()
+    {
+        // Even when every element fails, the loop completes: the result is an empty (but
+        // present) array, next() runs, and the aggregated error reports every iteration.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 7 },
+            new JsonObject { ["Id"] = 7 },
+            new JsonObject { ["Id"] = 7 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            MaxDegreeOfParallelism = 1,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 7,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        Assert.Equal(DataKind.Array, dataContext.GetKind("$.Result"));
+        Assert.Equal(0, dataContext.Length("$.Result"));
+        Assert.Contains("3 of 3", exception.Message);
+        var aggregate = Assert.IsType<AggregateException>(exception.InnerException);
+        Assert.Equal(3, aggregate.InnerExceptions.Count);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ContinueOnError_Cancellation_IsNotSwallowed()
+    {
+        // Cancellation is not an iteration failure: it must abort the loop and propagate
+        // instead of being collected into the aggregated error.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 3 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            MaxDegreeOfParallelism = 1,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 1,
+                    ThrowCanceled = true,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ContinueOnError_Parallel_PoisonedItemDoesNotAffectOthers()
+    {
+        // The per-iteration isolation must also hold under parallel execution: one
+        // poisoned element out of 20, the other 19 all complete and merge in order.
+        const int itemCount = 20;
+        var items = new JsonArray();
+        for (var i = 0; i < itemCount; i++) items.Add(new JsonObject { ["Id"] = i });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            MaxDegreeOfParallelism = -1,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 7,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappened(itemCount - 1, Times.Exactly);
+        Assert.Equal(itemCount - 1, dataContext.Length("$.Result"));
+        // Result preserves source order with the poisoned element skipped.
+        var expected = 0;
+        for (var i = 0; i < itemCount - 1; i++)
+        {
+            if (expected == 7) expected++;
+            Assert.Equal(expected, dataContext.Get<int>($"$.Result[{i}]"));
+            expected++;
+        }
+        Assert.Contains("1 of 20", exception.Message);
+        Assert.Contains("[7]", exception.Message);
+    }
+
     // Phase 11 regression: ForEachNode with Path="$" + IterationPath="$.Items" doesn't
     // produce the same shared-data accessible-via-Current behavior as the legacy DataContext.
     // The legacy test specifically reproduced the bug that real nodes (FormatStringNode etc.)

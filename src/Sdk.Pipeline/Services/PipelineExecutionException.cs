@@ -189,4 +189,23 @@ public class PipelineExecutionException : Exception
         return new PipelineExecutionException(
             $"[{nodeContext.NodePath}]: Value not set. Value path: '{valuePath ?? "<not defined>"}'");
     }
+
+    /// <summary>
+    /// Exception thrown when iterations of a loop node failed while the loop continued on error
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="totalCount">Total number of iterations</param>
+    /// <param name="failures">Failed iterations with their source-array indices, ordered by index</param>
+    /// <returns></returns>
+    public static Exception IterationsFailed(NodePath nodePath, int totalCount,
+        IReadOnlyCollection<(uint Index, Exception Error)> failures)
+    {
+        const int maxDetails = 5;
+        var details = string.Join("; ",
+            failures.Take(maxDetails).Select(f => $"[{f.Index}]: {f.Error.Message}"));
+        var more = failures.Count > maxDetails ? $"; +{failures.Count - maxDetails} more" : string.Empty;
+        return new PipelineExecutionException(
+            $"[{nodePath}]: {failures.Count} of {totalCount} iterations failed. {details}{more}",
+            new AggregateException(failures.Select(f => f.Error)));
+    }
 }

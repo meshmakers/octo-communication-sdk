@@ -45,6 +45,17 @@ public record ForEachNodeConfiguration : SourceTargetPathNodeConfiguration, IChi
     /// </summary>
     [PropertyGroup("Execution", 10)]
     public int MaxDegreeOfParallelism { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether the loop continues when an iteration fails.
+    /// Off (default), the first iteration error aborts the loop and propagates unchanged.
+    /// On, iteration errors are logged and collected, the remaining iterations and the
+    /// downstream nodes still run, and the node afterwards fails the execution with an
+    /// aggregated error — a single poisoned element cannot starve the remaining ones,
+    /// while the run still reports every failure. Cancellation always aborts the loop.
+    /// </summary>
+    [PropertyGroup("Execution", 11)]
+    public bool ContinueOnError { get; set; }
 }
 
 /// <summary>
@@ -92,6 +103,10 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         // behavior, so the result is the ordered sequence of non-null items.
         var collected = new ConcurrentBag<(uint Index, JsonNode Item)>();
 
+        // With ContinueOnError, per-iteration failures land here instead of aborting the
+        // loop; they are reported as one aggregated failure after the loop and next() ran.
+        var iterationErrors = c.ContinueOnError ? new ConcurrentQueue<(uint Index, Exception Error)>() : null;
+
         var maxDop = c.MaxDegreeOfParallelism switch
         {
             0 => Environment.ProcessorCount,
@@ -118,7 +133,8 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
                     if (gate is not null) await gate.WaitAsync().ConfigureAwait(false);
                     try
                     {
-                        await RunIterationAsync(factory, aliases, item, index, c, rootNodeContext, collected)
+                        await RunIterationAsync(factory, aliases, item, index, c, rootNodeContext, collected,
+                                iterationErrors)
                             .ConfigureAwait(false);
                     }
                     finally
@@ -138,7 +154,7 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         {
             var index = (uint)i;
             var item = sourceArray[i]?.DeepClone();
-            await RunIterationAsync(factory, aliases, item, index, c, rootNodeContext, collected)
+            await RunIterationAsync(factory, aliases, item, index, c, rootNodeContext, collected, iterationErrors)
                 .ConfigureAwait(false);
         }).ConfigureAwait(false);
 #endif
@@ -152,9 +168,46 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         dataContext.Set(c.TargetPath, resultArray, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
         await next(dataContext, rootNodeContext);
+
+        if (iterationErrors is { IsEmpty: false })
+        {
+            throw PipelineExecutionException.IterationsFailed(rootNodeContext.NodePath, count,
+                iterationErrors.OrderBy(x => x.Index).ToArray());
+        }
     }
 
     private static async Task RunIterationAsync(
+        IIterationContextFactory factory,
+        IReadOnlyList<(string AliasPath, JsonElement Value)> aliases,
+        JsonNode? item,
+        uint index,
+        ForEachNodeConfiguration c,
+        INodeContext rootNodeContext,
+        ConcurrentBag<(uint Index, JsonNode Item)> collected,
+        ConcurrentQueue<(uint Index, Exception Error)>? iterationErrors)
+    {
+        if (iterationErrors is null)
+        {
+            await RunIterationCoreAsync(factory, aliases, item, index, c, rootNodeContext, collected)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            await RunIterationCoreAsync(factory, aliases, item, index, c, rootNodeContext, collected)
+                .ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // Cancellation still aborts the loop; any other iteration failure is isolated
+            // so one poisoned element cannot starve the remaining ones.
+            rootNodeContext.Error(e, "Iteration {Index} failed, continuing with the remaining iterations", index);
+            iterationErrors.Enqueue((index, e));
+        }
+    }
+
+    private static async Task RunIterationCoreAsync(
         IIterationContextFactory factory,
         IReadOnlyList<(string AliasPath, JsonElement Value)> aliases,
         JsonNode? item,
