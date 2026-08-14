@@ -92,6 +92,22 @@ internal class DebugPipelineLogger(ILoggerFactory loggerFactory)
 
     private static string GetMessage(string message, object[] args)
     {
-        return args.Length == 0 ? message : string.Format(message, args);
+        if (args.Length == 0)
+        {
+            return message;
+        }
+
+        try
+        {
+            return string.Format(message, args);
+        }
+        catch (FormatException)
+        {
+            // Callers log with structured templates and named placeholders (e.g.
+            // "Pipeline uses deprecated node {NodeQualifiedName}"), which string.Format
+            // cannot resolve. A diagnostics formatting problem must never escape into
+            // pipeline execution - keep the raw template and append the args instead.
+            return $"{message} [{string.Join(", ", args)}]";
+        }
     }
 }

@@ -121,6 +121,7 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         // netstandard2.0 has no Parallel.ForAsync; fall back to Task.Run + WhenAll with a
         // SemaphoreSlim to honor maxDop. Unlimited (-1) means no semaphore gating.
         SemaphoreSlim? gate = maxDop > 0 ? new SemaphoreSlim(maxDop, maxDop) : null;
+        var abortRequested = 0;
         try
         {
             var tasks = new List<Task>(count);
@@ -133,9 +134,25 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
                     if (gate is not null) await gate.WaitAsync().ConfigureAwait(false);
                     try
                     {
-                        await RunIterationAsync(factory, aliases, item, index, c, rootNodeContext, collected,
-                                iterationErrors)
-                            .ConfigureAwait(false);
+                        // Match Parallel.ForAsync semantics: after a failing iteration (only
+                        // possible without ContinueOnError - with it, failures are collected)
+                        // no further iterations are started; in-flight ones complete.
+                        if (Volatile.Read(ref abortRequested) != 0)
+                        {
+                            return;
+                        }
+
+                        try
+                        {
+                            await RunIterationAsync(factory, aliases, item, index, c, rootNodeContext, collected,
+                                    iterationErrors)
+                                .ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            Interlocked.Exchange(ref abortRequested, 1);
+                            throw;
+                        }
                     }
                     finally
                     {
@@ -186,57 +203,63 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         ConcurrentBag<(uint Index, JsonNode Item)> collected,
         ConcurrentQueue<(uint Index, Exception Error)>? iterationErrors)
     {
-        if (iterationErrors is null)
-        {
-            await RunIterationCoreAsync(factory, aliases, item, index, c, rootNodeContext, collected)
-                .ConfigureAwait(false);
-            return;
-        }
-
+        INodeContext? itemNodeContext = null;
+        IDataContext? itemCtx = null;
         try
         {
-            await RunIterationCoreAsync(factory, aliases, item, index, c, rootNodeContext, collected)
-                .ConfigureAwait(false);
+            await RunIterationCoreAsync().ConfigureAwait(false);
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e) when (iterationErrors is not null && e is not OperationCanceledException)
         {
             // Cancellation still aborts the loop; any other iteration failure is isolated
             // so one poisoned element cannot starve the remaining ones.
-            rootNodeContext.Error(e, "Iteration {Index} failed, continuing with the remaining iterations", index);
             iterationErrors.Enqueue((index, e));
+            try
+            {
+                // Log on the iteration's own context (its node id carries the iteration
+                // index) and close its debug point so debug mode shows the failed
+                // iteration's final state instead of a dangling point. No format args:
+                // diagnostics must never throw out of this error path.
+                itemNodeContext?.Error(e, "Iteration failed, continuing with the remaining iterations");
+                if (itemCtx is not null)
+                {
+                    itemNodeContext?.Unregister(itemCtx);
+                }
+            }
+            catch
+            {
+                // A failing logger or debugger must not abort the remaining iterations.
+            }
         }
-    }
 
-    private static async Task RunIterationCoreAsync(
-        IIterationContextFactory factory,
-        IReadOnlyList<(string AliasPath, JsonElement Value)> aliases,
-        JsonNode? item,
-        uint index,
-        ForEachNodeConfiguration c,
-        INodeContext rootNodeContext,
-        ConcurrentBag<(uint Index, JsonNode Item)> collected)
-    {
-        // Seed the iteration item at the configured KeyPath (default "$.key") rather
-        // than at the child's root. Many pipelines and the default MergePath ($.key)
-        // depend on the item being available under KeyPath. Pass null to the factory
-        // so the child's root stays untouched (so parent fallback continues to work),
-        // then explicitly write the item to KeyPath.
-        var itemCtx = factory.CreateIterationChild(aliases, null);
-        if (item is not null)
+        return;
+
+        async Task RunIterationCoreAsync()
         {
-            itemCtx.Set(c.KeyPath, item);
+            // Seed the iteration item at the configured KeyPath (default "$.key") rather
+            // than at the child's root. Many pipelines and the default MergePath ($.key)
+            // depend on the item being available under KeyPath. Pass null to the factory
+            // so the child's root stays untouched (so parent fallback continues to work),
+            // then explicitly write the item to KeyPath.
+            var ctx = factory.CreateIterationChild(aliases, null);
+            itemCtx = ctx;
+            if (item is not null)
+            {
+                ctx.Set(c.KeyPath, item);
+            }
+            var iterationNodeContext = rootNodeContext.RegisterChildNode(index, c, ctx);
+            itemNodeContext = iterationNodeContext;
+            var arrayNext = new NodeDelegate((ds, _) =>
+            {
+                iterationNodeContext.Unregister(ds);
+                // Get<JsonNode> already returns an exclusively-owned clone — no further copy needed.
+                var mergeItem = ds.Get<JsonNode>(c.MergePath);
+                if (mergeItem is not null) collected.Add((index, mergeItem));
+                return Task.CompletedTask;
+            });
+
+            await ProcessChildTransformationsAsSequenceAsync(ctx, iterationNodeContext, arrayNext, c)
+                .ConfigureAwait(false);
         }
-        var itemNodeContext = rootNodeContext.RegisterChildNode(index, c, itemCtx);
-        var arrayNext = new NodeDelegate((ds, _) =>
-        {
-            itemNodeContext.Unregister(ds);
-            // Get<JsonNode> already returns an exclusively-owned clone — no further copy needed.
-            var mergeItem = ds.Get<JsonNode>(c.MergePath);
-            if (mergeItem is not null) collected.Add((index, mergeItem));
-            return Task.CompletedTask;
-        });
-
-        await ProcessChildTransformationsAsSequenceAsync(itemCtx, itemNodeContext, arrayNext, c)
-            .ConfigureAwait(false);
     }
 }

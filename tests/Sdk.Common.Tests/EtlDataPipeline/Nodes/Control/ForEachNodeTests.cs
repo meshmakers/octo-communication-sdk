@@ -13,6 +13,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Sdk.Common.Tests.Fixtures;
 using Sdk.Common.Tests.TestData;
 using Sdk.Common.Tests.TestData.Dto;
@@ -951,6 +952,9 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
         // The aggregated error names the failed iteration and carries the child exception.
         Assert.Contains("1 of 3", exception.Message);
         Assert.Contains("[0]", exception.Message);
+        // Child exception messages may carry payload content - they belong in the inner
+        // AggregateException (and the per-iteration error log), not in the aggregated text.
+        Assert.DoesNotContain("Poisoned item", exception.Message);
         var aggregate = Assert.IsType<AggregateException>(exception.InnerException);
         Assert.IsType<MyCustomException>(Assert.Single(aggregate.InnerExceptions));
     }
@@ -1004,7 +1008,7 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_ContinueOnError_AllItemsFail_EmptyResultNextRansReportsAll()
+    public async Task ProcessObjectAsync_ContinueOnError_AllItemsFail_EmptyResultNextRunsReportsAll()
     {
         // Even when every element fails, the loop completes: the result is an empty (but
         // present) array, next() runs, and the aggregated error reports every iteration.
@@ -1102,6 +1106,77 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
             () => testee.ProcessObjectAsync(dataContext, nodeContext));
 
         A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ContinueOnError_DebugMode_ProcessesRemainingItems()
+    {
+        // Debug-mode regression (PR #10 review): with the pipeline debugger wired the way the
+        // adapter wires it in debug mode (debugger attached AND the debugger's own logger used
+        // as the pipeline logger), a failing first iteration aborted the whole loop despite
+        // continueOnError. Root cause: the error log call inside the per-iteration catch used a
+        // structured template + args, and DebugPipelineLogger materialises messages via
+        // string.Format, which throws FormatException on named placeholders — the exception
+        // escaped the catch and killed the loop. This test pins the full debug-mode wiring.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 3 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            MaxDegreeOfParallelism = 1,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 1,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var serviceProvider = fixture.Services.BuildServiceProvider();
+        // A hermetic logger factory: the shared fixture may carry an xUnit output logger of an
+        // already-finished test, which throws on use — with continueOnError that throw would be
+        // collected as an iteration failure and corrupt this test's counts.
+        var debugger = new DefaultPipelineDebugger(NullLoggerFactory.Instance);
+        debugger.RegisterPipelineRtEntityId(
+            new RtEntityId("System.Communication/Pipeline", OctoObjectId.GenerateNewId()), Guid.NewGuid());
+
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(serviceProvider, debugger.Logger, dataContext, debugger);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        // The remaining iterations ran and merged despite the debugger being wired.
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappened(2, Times.Exactly);
+        Assert.Equal(2, dataContext.Length("$.Result"));
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        Assert.Contains("1 of 3", exception.Message);
+
+        // The failed iteration's debug point is closed: it carries an output snapshot,
+        // so debug mode shows the iteration's final state instead of a dangling point.
+        var failedIterationPoints = debugger.GetDebugInformation().DebugPoints
+            .Where(dp => dp.NodeId.EndsWith("/[0]"))
+            .ToList();
+        Assert.NotEmpty(failedIterationPoints);
+        Assert.All(failedIterationPoints, dp => Assert.NotNull(dp.Output));
     }
 
     [Fact]
