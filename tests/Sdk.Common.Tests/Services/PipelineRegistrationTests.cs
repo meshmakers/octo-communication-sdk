@@ -322,4 +322,141 @@ public class PipelineRegistrationTests
 
         Assert.Contains("trigger missing", exception.Message.ToLower());
     }
+
+    private (IServiceProvider ServiceProvider, INodeLookupService NodeLookup, ITriggerContext TriggerContext)
+        SetupTriggerNodeFakes(params ITriggerPipelineNode[] nodes)
+    {
+        var serviceProvider = A.Fake<IServiceProvider>();
+        var contextCreatorService = A.Fake<IContextCreatorService>();
+        var nodeLookupService = A.Fake<INodeLookupService>();
+        var logger = A.Fake<IPipelineLogger>();
+
+        A.CallTo(() => serviceProvider.GetService(typeof(IContextCreatorService))).Returns(contextCreatorService);
+        A.CallTo(() => serviceProvider.GetService(typeof(INodeLookupService))).Returns(nodeLookupService);
+        A.CallTo(() => serviceProvider.GetService(typeof(IPipelineLogger))).Returns(logger);
+
+        string? nodeQualifiedName = "TestNode";
+        A.CallTo(() => nodeLookupService.TryGetNodeConfigurationQualifiedName(A<Type>._, out nodeQualifiedName))
+            .Returns(true);
+
+        // Hand out the nodes one per TryCreateInstance call so multi-trigger pipelines get
+        // distinct node instances.
+        var callIndex = 0;
+        ITriggerPipelineNode? outNode = null;
+        A.CallTo(() => nodeLookupService.TryCreateInstance(serviceProvider, nodeQualifiedName, out outNode))
+            .ReturnsLazily(_ => true)
+            .AssignsOutAndRefParametersLazily(_ => new object?[] { nodes[Math.Min(callIndex++, nodes.Length - 1)] });
+
+        var triggerContext = A.Fake<ITriggerContext>();
+        A.CallTo(() => contextCreatorService.CreateTriggerContext(
+                A<string>._, A<OctoObjectId>._, A<RtEntityId>._, A<INodeContext>._, A<IGlobalConfiguration>._))
+            .Returns(triggerContext);
+
+        return (serviceProvider, nodeLookupService, triggerContext);
+    }
+
+    [Fact]
+    public async Task StartTriggerPipelineNodesAsync_SecondTriggerFails_StopsAlreadyStartedTriggers()
+    {
+        // Regression guard (AB#4806): a partially started pipeline must not leak live trigger
+        // nodes — their bus endpoints would keep consuming unmanaged and block re-registration
+        // with RESOURCE_LOCKED on the exclusive command queues.
+        var trigger1Config = A.Fake<TriggerNodeConfiguration>();
+        var trigger2Config = A.Fake<TriggerNodeConfiguration>();
+        var nodeDefinitionRoot = new NodeDefinitionRoot { Triggers = [trigger1Config, trigger2Config] };
+        var pipelineRegistration = CreateTestPipelineRegistration(nodeDefinitionRoot);
+
+        var node1 = A.Fake<ITriggerPipelineNode>();
+        var node2 = A.Fake<ITriggerPipelineNode>();
+        var (serviceProvider, _, _) = SetupTriggerNodeFakes(node1, node2);
+
+        A.CallTo(() => node2.StartAsync(A<ITriggerContext>._))
+            .Throws(new InvalidOperationException("start failed"));
+
+        // Act
+        await Assert.ThrowsAsync<PipelineTriggerExecutionException>(
+            () => pipelineRegistration.StartTriggerPipelineNodesAsync(serviceProvider));
+
+        // Assert: the already-started node 1 was rolled back, and the failed node 2 was stopped
+        // best-effort (it may have partially registered endpoints before throwing).
+        A.CallTo(() => node1.StopAsync(A<ITriggerContext>._)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => node2.StopAsync(A<ITriggerContext>._)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task StartTriggerPipelineNodesAsync_RollbackStopThrows_StillThrowsOriginalError()
+    {
+        // A failing rollback stop must never mask the original start failure.
+        var trigger1Config = A.Fake<TriggerNodeConfiguration>();
+        var trigger2Config = A.Fake<TriggerNodeConfiguration>();
+        var nodeDefinitionRoot = new NodeDefinitionRoot { Triggers = [trigger1Config, trigger2Config] };
+        var pipelineRegistration = CreateTestPipelineRegistration(nodeDefinitionRoot);
+
+        var node1 = A.Fake<ITriggerPipelineNode>();
+        var node2 = A.Fake<ITriggerPipelineNode>();
+        var (serviceProvider, _, _) = SetupTriggerNodeFakes(node1, node2);
+
+        A.CallTo(() => node1.StopAsync(A<ITriggerContext>._))
+            .Throws(new InvalidOperationException("stop failed"));
+        A.CallTo(() => node2.StartAsync(A<ITriggerContext>._))
+            .Throws(new InvalidOperationException("start failed"));
+
+        var exception = await Assert.ThrowsAsync<PipelineTriggerExecutionException>(
+            () => pipelineRegistration.StartTriggerPipelineNodesAsync(serviceProvider));
+
+        Assert.Contains("TestNode", exception.Message);
+        A.CallTo(() => node1.StopAsync(A<ITriggerContext>._)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task StopTriggerPipelineNodesAsync_OneStopFails_StillStopsRemainingNodes()
+    {
+        // Regression guard (AB#4806): aborting the stop loop on the first failing trigger left
+        // the remaining trigger nodes running unmanaged (leaked bus consumers -> RESOURCE_LOCKED
+        // on re-registration). Every node must be attempted; failures are rethrown afterwards.
+        var trigger1Config = A.Fake<TriggerNodeConfiguration>();
+        var trigger2Config = A.Fake<TriggerNodeConfiguration>();
+        var nodeDefinitionRoot = new NodeDefinitionRoot { Triggers = [trigger1Config, trigger2Config] };
+        var pipelineRegistration = CreateTestPipelineRegistration(nodeDefinitionRoot);
+
+        var node1 = A.Fake<ITriggerPipelineNode>();
+        var node2 = A.Fake<ITriggerPipelineNode>();
+        var (serviceProvider, _, _) = SetupTriggerNodeFakes(node1, node2);
+
+        await pipelineRegistration.StartTriggerPipelineNodesAsync(serviceProvider);
+
+        A.CallTo(() => node1.StopAsync(A<ITriggerContext>._))
+            .Throws(new InvalidOperationException("stop failed"));
+        A.CallTo(() => node2.StopAsync(A<ITriggerContext>._))
+            .Throws(new InvalidOperationException("stop failed"));
+
+        // Act: both stops fail -> aggregated failure, but BOTH nodes must have been attempted
+        var exception = await Record.ExceptionAsync(() => pipelineRegistration.StopTriggerPipelineNodesAsync());
+
+        Assert.IsType<AggregateException>(exception);
+        A.CallTo(() => node1.StopAsync(A<ITriggerContext>._)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => node2.StopAsync(A<ITriggerContext>._)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task StopTriggerPipelineNodesAsync_SingleStopFails_ThrowsUnregisterTriggerFailed()
+    {
+        var triggerConfig = A.Fake<TriggerNodeConfiguration>();
+        var nodeDefinitionRoot = new NodeDefinitionRoot { Triggers = [triggerConfig] };
+        var pipelineRegistration = CreateTestPipelineRegistration(nodeDefinitionRoot);
+
+        var node = A.Fake<ITriggerPipelineNode>();
+        var (serviceProvider, _, _) = SetupTriggerNodeFakes(node);
+
+        await pipelineRegistration.StartTriggerPipelineNodesAsync(serviceProvider);
+
+        A.CallTo(() => node.StopAsync(A<ITriggerContext>._))
+            .Throws(new InvalidOperationException("stop failed"));
+
+        var exception = await Record.ExceptionAsync(() => pipelineRegistration.StopTriggerPipelineNodesAsync());
+
+        // PipelineUnregisterTriggerFailed returns the base exception type (pre-existing factory quirk)
+        Assert.IsType<PipelineExecutionException>(exception);
+        Assert.Contains("unregistration failed", exception!.Message);
+    }
 }

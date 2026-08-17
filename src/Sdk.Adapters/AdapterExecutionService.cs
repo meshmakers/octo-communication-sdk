@@ -182,26 +182,38 @@ public class AdapterExecutionService : IAdapterHubCallbacks
 
         try
         {
-            while (true)
-            {
-                (string TenantId, AdapterConfigurationDto Configuration)? pending;
-                lock (_pendingConfigurationGate)
-                {
-                    pending = _pendingConfigurationUpdate;
-                    _pendingConfigurationUpdate = null;
-                }
-
-                if (pending == null)
-                {
-                    break;
-                }
-
-                await ApplyConfigurationUpdateCoreAsync(pending.Value.TenantId, pending.Value.Configuration);
-            }
+            await DrainPendingConfigurationUpdatesAsync();
         }
         finally
         {
             _configurationUpdateLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Applies every configuration update parked in the pending slot. Must be called while
+    /// holding <see cref="_configurationUpdateLock"/>. Shared between the push path
+    /// (<see cref="ApplyConfigurationUpdateAsync"/>) and the registration path, which drains
+    /// updates that arrived (or timed out waiting) while the initial startup held the lock
+    /// (AB#4806).
+    /// </summary>
+    private async Task DrainPendingConfigurationUpdatesAsync()
+    {
+        while (true)
+        {
+            (string TenantId, AdapterConfigurationDto Configuration)? pending;
+            lock (_pendingConfigurationGate)
+            {
+                pending = _pendingConfigurationUpdate;
+                _pendingConfigurationUpdate = null;
+            }
+
+            if (pending == null)
+            {
+                break;
+            }
+
+            await ApplyConfigurationUpdateCoreAsync(pending.Value.TenantId, pending.Value.Configuration);
         }
     }
 
@@ -298,7 +310,6 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                     _logger.Info("Registration successfull");
 
                     List<DeploymentUpdateErrorMessageDto> deploymentErrorMessages = [];
-                    bool success;
                     if (!isReconnect)
                     {
                         var tenantId = _adapterOptions.Value.TenantId;
@@ -307,41 +318,68 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                             return;
                         }
 
-                        // Ensure that the adapter is shutdown before starting it up again
-                        // to stop e.g. trigger nodes that are still running
-                        _logger.Info("Ensure shutdown adapter before startup.");
-                        await _adapterService.ShutdownAsync(new AdapterShutdown { TenantId = tenantId },
-                            cancellationToken);
-                        _logger.Info("Shutdown adapter before startup done.");
-
-                        _logger.Info("Startup of adapter is executed.");
-                        success = await _adapterService.StartupAsync(
-                            new AdapterStartup { TenantId = tenantId, Configuration = configuration },
-                            deploymentErrorMessages, cancellationToken);
-                        _logger.Info("Startup of adapter done.");
-
-                        // Fresh process: resolve executions orphaned by the previous process.
-                        // Its in-memory tasks were lost on restart, so the controller fails any of
-                        // this adapter's Running/Interrupted executions that started before this
-                        // process began — they can no longer complete or report a result (AB#4280).
-                        if (_executionReporter != null)
+                        // The register-return configuration applied here and the controller's
+                        // reconcile push (AdapterConfigurationUpdatedAsync, fired on every
+                        // registration since AB#4594) race when applied concurrently — pipelines
+                        // ended up registered twice, leaving orphaned bus consumers that block the
+                        // exclusive command queues with RESOURCE_LOCKED (AB#4806). Startup
+                        // therefore runs under the same configuration update lock as the push
+                        // path; pushes arriving (or timing out) meanwhile are parked in the
+                        // pending slot and drained below, where the value-equality check turns an
+                        // identical reconcile push into a no-op.
+                        _logger.Info("Waiting for configuration update lock before initial adapter startup");
+                        await _configurationUpdateLock.WaitAsync(cancellationToken);
+                        bool success;
+                        try
                         {
-                            _logger.Info("Resolving executions orphaned by a previous adapter process (if any).");
-                            await _executionReporter.FailOrphanedExecutionsAsync(_processStartUtc);
+                            // Ensure that the adapter is shutdown before starting it up again
+                            // to stop e.g. trigger nodes that are still running
+                            _logger.Info("Ensure shutdown adapter before startup.");
+                            await _adapterService.ShutdownAsync(new AdapterShutdown { TenantId = tenantId },
+                                cancellationToken);
+                            _logger.Info("Shutdown adapter before startup done.");
+
+                            _logger.Info("Startup of adapter is executed.");
+                            success = await _adapterService.StartupAsync(
+                                new AdapterStartup { TenantId = tenantId, Configuration = configuration },
+                                deploymentErrorMessages, cancellationToken);
+                            _logger.Info("Startup of adapter done.");
+
+                            // Fresh process: resolve executions orphaned by the previous process.
+                            // Its in-memory tasks were lost on restart, so the controller fails any of
+                            // this adapter's Running/Interrupted executions that started before this
+                            // process began — they can no longer complete or report a result (AB#4280).
+                            if (_executionReporter != null)
+                            {
+                                _logger.Info("Resolving executions orphaned by a previous adapter process (if any).");
+                                await _executionReporter.FailOrphanedExecutionsAsync(_processStartUtc);
+                            }
+
+                            _logger.Info("Sending deployment result to adapter hub");
+                            await _hubClient.SendDeploymentUpdateResultAsync(rtEntityId,
+                                new DeploymentResult { IsSuccess = success, ErrorMessages = deploymentErrorMessages });
+                            _logger.Info("Deployment result sent to adapter hub");
+
+                            // Apply configuration pushes that were parked while startup held the lock,
+                            // AFTER the registration result went out so the controller sees the states
+                            // in the order they were produced.
+                            await DrainPendingConfigurationUpdatesAsync();
+                        }
+                        finally
+                        {
+                            _configurationUpdateLock.Release();
                         }
                     }
                     else
                     {
-                        success = true;
-
                         // Handle interrupted executions after reconnect
                         await HandleInterruptedExecutionsAsync();
-                    }
 
-                    _logger.Info("Sending deployment result to adapter hub");
-                    await _hubClient.SendDeploymentUpdateResultAsync(rtEntityId,
-                        new DeploymentResult { IsSuccess = success, ErrorMessages = deploymentErrorMessages });
-                    _logger.Info("Deployment result sent to adapter hub");
+                        _logger.Info("Sending deployment result to adapter hub");
+                        await _hubClient.SendDeploymentUpdateResultAsync(rtEntityId,
+                            new DeploymentResult { IsSuccess = true, ErrorMessages = deploymentErrorMessages });
+                        _logger.Info("Deployment result sent to adapter hub");
+                    }
                 }
                 catch (ObjectDisposedException)
                 {
@@ -372,6 +410,12 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                     {
                         _logger.Warn(ex, "Failed to send deployment error result during reconnect");
                     }
+
+                    // Rethrow after the best-effort error report: swallowing the failure made the
+                    // SignalR (re)connect loop treat a failed registration as success and exit —
+                    // the adapter then sat unregistered on a dead control plane forever (AB#4805).
+                    // The loop in SignalRClient catches this and retries.
+                    throw;
                 }
             }
 

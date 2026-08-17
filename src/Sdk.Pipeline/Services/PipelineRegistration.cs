@@ -210,6 +210,26 @@ public record PipelineRegistration(
             }
             catch (Exception e)
             {
+                // A partially started pipeline must not leak live trigger nodes: the registration
+                // object is discarded by the caller on failure, so anything left running here would
+                // keep consuming unmanaged — and its bus endpoints would block every later
+                // re-registration of the same pipeline with RESOURCE_LOCKED on the exclusive
+                // command queues (AB#4806). Best-effort stop of the failed node itself (it may have
+                // partially registered endpoints before throwing) and of every node started so far,
+                // then rethrow.
+                try
+                {
+                    await node.StopAsync(triggerContext);
+                }
+                catch (Exception stopError)
+                {
+                    triggerContext.NodeContext.Error(stopError,
+                        "Failed to stop trigger node {NodeQualifiedName} after its start failed",
+                        nodeQualifiedName);
+                }
+
+                await StopStartedTriggerNodesBestEffortAsync();
+
                 throw PipelineTriggerExecutionException.PipelineRegisterTriggerFailed(TenantId, PipelineRtEntityId,
                     nodeQualifiedName, e);
             }
@@ -217,7 +237,32 @@ public record PipelineRegistration(
     }
 
     /// <summary>
-    /// Unregister a triggerable extract node
+    /// Stops and drains every trigger node started so far, swallowing individual stop failures.
+    /// Used to roll back a partially started pipeline (AB#4806).
+    /// </summary>
+    private async Task StopStartedTriggerNodesBestEffortAsync()
+    {
+        while (_triggerPipelineNodes.TryTake(out var triggerTuple))
+        {
+            try
+            {
+                await triggerTuple.Item1.StopAsync(triggerTuple.Item2);
+            }
+            catch (Exception e)
+            {
+                triggerTuple.Item2.NodeContext.Error(e,
+                    "Failed to stop trigger node at {NodePath} while rolling back a partially started pipeline",
+                    triggerTuple.Item2.NodeContext.NodePath);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Unregister a triggerable extract node.
+    /// Every trigger node is stopped even when an earlier one throws — aborting mid-way used to
+    /// leave the remaining nodes running unmanaged (their bus endpoints kept consuming and blocked
+    /// re-registration with RESOURCE_LOCKED on the exclusive command queues, AB#4806). Failures
+    /// are collected and rethrown after all nodes were attempted.
     /// </summary>
     public async Task StopTriggerPipelineNodesAsync()
     {
@@ -226,7 +271,8 @@ public record PipelineRegistration(
             throw PipelineExecutionException.PipelineTriggerMissing(TenantId, PipelineRtEntityId);
         }
 
-        foreach (var triggerTuple in _triggerPipelineNodes)
+        List<Exception>? failures = null;
+        while (_triggerPipelineNodes.TryTake(out var triggerTuple))
         {
             try
             {
@@ -234,9 +280,22 @@ public record PipelineRegistration(
             }
             catch (Exception e)
             {
-                throw PipelineTriggerExecutionException.PipelineUnregisterTriggerFailed(TenantId, PipelineRtEntityId,
-                    triggerTuple.Item2.NodeContext.NodePath, e);
+                failures ??= [];
+                failures.Add(PipelineTriggerExecutionException.PipelineUnregisterTriggerFailed(TenantId,
+                    PipelineRtEntityId, triggerTuple.Item2.NodeContext.NodePath, e));
             }
+        }
+
+        if (failures is { Count: 1 })
+        {
+            throw failures[0];
+        }
+
+        if (failures is { Count: > 1 })
+        {
+            throw new AggregateException(
+                $"Stopping trigger nodes of pipeline '{PipelineRtEntityId}' (tenant '{TenantId}') failed for {failures.Count} nodes.",
+                failures);
         }
     }
 }

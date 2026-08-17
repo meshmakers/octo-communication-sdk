@@ -92,7 +92,7 @@ public class AdapterExecutionServiceTests
     }
 
     [Fact]
-    public async Task StartAsync_ReconnectFunction_WhenRegisterThrows_WrapsErrorReportingInTryCatch()
+    public async Task StartAsync_ReconnectFunction_WhenRegisterThrows_ReportsBestEffortAndRethrows()
     {
         // Arrange
         Func<bool, Task>? capturedReconnectFunc = null;
@@ -114,11 +114,14 @@ public class AdapterExecutionServiceTests
         A.CallTo(() => _hubClient.SendDeploymentUpdateResultAsync(A<RtEntityId>._, A<DeploymentResult>._))
             .Throws(new ObjectDisposedException("HubConnection"));
 
-        // Act: invoke the reconnect function - should NOT throw even though both calls fail
+        // Act & Assert: the failed error report is swallowed (best effort), but the ORIGINAL
+        // registration failure must propagate — the SignalR reconnect loop uses it to keep
+        // retrying. Swallowing it made the loop treat a failed registration as success and exit,
+        // leaving the adapter permanently unregistered (AB#4805).
         var exception = await Record.ExceptionAsync(() => capturedReconnectFunc(true));
 
-        // Assert: errors are caught internally
-        Assert.Null(exception);
+        Assert.IsType<InvalidOperationException>(exception);
+        Assert.Equal("Registration failed", exception.Message);
     }
 
     [Fact]
@@ -397,6 +400,79 @@ public class AdapterExecutionServiceTests
                 A<RtEntityId>._,
                 A<DeploymentResult>.That.Matches(r => !r.IsSuccess)))
             .MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task InitialStartup_HoldsConfigurationLock_ReconcilePushIsAppliedAfterStartup()
+    {
+        // Regression guard (AB#4806): the register-return configuration (applied via
+        // Shutdown+Startup in the reconnect function) and the controller's reconcile push
+        // (AdapterConfigurationUpdatedAsync, fired on every registration since AB#4594) used to
+        // race — pipelines got registered twice and orphaned bus consumers blocked the exclusive
+        // command queues with RESOURCE_LOCKED. The initial startup must hold the configuration
+        // update lock; a push arriving meanwhile is parked and applied strictly AFTER startup.
+        Func<bool, Task>? capturedReconnectFunc = null;
+        A.CallTo(() => _hubClient.StartAsync(A<Func<bool, Task>>._, A<CancellationToken>._))
+            .Invokes((Func<bool, Task> func, CancellationToken _) => capturedReconnectFunc = func)
+            .Returns(Task.CompletedTask);
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .Returns(CreateTestAdapterConfiguration());
+
+        var startupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStartup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        A.CallTo(() => _adapterService.StartupAsync(A<AdapterStartup>._, A<List<DeploymentUpdateErrorMessageDto>>._,
+                A<CancellationToken>._))
+            .ReturnsLazily(async (AdapterStartup _, List<DeploymentUpdateErrorMessageDto> _, CancellationToken _) =>
+            {
+                startupEntered.TrySetResult();
+                await releaseStartup.Task;
+                return true;
+            });
+        A.CallTo(() => _pipelineRegistryService.UpdatePipelinesAsync(
+                A<string>._, A<ICollection<PipelineConfigurationDto>>._, A<List<DeploymentUpdateErrorMessageDto>>._))
+            .Returns(true);
+
+        await _service.StartAsync(CancellationToken.None);
+        Assert.NotNull(capturedReconnectFunc);
+
+        // Act: initial registration runs and blocks inside StartupAsync while holding the lock
+        var initialStartupTask = capturedReconnectFunc!(false);
+        var entered = await Task.WhenAny(startupEntered.Task, Task.Delay(5000, TestContext.Current.CancellationToken));
+        Assert.Equal(startupEntered.Task, entered);
+
+        // A reconcile push arrives while startup is still running
+        var pushedConfiguration = CreateTestAdapterConfiguration();
+        await _service.AdapterConfigurationUpdatedAsync("testTenant", pushedConfiguration);
+        await Task.Delay(300, TestContext.Current.CancellationToken);
+
+        // The push must NOT have been applied concurrently with the running startup
+        A.CallTo(() => _pipelineRegistryService.UpdatePipelinesAsync(
+                A<string>._, A<ICollection<PipelineConfigurationDto>>._, A<List<DeploymentUpdateErrorMessageDto>>._))
+            .MustNotHaveHappened();
+
+        // Unblock startup — the parked push must now be applied exactly once
+        releaseStartup.TrySetResult();
+        await initialStartupTask;
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                A.CallTo(() => _pipelineRegistryService.UpdatePipelinesAsync(
+                        "testTenant", pushedConfiguration.Pipelines, A<List<DeploymentUpdateErrorMessageDto>>._))
+                    .MustHaveHappenedOnceExactly();
+                break;
+            }
+            catch (FakeItEasy.ExpectationException)
+            {
+                await Task.Delay(50, TestContext.Current.CancellationToken);
+            }
+        }
+
+        A.CallTo(() => _pipelineRegistryService.UpdatePipelinesAsync(
+                "testTenant", pushedConfiguration.Pipelines, A<List<DeploymentUpdateErrorMessageDto>>._))
+            .MustHaveHappenedOnceExactly();
     }
 
     [Fact]
