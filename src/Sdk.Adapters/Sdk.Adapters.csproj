@@ -40,13 +40,13 @@
         <!-- Sdk.Common holds AssemblyMetadataReader + EnumerableExtensions used here. -->
         <PackageReference Include="Meshmakers.Octo.Sdk.Common" Version="$(OctoCoreLibVersion)" />
         <PackageReference Include="Meshmakers.Octo.Sdk.ServiceClient" Version="$(OctoCoreLibVersion)" />
-        <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.9" />
-        <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.9" />
-        <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
-        <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.9" />
-        <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.9" />
-        <PackageReference Include="NLog" Version="6.1.3" />
-        <PackageReference Include="NLog.Extensions.Logging" Version="6.1.3" />
+        <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.11" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
+        <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
+        <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.11" />
+        <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.11" />
+        <PackageReference Include="NLog" Version="6.2.0" />
+        <PackageReference Include="NLog.Extensions.Logging" Version="6.2.0" />
     </ItemGroup>
 
     <ItemGroup>
