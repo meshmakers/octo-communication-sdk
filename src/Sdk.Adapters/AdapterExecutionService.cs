@@ -153,6 +153,19 @@ public class AdapterExecutionService : IAdapterHubCallbacks
 
     internal TimeSpan ConfigurationUpdateLockTimeout { get; set; } = TimeSpan.FromSeconds(90);
 
+    /// <summary>
+    /// Bounds every wait on the adapter implementation's <see cref="IAdapterService.ShutdownAsync"/>.
+    /// An unbounded shutdown hang (stuck trigger stop / bus stop) froze the nightly
+    /// PreUpdateTenant restart for days and left the adapter without a hub connection (AB#4876).
+    /// </summary>
+    internal TimeSpan AdapterShutdownTimeout { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Bounds hub invokes on the stop path — an unregister over a half-dead connection must not
+    /// block the restart sequence (AB#4876).
+    /// </summary>
+    internal TimeSpan HubInvokeTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
     private readonly object _pendingConfigurationGate = new();
     private (string TenantId, AdapterConfigurationDto Configuration)? _pendingConfigurationUpdate;
 
@@ -327,16 +340,22 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                         // path; pushes arriving (or timing out) meanwhile are parked in the
                         // pending slot and drained below, where the value-equality check turns an
                         // identical reconcile push into a no-op.
+                        // Bounded wait: a lock holder stuck in an unbounded await would otherwise
+                        // freeze the SignalR start loop forever with no log line (AB#4876). The
+                        // throw is caught by the start loop, which retries visibly.
                         _logger.Info("Waiting for configuration update lock before initial adapter startup");
-                        await _configurationUpdateLock.WaitAsync(cancellationToken);
+                        if (!await _configurationUpdateLock.WaitAsync(ConfigurationUpdateLockTimeout, cancellationToken))
+                        {
+                            throw new TimeoutException(
+                                $"Timed out after {ConfigurationUpdateLockTimeout} waiting for the configuration update lock before initial adapter startup");
+                        }
                         bool success;
                         try
                         {
                             // Ensure that the adapter is shutdown before starting it up again
                             // to stop e.g. trigger nodes that are still running
                             _logger.Info("Ensure shutdown adapter before startup.");
-                            await _adapterService.ShutdownAsync(new AdapterShutdown { TenantId = tenantId },
-                                cancellationToken);
+                            await ShutdownAdapterBoundedAsync(tenantId, cancellationToken);
                             _logger.Info("Shutdown adapter before startup done.");
 
                             _logger.Info("Startup of adapter is executed.");
@@ -462,14 +481,37 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                 return;
             }
 
-            await _adapterService.ShutdownAsync(new AdapterShutdown { TenantId = tenantId }, cancellationToken);
+            // Serialize the shutdown with configuration updates: the nightly PreUpdateTenant
+            // restart used to run UnregisterAllPipelines concurrently with a selective pipeline
+            // update on the same registry and hung forever (AB#4876). Best effort — after the
+            // timeout we proceed, a bounded race beats an unbounded freeze.
+            var lockTaken =
+                await _configurationUpdateLock.WaitAsync(ConfigurationUpdateLockTimeout, CancellationToken.None);
+            if (!lockTaken)
+            {
+                _logger.Warn(
+                    "Timed out after {Timeout} waiting for the configuration update lock before adapter shutdown, proceeding without it",
+                    ConfigurationUpdateLockTimeout);
+            }
+
+            try
+            {
+                await ShutdownAdapterBoundedAsync(tenantId, cancellationToken);
+            }
+            finally
+            {
+                if (lockTaken)
+                {
+                    _configurationUpdateLock.Release();
+                }
+            }
 
             try
             {
                 if (!string.IsNullOrWhiteSpace(_adapterOptions.Value.AdapterRtId))
                 {
                     var rtEntityId = GetAdapterRtEntityId();
-                    await _hubClient.UnRegisterAdapterAsync(rtEntityId);
+                    await _hubClient.UnRegisterAdapterAsync(rtEntityId).WaitAsync(HubInvokeTimeout);
                 }
             }
             catch (Exception e)
@@ -484,6 +526,26 @@ public class AdapterExecutionService : IAdapterHubCallbacks
         catch (Exception e)
         {
             _logger.Error(e, "Error during deinitialization of adapter execution service");
+        }
+    }
+
+    /// <summary>
+    /// Runs <see cref="IAdapterService.ShutdownAsync"/> bounded by <see cref="AdapterShutdownTimeout"/>.
+    /// On timeout the stuck shutdown keeps running in the background and the caller proceeds —
+    /// the alternative was a restart sequence frozen for days with the hub connection dead (AB#4876).
+    /// </summary>
+    private async Task ShutdownAdapterBoundedAsync(string tenantId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _adapterService.ShutdownAsync(new AdapterShutdown { TenantId = tenantId }, cancellationToken)
+                .WaitAsync(AdapterShutdownTimeout);
+        }
+        catch (TimeoutException)
+        {
+            _logger.Error(
+                "Adapter shutdown did not complete within {Timeout}, proceeding anyway; the stuck shutdown keeps running in the background",
+                AdapterShutdownTimeout);
         }
     }
 

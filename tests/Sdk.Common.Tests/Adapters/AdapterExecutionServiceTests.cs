@@ -514,4 +514,147 @@ public class AdapterExecutionServiceTests
                 A<CancellationToken>._))
             .MustHaveHappened();
     }
+
+    private System.Threading.SemaphoreSlim GetConfigurationUpdateLock()
+    {
+        var field = typeof(AdapterExecutionService).GetField("_configurationUpdateLock",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(field);
+        return (System.Threading.SemaphoreSlim)field!.GetValue(_service)!;
+    }
+
+    [Fact]
+    public async Task StopAsync_WhenShutdownHangs_ProceedsAfterTimeoutAndStopsHubClient()
+    {
+        // Regression guard (AB#4876): an adapter ShutdownAsync stuck in an unbounded await froze
+        // the nightly PreUpdateTenant restart for days — the hub client was never stopped or
+        // restarted and the adapter sat without a hub connection until a pod restart.
+        _service.AdapterShutdownTimeout = TimeSpan.FromMilliseconds(100);
+        A.CallTo(() => _adapterService.ShutdownAsync(A<AdapterShutdown>._, A<CancellationToken>._))
+            .Returns(new TaskCompletionSource<bool>().Task);
+
+        var stopTask = _service.StopAsync(CancellationToken.None);
+        var completed = await Task.WhenAny(stopTask, Task.Delay(5000, TestContext.Current.CancellationToken));
+
+        Assert.Equal(stopTask, completed);
+        A.CallTo(() => _hubClient.StopAsync()).MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task StopAsync_HoldsConfigurationUpdateLockDuringShutdown()
+    {
+        // Regression guard (AB#4876): the PreUpdateTenant restart's shutdown ran concurrently
+        // with a configuration update's pipeline-registry mutation and hung. StopAsync must
+        // serialize its shutdown with the configuration update lock.
+        var lockHeldDuringShutdown = false;
+        A.CallTo(() => _adapterService.ShutdownAsync(A<AdapterShutdown>._, A<CancellationToken>._))
+            .ReturnsLazily(() =>
+            {
+                lockHeldDuringShutdown = GetConfigurationUpdateLock().CurrentCount == 0;
+                return Task.CompletedTask;
+            });
+
+        await _service.StopAsync(CancellationToken.None);
+
+        Assert.True(lockHeldDuringShutdown);
+        Assert.Equal(1, GetConfigurationUpdateLock().CurrentCount);
+    }
+
+    [Fact]
+    public async Task StopAsync_WhenConfigurationUpdateLockHeld_ProceedsAfterTimeout()
+    {
+        // A configuration update stuck while holding the lock must not freeze the stop path —
+        // after the bounded wait the shutdown proceeds without the lock (AB#4876).
+        _service.ConfigurationUpdateLockTimeout = TimeSpan.FromMilliseconds(100);
+        await GetConfigurationUpdateLock().WaitAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var stopTask = _service.StopAsync(CancellationToken.None);
+            var completed = await Task.WhenAny(stopTask, Task.Delay(5000, TestContext.Current.CancellationToken));
+
+            Assert.Equal(stopTask, completed);
+            A.CallTo(() => _adapterService.ShutdownAsync(A<AdapterShutdown>._, A<CancellationToken>._))
+                .MustHaveHappened();
+            A.CallTo(() => _hubClient.StopAsync()).MustHaveHappened();
+        }
+        finally
+        {
+            GetConfigurationUpdateLock().Release();
+        }
+    }
+
+    [Fact]
+    public async Task StopAsync_WhenUnregisterHangs_ProceedsAfterTimeout()
+    {
+        // The unregister hub invoke over a half-dead connection must not block the restart
+        // sequence (AB#4876) — the hub client still gets stopped.
+        _service.HubInvokeTimeout = TimeSpan.FromMilliseconds(100);
+        A.CallTo(() => _hubClient.UnRegisterAdapterAsync(A<RtEntityId>._))
+            .Returns(new TaskCompletionSource<bool>().Task);
+
+        var stopTask = _service.StopAsync(CancellationToken.None);
+        var completed = await Task.WhenAny(stopTask, Task.Delay(5000, TestContext.Current.CancellationToken));
+
+        Assert.Equal(stopTask, completed);
+        A.CallTo(() => _hubClient.StopAsync()).MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task StartAsync_ReconnectFunction_InitialStart_WhenLockHeld_ThrowsTimeout()
+    {
+        // A lock holder stuck forever used to freeze the SignalR start loop silently with no
+        // recovery (AB#4876). The bounded wait turns that into a visible, retryable failure.
+        Func<bool, Task>? capturedReconnectFunc = null;
+        A.CallTo(() => _hubClient.StartAsync(A<Func<bool, Task>>._, A<CancellationToken>._))
+            .Invokes((Func<bool, Task> func, CancellationToken _) => capturedReconnectFunc = func)
+            .Returns(Task.CompletedTask);
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .Returns(CreateTestAdapterConfiguration());
+
+        await _service.StartAsync(CancellationToken.None);
+        Assert.NotNull(capturedReconnectFunc);
+
+        _service.ConfigurationUpdateLockTimeout = TimeSpan.FromMilliseconds(100);
+        await GetConfigurationUpdateLock().WaitAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var exception = await Record.ExceptionAsync(() => capturedReconnectFunc!(false));
+            Assert.IsType<TimeoutException>(exception);
+        }
+        finally
+        {
+            GetConfigurationUpdateLock().Release();
+        }
+    }
+
+    [Fact]
+    public async Task StartAsync_ReconnectFunction_InitialStart_WhenShutdownHangs_ProceedsToStartup()
+    {
+        // A hung pre-startup shutdown must not freeze the initial registration — after the
+        // bounded wait the startup proceeds (pipeline registration replaces stale registrations
+        // idempotently), instead of leaving the adapter without a hub connection (AB#4876).
+        _service.AdapterShutdownTimeout = TimeSpan.FromMilliseconds(100);
+        Func<bool, Task>? capturedReconnectFunc = null;
+        A.CallTo(() => _hubClient.StartAsync(A<Func<bool, Task>>._, A<CancellationToken>._))
+            .Invokes((Func<bool, Task> func, CancellationToken _) => capturedReconnectFunc = func)
+            .Returns(Task.CompletedTask);
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .Returns(CreateTestAdapterConfiguration());
+        A.CallTo(() => _adapterService.ShutdownAsync(A<AdapterShutdown>._, A<CancellationToken>._))
+            .Returns(new TaskCompletionSource<bool>().Task);
+        A.CallTo(() => _adapterService.StartupAsync(A<AdapterStartup>._, A<List<DeploymentUpdateErrorMessageDto>>._,
+                A<CancellationToken>._))
+            .Returns(true);
+
+        await _service.StartAsync(CancellationToken.None);
+        Assert.NotNull(capturedReconnectFunc);
+
+        var runTask = capturedReconnectFunc!(false);
+        var completed = await Task.WhenAny(runTask, Task.Delay(5000, TestContext.Current.CancellationToken));
+
+        Assert.Equal(runTask, completed);
+        A.CallTo(() => _adapterService.StartupAsync(A<AdapterStartup>._, A<List<DeploymentUpdateErrorMessageDto>>._,
+                A<CancellationToken>._))
+            .MustHaveHappened();
+    }
 }
