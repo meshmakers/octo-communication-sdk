@@ -5,6 +5,16 @@
 - name: OCTO_SYSTEM__REPLICASETNAME
   value: {{ .Values.clusterDependencies.mongodbReplicaSet | quote }}
 {{- end }}
+{{- if .Values.clusterDependencies.systemDatabaseName }}
+{{/*
+  Instance isolation (Epic AB#4944): the tenant registry lives in this database and the
+  adapter resolves its own tenant through it, so it must match the core services'
+  serviceDefaults.systemDatabaseName. Omitted when unset — a single-instance cluster keeps
+  the adapter's compiled-in default.
+*/}}
+- name: OCTO_SYSTEM__SYSTEMDATABASENAME
+  value: {{ .Values.clusterDependencies.systemDatabaseName | quote }}
+{{- end }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__DATABASEUSERPASSWORD" "value" .Values.secrets.databaseUser "legacyKey" "databaseUser" "context" .) }}
 {{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_SYSTEM__ADMINUSERPASSWORD" "value" .Values.secrets.databaseAdmin "legacyKey" "databaseAdmin" "context" .) }}
 {{- end }}
@@ -22,6 +32,15 @@
   value: {{ .global.Values.clusterDependencies.streamDataHost | quote }}
 - name: {{ printf "%s__STREAMDATAUSER" (upper .name) }}
   value: {{ .global.Values.clusterDependencies.streamDataUser | quote }}
+{{- if .global.Values.clusterDependencies.streamDataSchemaInstancePrefix }}
+{{/*
+  AB#4946 / Epic AB#4944: prefixes the tenant's CrateDB schema so a second instance does not
+  read and write the first one's data. Root "StreamData" config section, hence no service
+  prefix. Omitted when unset — the legacy, unprefixed schema names stay unchanged.
+*/}}
+- name: OCTO_STREAMDATA__SCHEMAINSTANCEPREFIX
+  value: {{ .global.Values.clusterDependencies.streamDataSchemaInstancePrefix | quote }}
+{{- end }}
 {{ include "octo-mesh.secretEnv" (dict "envName" (printf "%s__STREAMDATAPASSWORD" (upper .name)) "value" .global.Values.secrets.streamDataPassword "legacyKey" "streamDataPassword" "context" .global) }}
 {{- end }}
 

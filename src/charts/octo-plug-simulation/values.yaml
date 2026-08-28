@@ -68,6 +68,11 @@ clusterDependencies:
   rabbitMqUser: "octo-mq-user"
   streamDataHost: "crate-octo-crate.cratedb.svc.cluster.local"
   streamDataUser: "octo-system"
+  # Instance isolation (Epic AB#4944), supplied by the communication operator from its own
+  # OperatorOptions.ClusterDependencies. Empty = single-instance cluster: the adapter keeps
+  # its compiled-in system database ("OctoSystem") and the unprefixed CrateDB schema names.
+  systemDatabaseName: ""
+  streamDataSchemaInstancePrefix: ""
 
 image:
   repository: meshmakers/octo-communication-adapter-simulation
