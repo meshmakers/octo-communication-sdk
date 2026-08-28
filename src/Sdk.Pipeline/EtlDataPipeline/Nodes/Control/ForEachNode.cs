@@ -98,6 +98,13 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
                 throw PipelineExecutionException.ConfigurationPropertyRequires(rootNodeContext.NodePath,
                     nameof(c.ErrorsPath), nameof(c.ContinueOnError));
             }
+            if (string.Equals(c.ErrorsPath, c.TargetPath, StringComparison.Ordinal))
+            {
+                // The errors are written after the result, so the same path would silently
+                // replace the result array instead of failing.
+                throw PipelineExecutionException.ConfigurationPropertiesMustDiffer(rootNodeContext.NodePath,
+                    nameof(c.ErrorsPath), nameof(c.TargetPath), c.ErrorsPath);
+            }
         }
 
         if (!dataContext.Exists(c.Path))

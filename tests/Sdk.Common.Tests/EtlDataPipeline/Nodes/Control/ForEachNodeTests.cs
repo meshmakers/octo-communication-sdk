@@ -1376,6 +1376,52 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_SameAsTargetPath_Fails()
+    {
+        // The errors are written after the result, so pointing both at the same path would
+        // silently destroy the result array. That collision is rejected up front.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 3 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "$.Result",
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
+        Assert.Contains(nameof(ForEachNodeConfiguration.TargetPath), exception.Message);
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+        Assert.False(dataContext.Exists("$.Result"));
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_ErrorsPathNull_ContinueOnError_StillThrowsAggregate()
     {
         // Inertness: the option defaults to null (not configured) and then nothing changes -

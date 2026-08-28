@@ -235,4 +235,19 @@ public class PipelineExecutionException : Exception
         return new PipelineExecutionException(
             $"[{nodePath}]: Configuration property '{configurationPropertyName}' is set but empty");
     }
+
+    /// <summary>
+    /// Exception thrown when two configuration properties must not address the same path
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="firstPropertyName">Name of the first configuration property</param>
+    /// <param name="secondPropertyName">Name of the second configuration property</param>
+    /// <param name="path">The path both properties address</param>
+    /// <returns></returns>
+    public static Exception ConfigurationPropertiesMustDiffer(NodePath nodePath, string firstPropertyName,
+        string secondPropertyName, string path)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Configuration properties '{firstPropertyName}' and '{secondPropertyName}' must not both address '{path}'");
+    }
 }
