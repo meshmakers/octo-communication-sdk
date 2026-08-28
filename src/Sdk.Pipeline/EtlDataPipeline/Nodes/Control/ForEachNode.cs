@@ -56,6 +56,20 @@ public record ForEachNodeConfiguration : SourceTargetPathNodeConfiguration, IChi
     /// </summary>
     [PropertyGroup("Execution", 11)]
     public bool ContinueOnError { get; set; }
+
+    /// <summary>
+    /// Gets or sets the path the collected iteration errors are written to. Requires
+    /// <see cref="ContinueOnError"/>.
+    /// Unset (default), iteration errors are only logged and reported afterwards as the
+    /// aggregated execution error.
+    /// Set, the collected errors are written to this path as an array of
+    /// <c>{ index, errorType, message }</c> objects - empty when nothing failed - before the
+    /// downstream nodes run, and the node no longer fails the execution afterwards: the pipeline
+    /// owns the errors and decides itself whether the run turns red, for example by routing the
+    /// failed items to a quarantine or by a later node that throws.
+    /// </summary>
+    [PropertyGroup("Paths", 5, "jsonpath")]
+    public string? ErrorsPath { get; set; }
 }
 
 /// <summary>
@@ -69,6 +83,22 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
     public override async Task ProcessObjectAsync(IDataContext dataContext, INodeContext rootNodeContext)
     {
         var c = rootNodeContext.GetNodeConfiguration<ForEachNodeConfiguration>();
+
+        // Configuration guards run before any data work: errorsPath only has meaning while the
+        // loop keeps collecting failures instead of aborting on the first one.
+        if (c.ErrorsPath is not null)
+        {
+            if (string.IsNullOrWhiteSpace(c.ErrorsPath))
+            {
+                throw PipelineExecutionException.ConfigurationPropertyEmpty(rootNodeContext.NodePath,
+                    nameof(c.ErrorsPath));
+            }
+            if (!c.ContinueOnError)
+            {
+                throw PipelineExecutionException.ConfigurationPropertyRequires(rootNodeContext.NodePath,
+                    nameof(c.ErrorsPath), nameof(c.ContinueOnError));
+            }
+        }
 
         if (!dataContext.Exists(c.Path))
         {

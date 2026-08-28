@@ -209,4 +209,30 @@ public class PipelineExecutionException : Exception
             $"[{nodePath}]: {failures.Count} of {totalCount} iterations failed. Failed indices: {details}{more}",
             new AggregateException(failures.Select(f => f.Error)));
     }
+
+    /// <summary>
+    /// Exception thrown when a configuration property is only valid together with another one
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="configurationPropertyName">Name of the configured property</param>
+    /// <param name="requiredPropertyName">Name of the property it requires</param>
+    /// <returns></returns>
+    public static Exception ConfigurationPropertyRequires(NodePath nodePath, string configurationPropertyName,
+        string requiredPropertyName)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Configuration property '{configurationPropertyName}' requires '{requiredPropertyName}' to be enabled");
+    }
+
+    /// <summary>
+    /// Exception thrown when a configuration property is set but carries no value
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="configurationPropertyName">Name of the configured property</param>
+    /// <returns></returns>
+    public static Exception ConfigurationPropertyEmpty(NodePath nodePath, string configurationPropertyName)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Configuration property '{configurationPropertyName}' is set but empty");
+    }
 }
