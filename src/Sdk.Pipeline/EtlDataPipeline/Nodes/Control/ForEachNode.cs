@@ -118,6 +118,10 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         {
             // No items to iterate. Still produce an empty result array and continue.
             dataContext.Set(c.TargetPath, new JsonArray(), c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
+            if (c.ErrorsPath is not null)
+            {
+                dataContext.Set(c.ErrorsPath, new JsonArray());
+            }
             await next(dataContext, rootNodeContext);
             return;
         }
@@ -214,13 +218,47 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         foreach (var (_, item) in collected.OrderBy(x => x.Index)) resultArray.Add(item);
         dataContext.Set(c.TargetPath, resultArray, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
 
+        // After the result write, whose DocumentMode may reset the document root, and before the
+        // downstream nodes - they are the ones that act on the failures.
+        if (c.ErrorsPath is not null)
+        {
+            dataContext.Set(c.ErrorsPath, BuildIterationErrors(iterationErrors));
+        }
+
         await next(dataContext, rootNodeContext);
 
-        if (iterationErrors is { IsEmpty: false })
+        // With ErrorsPath the pipeline owns the errors and decides itself whether the run turns
+        // red; without it the collected failures are reported as the aggregated execution error.
+        if (iterationErrors is { IsEmpty: false } && c.ErrorsPath is null)
         {
             throw PipelineExecutionException.IterationsFailed(rootNodeContext.NodePath, count,
                 iterationErrors.OrderBy(x => x.Index).ToArray());
         }
+    }
+
+    // Iteration failures as pipeline data: the same (index, exception) pairs the aggregated error
+    // reports, in ascending index order so the array lines up with the source array. Child
+    // exception messages belong here - a pipeline routing failed items needs them - unlike in the
+    // aggregated error text, which stays free of payload content.
+    private static JsonArray BuildIterationErrors(ConcurrentQueue<(uint Index, Exception Error)>? iterationErrors)
+    {
+        var errors = new JsonArray();
+        if (iterationErrors is null)
+        {
+            return errors;
+        }
+
+        foreach (var (index, error) in iterationErrors.OrderBy(x => x.Index))
+        {
+            errors.Add(new JsonObject
+            {
+                ["index"] = index,
+                ["errorType"] = error.GetType().Name,
+                ["message"] = error.Message
+            });
+        }
+
+        return errors;
     }
 
     private static async Task RunIterationAsync(
