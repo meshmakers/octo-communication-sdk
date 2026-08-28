@@ -54,6 +54,16 @@ public class AdapterOptions
     public bool IgnoreCertificateValidation { get; set; }
 
     /// <summary>
+    ///     When true (the default), the adapter eagerly warms the tenant's CK model cache right
+    ///     after startup instead of paying the model load on the first pipeline execution
+    ///     (AB#4920, on-demand lifecycle Epic AB#4914 — after a wake from 0 replicas the first
+    ///     request would otherwise carry the full model-load latency). The warm-up runs in the
+    ///     background and never blocks startup or readiness; set to false to restore the pure
+    ///     lazy-load behaviour (env <c>OCTO_ADAPTER__EAGERCKMODELLOAD=false</c>).
+    /// </summary>
+    public bool EagerCkModelLoad { get; set; } = true;
+
+    /// <summary>
     ///     Gets or sets the RabbitMQ broker host name
     /// </summary>
     public string BrokerHost { get; set; }
