@@ -34,4 +34,10 @@ public class ExecutePipelineOptions(DateTime transactionStartedDateTime)
     /// the debug stream (M4-B.2). Default false preserves classic semantics.
     /// </summary>
     public bool IsDryRun { get; set; }
+
+    /// <summary>
+    /// Gets or sets the authenticated caller of the trigger, verified by the trigger's own
+    /// authorization (AB#4975). Null for anonymous and internal triggers.
+    /// </summary>
+    public VerifiedPrincipal? VerifiedPrincipal { get; set; }
 }

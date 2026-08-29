@@ -1,5 +1,6 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 
@@ -48,4 +49,11 @@ public interface IEtlContext
     /// Gets the global configuration for the pipeline
     /// </summary>
     IGlobalConfiguration GlobalConfiguration { get; }
+
+    /// <summary>
+    /// Gets the authenticated caller of the trigger, verified by the trigger's own authorization
+    /// (AB#4975). Null for anonymous and internal triggers. Deliberately NOT part of
+    /// <see cref="Properties" /> — that dictionary is shared across pipeline runs.
+    /// </summary>
+    VerifiedPrincipal? VerifiedPrincipal => null;
 }

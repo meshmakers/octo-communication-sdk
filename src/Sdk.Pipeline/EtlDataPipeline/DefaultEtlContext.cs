@@ -19,8 +19,10 @@ public class DefaultEtlContext : IEtlContext
     /// <param name="externalReceivedDateTime">Date and time when the value was received by an optional external system</param>
     /// <param name="globalConfiguration">Global configuration for the pipeline provided by associating configuration to a pipeline</param>
     /// <param name="properties">properties that are shared between the different stages of the ETL process and different runs of the pipeline</param>
-    public DefaultEtlContext(string tenantId, OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime transactionStartedDateTime, DateTime? externalReceivedDateTime, IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties)
+    /// <param name="verifiedPrincipal">Authenticated caller of the trigger, if any (AB#4975)</param>
+    public DefaultEtlContext(string tenantId, OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime transactionStartedDateTime, DateTime? externalReceivedDateTime, IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties, Services.VerifiedPrincipal? verifiedPrincipal = null)
     {
+        VerifiedPrincipal = verifiedPrincipal;
         TenantId = tenantId;
         PipelineExecutionId = pipelineExecutionId;
         DataFlowRtId = dataFlowRtId;
@@ -54,4 +56,7 @@ public class DefaultEtlContext : IEtlContext
 
     /// <inheritdoc />
     public IGlobalConfiguration GlobalConfiguration { get; }
+
+    /// <inheritdoc />
+    public Services.VerifiedPrincipal? VerifiedPrincipal { get; }
 }
