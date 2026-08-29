@@ -145,6 +145,18 @@ stages:
               chartTgzPath: $(Build.artifactstagingdirectory)/octo-plug-simulation-$(ChartVersion).tgz
               githubTokenVariable: HelmChartBuildGhToken
               condition: and(succeeded(), eq(variables.isMain, true))
+          # Test-line publish (AB#4948) — same dev bucket, but
+          # derive-chart-version tags a test branch as a SemVer prerelease, which
+          # Helm hides from every "newest chart" resolution. A 0.2 instance pins
+          # the version; everyone with an empty ChartVersion keeps main's charts.
+          - template: ci-templates/publish-helm-chart.yml@helmChartBuild
+            parameters:
+              channel: dev
+              chartName: octo-plug-simulation
+              chartVersion: $(ChartVersion)
+              chartTgzPath: $(Build.artifactstagingdirectory)/octo-plug-simulation-$(ChartVersion).tgz
+              githubTokenVariable: HelmChartBuildGhToken
+              condition: and(succeeded(), eq(variables.isTest, true))
           - template: ci-templates/publish-helm-chart.yml@helmChartBuild
             parameters:
               channel: release
