@@ -35,10 +35,30 @@ public sealed class PipelineRegistryService(
     // PipelineRegistration behind while the DTO map already holds the new configuration (AB#4559).
     private readonly SemaphoreSlim _registryLock = new(1, 1);
 
+    /// <summary>
+    /// Bounds every wait on <see cref="_registryLock"/>. The lock used to be acquired unbounded;
+    /// when an abandoned shutdown kept holding it (its trigger stop hung in a MassTransit
+    /// endpoint stop), the next registration blocked forever with no log line while the pod
+    /// reported healthy and Configured (AB#4968). Failing loudly turns that silent wedge into an
+    /// error deployment result the controller can show - and the SignalR start loop retries, so
+    /// the registration succeeds once the lock holder finishes or times out itself.
+    /// </summary>
+    internal TimeSpan RegistryLockTimeout { get; set; } = TimeSpan.FromMinutes(3);
+
+    private async Task AcquireRegistryLockAsync(string operation)
+    {
+        if (!await _registryLock.WaitAsync(RegistryLockTimeout))
+        {
+            throw new TimeoutException(
+                $"Timed out after {RegistryLockTimeout} waiting for the pipeline registry lock ({operation}). " +
+                "A previous registry operation is stuck, most likely an abandoned shutdown whose trigger stop hangs (AB#4968).");
+        }
+    }
+
     /// <inheritdoc />
     public async Task RegisterPipelineAsync(string tenantId, PipelineConfigurationDto pipelineConfiguration)
     {
-        await _registryLock.WaitAsync();
+        await AcquireRegistryLockAsync(nameof(RegisterPipelineAsync));
         try
         {
             await RegisterPipelineCoreAsync(tenantId, pipelineConfiguration);
@@ -110,7 +130,7 @@ public sealed class PipelineRegistryService(
         ICollection<PipelineConfigurationDto> pipelineConfigurations,
         List<DeploymentUpdateErrorMessageDto> deploymentErrorMessages)
     {
-        await _registryLock.WaitAsync();
+        await AcquireRegistryLockAsync(nameof(RegisterPipelinesAsync));
         try
         {
             // Unregister any surviving registrations so their trigger nodes are stopped; a bare
@@ -155,7 +175,7 @@ public sealed class PipelineRegistryService(
     /// <inheritdoc />
     public async Task UnregisterPipelineAsync(string tenantId, RtEntityId pipelineRtEntityId)
     {
-        await _registryLock.WaitAsync();
+        await AcquireRegistryLockAsync(nameof(UnregisterPipelineAsync));
         try
         {
             await UnregisterPipelineCoreAsync(tenantId, pipelineRtEntityId);
@@ -189,7 +209,7 @@ public sealed class PipelineRegistryService(
     /// <inheritdoc />
     public async Task UnregisterAllPipelinesAsync(string tenantId)
     {
-        await _registryLock.WaitAsync();
+        await AcquireRegistryLockAsync(nameof(UnregisterAllPipelinesAsync));
         try
         {
             foreach (var kvp in _pipelineRegistrationsByDataFlowId.Where(x =>
@@ -214,7 +234,7 @@ public sealed class PipelineRegistryService(
         ICollection<PipelineConfigurationDto> pipelineConfigurations,
         List<DeploymentUpdateErrorMessageDto> deploymentErrorMessages)
     {
-        await _registryLock.WaitAsync();
+        await AcquireRegistryLockAsync(nameof(UpdatePipelinesAsync));
         try
         {
             // Build lookup of new configurations by PipelineRtEntityId

@@ -482,6 +482,83 @@ public class PipelineRegistryServiceTests
         A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._)).MustHaveHappened();
     }
 
+    [Fact]
+    public async Task UnregisterPipelineAsync_TriggerStopHangs_ReturnsBoundedAndLeavesRegistryUsable()
+    {
+        // AB#4968: a trigger stop that never completes (observed live: a MassTransit receive
+        // endpoint stop on a bus that was never started) used to pin the unregister - and with it
+        // the registry lock - forever. The stop is now bounded per node; the failure surfaces
+        // through the existing failure collection and the registry stays usable.
+        var tenantId = _faker.Random.Guid().ToString();
+        var pipelineConfig = CreateTestPipelineConfiguration();
+        A.CallTo(() => _configurationSerializer.DeserializeAsync(pipelineConfig.NodeConfiguration))
+            .Returns(CreateTestNodeDefinitionRoot());
+        var triggerNode = SetupTriggerNodeMocks();
+        A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._))
+            .ReturnsLazily(_ => new TaskCompletionSource().Task);
+
+        await _service.RegisterPipelineAsync(tenantId, pipelineConfig);
+        Assert.True(_service.TryGetPipelineRegistration(tenantId, pipelineConfig.PipelineRtEntityId,
+            out var registration));
+        registration!.TriggerStopTimeout = TimeSpan.FromMilliseconds(200);
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() =>
+            _service.UnregisterPipelineAsync(tenantId, pipelineConfig.PipelineRtEntityId));
+
+        // The timeout is reported, the registration is gone regardless of the hanging stop, and
+        // the registry lock is free again: the follow-up registration must succeed instead of
+        // blocking forever.
+        Assert.Contains(nameof(TimeoutException), ex.ToString());
+        Assert.False(_service.IsRegistered(tenantId, pipelineConfig.PipelineRtEntityId));
+
+        var secondConfig = CreateTestPipelineConfiguration("second-configuration");
+        A.CallTo(() => _configurationSerializer.DeserializeAsync(secondConfig.NodeConfiguration))
+            .Returns(CreateTestNodeDefinitionRoot());
+        await _service.RegisterPipelineAsync(tenantId, secondConfig);
+        Assert.True(_service.IsRegistered(tenantId, secondConfig.PipelineRtEntityId));
+    }
+
+    [Fact]
+    public async Task RegistryLock_HeldByHangingUnregister_TimesOutLoudlyInsteadOfHangingForever()
+    {
+        // AB#4968: while an abandoned unregister holds the registry lock, every later registry
+        // operation used to block silently with no log line - the adapter reported healthy and
+        // Configured while serving nothing. The lock wait is now bounded and fails with a
+        // descriptive exception.
+        var tenantId = _faker.Random.Guid().ToString();
+        var pipelineConfig = CreateTestPipelineConfiguration();
+        A.CallTo(() => _configurationSerializer.DeserializeAsync(pipelineConfig.NodeConfiguration))
+            .Returns(CreateTestNodeDefinitionRoot());
+        var triggerNode = SetupTriggerNodeMocks();
+        var stopBlocked = new TaskCompletionSource();
+        A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._))
+            .ReturnsLazily(_ => stopBlocked.Task);
+
+        await _service.RegisterPipelineAsync(tenantId, pipelineConfig);
+        Assert.True(_service.TryGetPipelineRegistration(tenantId, pipelineConfig.PipelineRtEntityId,
+            out var registration));
+        registration!.TriggerStopTimeout = TimeSpan.FromSeconds(30);
+        _service.RegistryLockTimeout = TimeSpan.FromMilliseconds(200);
+
+        var hangingUnregister = _service.UnregisterPipelineAsync(tenantId, pipelineConfig.PipelineRtEntityId);
+
+        // The core unregister removes the registration BEFORE stopping the trigger nodes, so an
+        // observed removal guarantees the unregister is inside the hanging stop and holds the lock.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (_service.IsRegistered(tenantId, pipelineConfig.PipelineRtEntityId) && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        }
+        Assert.False(_service.IsRegistered(tenantId, pipelineConfig.PipelineRtEntityId));
+
+        var ex = await Assert.ThrowsAsync<TimeoutException>(() => _service.UnregisterAllPipelinesAsync(tenantId));
+        Assert.Contains("pipeline registry lock", ex.Message);
+
+        // Release the hanging stop so the first unregister completes cleanly.
+        stopBlocked.SetResult();
+        await hangingUnregister;
+    }
+
     private ITriggerPipelineNode SetupTriggerNodeMocks()
     {
         var triggerNode = A.Fake<ITriggerPipelineNode>();

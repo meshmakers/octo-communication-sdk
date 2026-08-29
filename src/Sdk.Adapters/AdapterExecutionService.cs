@@ -166,6 +166,14 @@ public class AdapterExecutionService : IAdapterHubCallbacks
     /// </summary>
     internal TimeSpan HubInvokeTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// Bounds the register invoke of the (re)connect path. Observed live (AB#4968): the invoke
+    /// blocked silently for six minutes — the SignalR watchdog does not cover it because the
+    /// connection state stays Connected — and nothing in the log pointed at the stall. On
+    /// timeout the start loop retries visibly; registration is idempotent on the controller.
+    /// </summary>
+    internal TimeSpan RegisterInvokeTimeout { get; set; } = TimeSpan.FromSeconds(90);
+
     private readonly object _pendingConfigurationGate = new();
     private (string TenantId, AdapterConfigurationDto Configuration)? _pendingConfigurationUpdate;
 
@@ -300,27 +308,34 @@ public class AdapterExecutionService : IAdapterHubCallbacks
             {
                 try
                 {
-                    _logger.Info("Registering at adapter hub");
-
                     var rtEntityId = GetAdapterRtEntityId();
-                    var nodeDescriptorDtos = GetNodeDescriptorDtos();
-                    var pipelineSchemaJson = GetPipelineSchemaJson();
-                    AdapterConfigurationDto configuration;
-                    if (nodeDescriptorDtos != null && pipelineSchemaJson != null)
+
+                    async Task<AdapterConfigurationDto> RegisterAtHubAsync()
                     {
-                        _logger.Info("Registering with {NodeCount} node descriptors and pipeline schema", nodeDescriptorDtos.Count);
-                        configuration = await _hubClient.RegisterAdapterWithSchemaAsync(rtEntityId, nodeDescriptorDtos, pipelineSchemaJson);
+                        _logger.Info("Registering at adapter hub");
+
+                        var nodeDescriptorDtos = GetNodeDescriptorDtos();
+                        var pipelineSchemaJson = GetPipelineSchemaJson();
+                        Task<AdapterConfigurationDto> registerTask;
+                        if (nodeDescriptorDtos != null && pipelineSchemaJson != null)
+                        {
+                            _logger.Info("Registering with {NodeCount} node descriptors and pipeline schema", nodeDescriptorDtos.Count);
+                            registerTask = _hubClient.RegisterAdapterWithSchemaAsync(rtEntityId, nodeDescriptorDtos, pipelineSchemaJson);
+                        }
+                        else if (nodeDescriptorDtos != null)
+                        {
+                            _logger.Info("Registering with {NodeCount} node descriptors", nodeDescriptorDtos.Count);
+                            registerTask = _hubClient.RegisterAdapterWithNodesAsync(rtEntityId, nodeDescriptorDtos);
+                        }
+                        else
+                        {
+                            registerTask = _hubClient.RegisterAdapterAsync(rtEntityId);
+                        }
+
+                        var registeredConfiguration = await registerTask.WaitAsync(RegisterInvokeTimeout, cancellationToken);
+                        _logger.Info("Registration successfull");
+                        return registeredConfiguration;
                     }
-                    else if (nodeDescriptorDtos != null)
-                    {
-                        _logger.Info("Registering with {NodeCount} node descriptors", nodeDescriptorDtos.Count);
-                        configuration = await _hubClient.RegisterAdapterWithNodesAsync(rtEntityId, nodeDescriptorDtos);
-                    }
-                    else
-                    {
-                        configuration = await _hubClient.RegisterAdapterAsync(rtEntityId);
-                    }
-                    _logger.Info("Registration successfull");
 
                     List<DeploymentUpdateErrorMessageDto> deploymentErrorMessages = [];
                     if (!isReconnect)
@@ -335,11 +350,17 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                         // reconcile push (AdapterConfigurationUpdatedAsync, fired on every
                         // registration since AB#4594) race when applied concurrently — pipelines
                         // ended up registered twice, leaving orphaned bus consumers that block the
-                        // exclusive command queues with RESOURCE_LOCKED (AB#4806). Startup
-                        // therefore runs under the same configuration update lock as the push
-                        // path; pushes arriving (or timing out) meanwhile are parked in the
-                        // pending slot and drained below, where the value-equality check turns an
-                        // identical reconcile push into a no-op.
+                        // exclusive command queues with RESOURCE_LOCKED (AB#4806).
+                        // The lock is taken BEFORE the register invoke, and that ordering is
+                        // load-bearing (AB#4968): the controller fires the push from inside the
+                        // register RPC, so taking the lock only afterwards let the push win the
+                        // race — it then registered every pipeline (bus triggers included) on an
+                        // adapter whose event hub had never started, the ensure-shutdown below
+                        // hung stopping those triggers, and its abandoned continuation kept the
+                        // pipeline registry lock forever: Configured with zero routes, no
+                        // recovery. With the lock held from here on, a push arriving during
+                        // registration parks in the pending slot and is drained below, where the
+                        // value-equality check turns an identical reconcile push into a no-op.
                         // Bounded wait: a lock holder stuck in an unbounded await would otherwise
                         // freeze the SignalR start loop forever with no log line (AB#4876). The
                         // throw is caught by the start loop, which retries visibly.
@@ -352,6 +373,8 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                         bool success;
                         try
                         {
+                            var configuration = await RegisterAtHubAsync();
+
                             // Ensure that the adapter is shutdown before starting it up again
                             // to stop e.g. trigger nodes that are still running
                             _logger.Info("Ensure shutdown adapter before startup.");
@@ -391,6 +414,8 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                     }
                     else
                     {
+                        await RegisterAtHubAsync();
+
                         // Handle interrupted executions after reconnect
                         await HandleInterruptedExecutionsAsync();
 

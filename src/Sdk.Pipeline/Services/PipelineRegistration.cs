@@ -258,6 +258,13 @@ public record PipelineRegistration(
     }
 
     /// <summary>
+    /// Bounds each individual trigger node stop during unregistration. See the comment inside
+    /// <see cref="StopTriggerPipelineNodesAsync"/> for why an unbounded stop is a process-wide
+    /// deadlock (AB#4968). Internal so tests can shrink it.
+    /// </summary>
+    internal TimeSpan TriggerStopTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// Unregister a triggerable extract node.
     /// Every trigger node is stopped even when an earlier one throws — aborting mid-way used to
     /// leave the remaining nodes running unmanaged (their bus endpoints kept consuming and blocked
@@ -276,7 +283,14 @@ public record PipelineRegistration(
         {
             try
             {
-                await triggerTuple.Item1.StopAsync(triggerTuple.Item2);
+                // Bounded: a single hanging trigger stop must not pin the whole unregister.
+                // Observed live (AB#4968): a MassTransit receive-endpoint stop on a bus that was
+                // never started waits for the endpoint's ready state forever; the unregister then
+                // held the registry lock indefinitely and every later registration deadlocked on
+                // it. The abandoned stop keeps running in the background - the registration is
+                // already removed from the registry either way, and surfacing the timeout through
+                // the existing failure collection is strictly better than never returning.
+                await triggerTuple.Item1.StopAsync(triggerTuple.Item2).WaitAsync(TriggerStopTimeout);
             }
             catch (Exception e)
             {

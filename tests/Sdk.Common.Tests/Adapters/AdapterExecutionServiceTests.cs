@@ -657,4 +657,54 @@ public class AdapterExecutionServiceTests
                 A<CancellationToken>._))
             .MustHaveHappened();
     }
+
+    [Fact]
+    public async Task InitialStartup_ReconcilePushArrivingDuringRegister_IsAppliedOnlyAfterStartup()
+    {
+        // AB#4968: the controller fires a reconcile configuration push from inside the register
+        // RPC. When that push won the configuration update lock before the initial startup took
+        // it, it registered every pipeline on an adapter whose event hub had never started; the
+        // ensure-shutdown then hung stopping those triggers, and its abandoned continuation kept
+        // the pipeline registry lock forever - Configured with zero routes, no recovery. The lock
+        // is therefore taken BEFORE the register invoke: a push arriving mid-registration parks
+        // in the pending slot and is drained only after StartupAsync completed.
+        Func<bool, Task>? capturedReconnectFunc = null;
+        A.CallTo(() => _hubClient.StartAsync(A<Func<bool, Task>>._, A<CancellationToken>._))
+            .Invokes((Func<bool, Task> func, CancellationToken _) => capturedReconnectFunc = func)
+            .Returns(Task.CompletedTask);
+
+        var pushConfiguration = CreateTestAdapterConfiguration();
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .ReturnsLazily(_ =>
+            {
+                // Simulate the controller-side reconcile push fired inside the register RPC. The
+                // callback itself returns immediately (the apply runs on a background task).
+                _service.AdapterConfigurationUpdatedAsync("testTenant", pushConfiguration)
+                    .GetAwaiter().GetResult();
+                // Keep the register invoke in flight long enough for the push's background task
+                // to reach the configuration update lock.
+                Thread.Sleep(300);
+                return Task.FromResult(CreateTestAdapterConfiguration());
+            });
+
+        A.CallTo(() => _adapterService.StartupAsync(A<AdapterStartup>._,
+                A<List<DeploymentUpdateErrorMessageDto>>._, A<CancellationToken>._))
+            .Returns(true);
+        A.CallTo(() => _pipelineRegistryService.UpdatePipelinesAsync(A<string>._,
+                A<ICollection<PipelineConfigurationDto>>._, A<List<DeploymentUpdateErrorMessageDto>>._))
+            .Returns(true);
+
+        await _service.StartAsync(CancellationToken.None);
+        Assert.NotNull(capturedReconnectFunc);
+
+        await capturedReconnectFunc!(false);
+
+        // The parked push is drained exactly once, and only after the initial startup ran.
+        A.CallTo(() => _adapterService.StartupAsync(A<AdapterStartup>._,
+                A<List<DeploymentUpdateErrorMessageDto>>._, A<CancellationToken>._))
+            .MustHaveHappenedOnceExactly()
+            .Then(A.CallTo(() => _pipelineRegistryService.UpdatePipelinesAsync(A<string>._,
+                    A<ICollection<PipelineConfigurationDto>>._, A<List<DeploymentUpdateErrorMessageDto>>._))
+                .MustHaveHappenedOnceExactly());
+    }
 }
