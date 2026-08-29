@@ -8,6 +8,7 @@ namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 /// Configuration for polling extract node
 /// </summary>
 [NodeName("FromPolling", 1)]
+[NodeRequiresRunningProcess]
 // ReSharper disable once ClassNeverInstantiated.Global
 public record FromPollingNodeConfiguration : TriggerNodeConfiguration
 {

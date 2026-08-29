@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 
 namespace Sdk.Common.Tests.EtlDataPipeline.Configuration;
 
@@ -200,6 +201,16 @@ public record DeprecatedNodeConfiguration : NodeConfiguration
 [NodeName("TestDeprecatedNoMessage", 1)]
 [NodeDeprecated]
 public record DeprecatedWithoutMessageNodeConfiguration : NodeConfiguration
+{
+    public string? Name { get; set; }
+}
+
+/// <summary>
+/// Test trigger configuration carrying a [NodeRequiresRunningProcess] attribute (AB#4984).
+/// </summary>
+[NodeName("TestProcessBound", 1)]
+[NodeRequiresRunningProcess]
+public record ProcessBoundTriggerNodeConfiguration : TriggerNodeConfiguration
 {
     public string? Name { get; set; }
 }
@@ -843,6 +854,45 @@ public class NodeSchemaRegistryTests
         Assert.NotNull(descriptor);
         Assert.False(descriptor.IsDeprecated);
         Assert.Null(descriptor.DeprecationMessage);
+    }
+
+    #endregion
+
+    #region NodeRequiresRunningProcess extension (AB#4984)
+
+    [Fact]
+    public void BuildDescriptor_NodeRequiresRunningProcessAttribute_SetsDescriptorFlagAndSchemaExtension()
+    {
+        var schema = GetSchemaForConfig<ProcessBoundTriggerNodeConfiguration>("TestProcessBound@1");
+        Assert.True(schema["x-requiresRunningProcess"]?.GetValue<bool>());
+
+        var registry = CreateRegistryWithConfig<ProcessBoundTriggerNodeConfiguration>("TestProcessBound@1");
+        var descriptor = registry.GetDescriptor("TestProcessBound@1");
+        Assert.NotNull(descriptor);
+        Assert.True(descriptor.RequiresRunningProcess);
+    }
+
+    [Fact]
+    public void BuildDescriptor_NoRequiresRunningProcessAttribute_HasNoMarker()
+    {
+        var schema = GetSchemaForConfig<NoEnumNodeConfiguration>("TestNoEnum@1");
+        Assert.Null(schema["x-requiresRunningProcess"]);
+
+        var registry = CreateRegistryWithConfig<NoEnumNodeConfiguration>("TestNoEnum@1");
+        var descriptor = registry.GetDescriptor("TestNoEnum@1");
+        Assert.NotNull(descriptor);
+        Assert.False(descriptor.RequiresRunningProcess);
+    }
+
+    [Fact]
+    public void BuildDescriptor_FromPolling_IsProcessBound()
+    {
+        // The in-process polling trigger is the canonical process-bound node — pin its
+        // self-description so the controller-side classification keeps working (AB#4984).
+        var registry = CreateRegistryWithConfig<FromPollingNodeConfiguration>("FromPolling@1");
+        var descriptor = registry.GetDescriptor("FromPolling@1");
+        Assert.NotNull(descriptor);
+        Assert.True(descriptor.RequiresRunningProcess);
     }
 
     #endregion

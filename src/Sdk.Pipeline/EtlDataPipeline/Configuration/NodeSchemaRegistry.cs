@@ -90,6 +90,7 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
 
         var category = DeriveCategory(configType, nodeType, isTrigger);
         var deprecatedAttr = configType.GetCustomAttribute<NodeDeprecatedAttribute>();
+        var requiresRunningProcess = configType.GetCustomAttribute<NodeRequiresRunningProcessAttribute>() != null;
 
         string schemaJson;
         try
@@ -114,6 +115,7 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
             schemaJson = InjectPropertyGroupExtensions(schemaJson, configType);
             schemaJson = InjectNodeKindExtension(schemaJson, configType);
             schemaJson = InjectDeprecatedExtension(schemaJson, deprecatedAttr);
+            schemaJson = InjectRequiresRunningProcessExtension(schemaJson, requiresRunningProcess);
         }
         catch (Exception)
         {
@@ -122,7 +124,7 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
         }
 
         return new NodeDescriptor(nodeName, version, category, isTrigger, supportsChildren, schemaJson,
-            deprecatedAttr != null, deprecatedAttr?.Message);
+            deprecatedAttr != null, deprecatedAttr?.Message, requiresRunningProcess);
     }
 
     private static JsonObject ParseObject(string schemaJson)
@@ -236,6 +238,20 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
         {
             root["x-deprecationMessage"] = deprecatedAttr.Message;
         }
+        return SerializeObject(root);
+    }
+
+    /// <summary>
+    /// Injects the [NodeRequiresRunningProcess] attribute as the node-level JSON Schema extension
+    /// "x-requiresRunningProcess" (true). Consumed by the graphical editor to flag process-bound
+    /// triggers on on-demand workloads (AB#4984). No-op when the config type has no attribute.
+    /// </summary>
+    private static string InjectRequiresRunningProcessExtension(string schemaJson, bool requiresRunningProcess)
+    {
+        if (!requiresRunningProcess) return schemaJson;
+
+        var root = ParseObject(schemaJson);
+        root["x-requiresRunningProcess"] = true;
         return SerializeObject(root);
     }
 

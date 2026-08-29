@@ -730,7 +730,8 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                 d.SupportsChildren,
                 d.ConfigurationSchemaJson,
                 d.IsDeprecated,
-                d.DeprecationMessage)).ToList();
+                d.DeprecationMessage,
+                d.RequiresRunningProcess)).ToList();
         }
         catch (Exception e)
         {

@@ -11,6 +11,10 @@ namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 /// <param name="ConfigurationSchemaJson">JSON Schema string describing the configuration</param>
 /// <param name="IsDeprecated">Whether this node is deprecated (see <see cref="NodeDeprecatedAttribute"/>)</param>
 /// <param name="DeprecationMessage">Optional reason or migration hint when the node is deprecated</param>
+/// <param name="RequiresRunningProcess">
+///     Whether this trigger node only works while the adapter process is running
+///     (see <see cref="NodeRequiresRunningProcessAttribute"/>)
+/// </param>
 public record NodeDescriptor(
     string NodeName,
     int Version,
@@ -19,4 +23,5 @@ public record NodeDescriptor(
     bool SupportsChildren,
     string ConfigurationSchemaJson,
     bool IsDeprecated = false,
-    string? DeprecationMessage = null);
+    string? DeprecationMessage = null,
+    bool RequiresRunningProcess = false);
