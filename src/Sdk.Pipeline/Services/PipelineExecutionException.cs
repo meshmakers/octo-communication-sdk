@@ -209,4 +209,60 @@ public class PipelineExecutionException : Exception
             $"[{nodePath}]: {failures.Count} of {totalCount} iterations failed. Failed indices: {details}{more}",
             new AggregateException(failures.Select(f => f.Error)));
     }
+
+    /// <summary>
+    /// Exception thrown when a configuration property is only valid together with another one
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="configurationPropertyName">Name of the configured property</param>
+    /// <param name="requiredPropertyName">Name of the property it requires</param>
+    /// <returns></returns>
+    public static Exception ConfigurationPropertyRequires(NodePath nodePath, string configurationPropertyName,
+        string requiredPropertyName)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Configuration property '{configurationPropertyName}' requires '{requiredPropertyName}' to be enabled");
+    }
+
+    /// <summary>
+    /// Exception thrown when a configuration property is set but carries no value
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="configurationPropertyName">Name of the configured property</param>
+    /// <returns></returns>
+    public static Exception ConfigurationPropertyEmpty(NodePath nodePath, string configurationPropertyName)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Configuration property '{configurationPropertyName}' is set but empty");
+    }
+
+    /// <summary>
+    /// Exception thrown when a configuration property contains a path that cannot be written to
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="configurationPropertyName">Name of the configuration property</param>
+    /// <param name="reason">Why the path is not writable; carries the offending path</param>
+    /// <returns></returns>
+    public static Exception ConfigurationPropertyPathInvalid(NodePath nodePath, string configurationPropertyName,
+        string reason)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Configuration property '{configurationPropertyName}' contains an invalid path: {reason}");
+    }
+
+    /// <summary>
+    /// Exception thrown when two configuration properties address overlapping paths
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="firstPropertyName">Name of the first configuration property</param>
+    /// <param name="secondPropertyName">Name of the second configuration property</param>
+    /// <param name="firstPath">Path the first property addresses</param>
+    /// <param name="secondPath">Path the second property addresses</param>
+    /// <returns></returns>
+    public static Exception ConfigurationPropertyPathsMustNotOverlap(NodePath nodePath, string firstPropertyName,
+        string secondPropertyName, string firstPath, string secondPath)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Configuration properties '{firstPropertyName}' ('{firstPath}') and '{secondPropertyName}' ('{secondPath}') must not address overlapping paths");
+    }
 }
