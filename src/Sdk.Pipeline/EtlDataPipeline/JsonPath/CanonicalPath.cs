@@ -47,4 +47,49 @@ internal static class CanonicalPath
         var parent = "$" + string.Concat(segments.Take(segments.Count - 1));
         return parent;
     }
+
+    /// <summary>
+    /// Normalizes a user-supplied path (bare, leading-dot, rooted, or bracket-quoted spelling)
+    /// into the canonical write form the overlay grammar accepts - "$" followed by ".name" and
+    /// "[index]" segments - validating it on the way. Throws <see cref="JsonPathException"/>
+    /// for malformed paths and <see cref="JsonPathNotSupportedException"/> for constructs a
+    /// write path cannot address (wildcards, filters, recursive descent, property names the
+    /// dotted grammar cannot express).
+    /// </summary>
+    public static string NormalizeWritePath(string path)
+    {
+        var expression = JsonPathParser.Parse(JsonNodePath.NormalizePathOrRelative(path));
+        var canonical = "$";
+        foreach (var seg in expression.Segments)
+        {
+            switch (seg)
+            {
+                case RootSegment:
+                    continue;
+                case PropertySegment p when IsWritablePropertyName(p.Name):
+                    canonical += "." + p.Name;
+                    break;
+                case PropertySegment p:
+                    throw new JsonPathNotSupportedException($"property name '{p.Name}' in write path", path, 0);
+                case IndexSegment i:
+                    canonical += "[" + i.Index + "]";
+                    break;
+                default:
+                    throw new JsonPathNotSupportedException($"{seg.GetType().Name} in write path", path, 0);
+            }
+        }
+        return canonical;
+    }
+
+    // Mirrors JsonPathParser.IsIdentifierChar: only names the dotted write grammar can
+    // round-trip are allowed; anything else must stay bracket-quoted and is not writable.
+    private static bool IsWritablePropertyName(string name)
+    {
+        if (name.Length == 0) return false;
+        foreach (var ch in name)
+        {
+            if (!char.IsLetterOrDigit(ch) && ch != '_' && ch != '-') return false;
+        }
+        return true;
+    }
 }

@@ -1355,55 +1355,24 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
         A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
     }
 
-    [Fact]
-    public async Task ProcessObjectAsync_ErrorsPath_SameAsTargetPath_Fails()
-    {
-        // The errors are written after the result, so pointing both at the same path would
-        // silently destroy the result array. That collision is rejected up front.
-        var forEachNodeConfiguration = new ForEachNodeConfiguration
-        {
-            Path = "$.Items",
-            IterationPath = "$.Items",
-            TargetPath = "$.Result",
-            ErrorsPath = "$.Result",
-            ContinueOnError = true,
-            Transformations = new List<NodeConfiguration>
-            {
-                new TestNodeConfiguration { TargetPath = "$.key" }
-            }
-        };
-
-        var testCounter = A.Fake<ITestCounter>();
-        fixture.Services.AddSingleton(testCounter);
-
-        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
-
-        var fn = A.Fake<NodeDelegate>();
-        var testee = new ForEachNode(fn);
-
-        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
-            () => testee.ProcessObjectAsync(dataContext, nodeContext));
-
-        Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
-        Assert.Contains(nameof(ForEachNodeConfiguration.TargetPath), exception.Message);
-        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
-        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
-        Assert.False(dataContext.Exists("$.Result"));
-    }
-
     [Theory]
+    [InlineData("$.Result", "$.Result")]
     [InlineData("$", "$.Result")]
     [InlineData("$.a", "$.a.b")]
     [InlineData("$.Result[0]", "$.Result")]
     [InlineData("$.Result.errors", "$.Result")]
     [InlineData("$.Errors", "")]
+    [InlineData("$.Result[00]", "$.Result[0]")]
+    [InlineData("Result", "$.Result")]
+    [InlineData("$['Result']", "$.Result")]
     public async Task ProcessObjectAsync_ErrorsPath_OverlapsTargetPath_Fails(string errorsPath, string targetPath)
     {
-        // Strict containment is as fatal as equality: the errors are written after the result,
-        // so an errorsPath enclosing targetPath replaces the subtree the result was just written
-        // into (with "$" the whole document), and one inside targetPath corrupts the result
-        // array itself. An empty targetPath addresses the document root and collides the same
-        // way. All of it silent or late - so the collision is rejected up front.
+        // The errors are written after the result, so any overlap destroys data or dies late:
+        // an equal or enclosing errorsPath replaces the result subtree (with "$" the whole
+        // document) silently, one inside targetPath overwrites a result element or fails only
+        // after the full loop ran. An empty targetPath addresses the document root and collides
+        // the same way, and equivalent spellings of the same location ("[00]", bare "Result",
+        // "$['Result']") are overlaps too - the guard compares canonical forms, not text.
         var forEachNodeConfiguration = new ForEachNodeConfiguration
         {
             Path = "$.Items",
@@ -1430,8 +1399,85 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
 
         Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
         Assert.Contains(nameof(ForEachNodeConfiguration.TargetPath), exception.Message);
+        Assert.Contains("must not address overlapping paths", exception.Message);
         A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
         A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Theory]
+    [InlineData("$.Errors ")]
+    [InlineData("$..errors")]
+    [InlineData("$.Errors[*]")]
+    public async Task ProcessObjectAsync_ErrorsPath_InvalidPath_Fails(string errorsPath)
+    {
+        // A syntactically broken errorsPath must not reach the loop: a trailing space or a
+        // ".." typo would land the errors in a phantom property nobody reads - and because
+        // errorsPath suppresses the aggregated throw, the iteration failures would silently
+        // vanish. Wildcards are not writable at all.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = errorsPath,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
+        Assert.Contains("invalid path", exception.Message);
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_RelativeSpelling_Succeeds()
+    {
+        // Path options across the pipeline accept bare and leading-dot spellings; errorsPath
+        // does too, and the errors land at the canonical location.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "Errors",
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+        A.CallTo(() => testCounter.GetNext()).Returns(0);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappened(3, Times.Exactly);
+        Assert.Equal(3, dataContext.Length("$.Result"));
+        Assert.Equal(DataKind.Array, dataContext.GetKind("$.Errors"));
+        Assert.Equal(0, dataContext.Length("$.Errors"));
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -1466,6 +1512,11 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
 
         Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
         Assert.Contains(nameof(ForEachNodeConfiguration.TargetPath), exception.Message);
+        // Pins the message contract: both paths are rendered, the unset target as its
+        // effective root default.
+        Assert.Contains("must not address overlapping paths", exception.Message);
+        Assert.Contains("('$.Errors')", exception.Message);
+        Assert.Contains("('$')", exception.Message);
         A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
         A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
         Assert.False(dataContext.Exists("$.Errors"));

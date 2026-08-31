@@ -237,18 +237,18 @@ public class PipelineExecutionException : Exception
     }
 
     /// <summary>
-    /// Exception thrown when two configuration properties must not address the same path
+    /// Exception thrown when a configuration property contains a path that cannot be written to
     /// </summary>
     /// <param name="nodePath">Path to the node</param>
-    /// <param name="firstPropertyName">Name of the first configuration property</param>
-    /// <param name="secondPropertyName">Name of the second configuration property</param>
-    /// <param name="path">The path both properties address</param>
+    /// <param name="configurationPropertyName">Name of the configuration property</param>
+    /// <param name="path">The configured path</param>
+    /// <param name="reason">Why the path is not writable</param>
     /// <returns></returns>
-    public static Exception ConfigurationPropertiesMustDiffer(NodePath nodePath, string firstPropertyName,
-        string secondPropertyName, string path)
+    public static Exception ConfigurationPropertyPathInvalid(NodePath nodePath, string configurationPropertyName,
+        string path, string reason)
     {
         return new PipelineExecutionException(
-            $"[{nodePath}]: Configuration properties '{firstPropertyName}' and '{secondPropertyName}' must not both address '{path}'");
+            $"[{nodePath}]: Configuration property '{configurationPropertyName}' contains an invalid path '{path}': {reason}");
     }
 
     /// <summary>

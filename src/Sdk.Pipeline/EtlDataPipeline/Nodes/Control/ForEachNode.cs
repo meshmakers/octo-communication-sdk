@@ -60,9 +60,11 @@ public record ForEachNodeConfiguration : SourceTargetPathNodeConfiguration, IChi
 
     /// <summary>
     /// Gets or sets the path the collected iteration errors are written to. Requires
-    /// <c>continueOnError</c>. Must not equal or overlap <c>targetPath</c>: the errors are
-    /// written after the result, so an overlapping path would silently replace or corrupt
-    /// the result - that collision is rejected before the first iteration.
+    /// <c>continueOnError</c> and an explicitly set non-root <c>targetPath</c> that this path
+    /// neither equals nor overlaps: the errors are written after the result, so an equal or
+    /// enclosing errorsPath would silently replace the result, and one inside it would
+    /// overwrite part of the result or fail late - such a collision is rejected before the
+    /// first iteration.
     /// Unset (default), iteration errors are only logged and reported afterwards as the
     /// aggregated execution error.
     /// Set, the collected errors are written to this path as an array of
@@ -89,6 +91,7 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
 
         // Configuration guards run before any data work: errorsPath only has meaning while the
         // loop keeps collecting failures instead of aborting on the first one.
+        string? errorsPath = null;
         if (c.ErrorsPath is not null)
         {
             if (string.IsNullOrWhiteSpace(c.ErrorsPath))
@@ -101,27 +104,44 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
                 throw PipelineExecutionException.ConfigurationPropertyRequires(rootNodeContext.NodePath,
                     nameof(c.ErrorsPath), nameof(c.ContinueOnError));
             }
-            if (string.Equals(c.ErrorsPath, c.TargetPath, StringComparison.Ordinal))
+
+            // The writes below use the canonical form, so every accepted spelling really lands
+            // where the guard decided it would. A path that cannot be canonicalized would put
+            // the errors in a phantom location instead - and because errorsPath suppresses the
+            // aggregated throw, the iteration failures would vanish silently.
+            try
             {
-                // The errors are written after the result, so the same path would silently
-                // replace the result array instead of failing.
-                throw PipelineExecutionException.ConfigurationPropertiesMustDiffer(rootNodeContext.NodePath,
-                    nameof(c.ErrorsPath), nameof(c.TargetPath), c.ErrorsPath);
+                errorsPath = CanonicalPath.NormalizeWritePath(c.ErrorsPath);
             }
-            // DataContext.Set treats a null/empty path as the document root, so the overlap
-            // test must see the effective target "$" in that case.
-            var targetPath = string.IsNullOrEmpty(c.TargetPath) ? "$" : c.TargetPath;
-            if (CanonicalPath.IsAncestor(c.ErrorsPath, targetPath) ||
-                CanonicalPath.IsAncestor(targetPath, c.ErrorsPath))
+            catch (JsonPathException e)
             {
-                // Strict containment is as fatal as the equality above: an errorsPath enclosing
-                // targetPath replaces the subtree the result was just written into (with "$" the
-                // whole document, silently), one inside targetPath corrupts the result array,
-                // and with the root as target the errors write cannot even succeed - the result
-                // write has already turned the document into an array.
+                throw PipelineExecutionException.ConfigurationPropertyPathInvalid(rootNodeContext.NodePath,
+                    nameof(c.ErrorsPath), c.ErrorsPath, e.Message);
+            }
+
+            // The overlap test compares canonical forms so equivalent spellings collide too. A
+            // target the write grammar cannot address keeps its raw spelling here (its own
+            // failure mode is pre-existing and unchanged); null, empty, and whitespace-only
+            // targets address the document root.
+            string targetPath;
+            try
+            {
+                targetPath = CanonicalPath.NormalizeWritePath(c.TargetPath);
+            }
+            catch (JsonPathException)
+            {
+                targetPath = string.IsNullOrWhiteSpace(c.TargetPath) ? "$" : c.TargetPath;
+            }
+            if (CanonicalPath.IsAncestor(errorsPath, targetPath) ||
+                CanonicalPath.IsAncestor(targetPath, errorsPath))
+            {
+                // The errors are written after the result: an equal or enclosing errorsPath
+                // replaces the subtree the result was just written into (with "$" the whole
+                // document, silently), and one inside targetPath overwrites part of the result
+                // or fails only after the full loop ran.
                 throw PipelineExecutionException.ConfigurationPropertyPathsMustNotOverlap(
                     rootNodeContext.NodePath, nameof(c.ErrorsPath), nameof(c.TargetPath),
-                    c.ErrorsPath, c.TargetPath);
+                    errorsPath, targetPath);
             }
         }
 
@@ -143,9 +163,9 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
         {
             // No items to iterate. Still produce an empty result array and continue.
             dataContext.Set(c.TargetPath, new JsonArray(), c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
-            if (c.ErrorsPath is not null)
+            if (errorsPath is not null)
             {
-                dataContext.Set(c.ErrorsPath, new JsonArray());
+                dataContext.Set(errorsPath, new JsonArray());
             }
             await next(dataContext, rootNodeContext);
             return;
@@ -245,16 +265,16 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
 
         // After the result write, whose DocumentMode may reset the document root, and before the
         // downstream nodes - they are the ones that act on the failures.
-        if (c.ErrorsPath is not null)
+        if (errorsPath is not null)
         {
-            dataContext.Set(c.ErrorsPath, BuildIterationErrors(iterationErrors));
+            dataContext.Set(errorsPath, BuildIterationErrors(iterationErrors));
         }
 
         await next(dataContext, rootNodeContext);
 
         // With ErrorsPath the pipeline owns the errors and decides itself whether the run turns
         // red; without it the collected failures are reported as the aggregated execution error.
-        if (iterationErrors is { IsEmpty: false } && c.ErrorsPath is null)
+        if (iterationErrors is { IsEmpty: false } && errorsPath is null)
         {
             throw PipelineExecutionException.IterationsFailed(rootNodeContext.NodePath, count,
                 iterationErrors.OrderBy(x => x.Index).ToArray());
