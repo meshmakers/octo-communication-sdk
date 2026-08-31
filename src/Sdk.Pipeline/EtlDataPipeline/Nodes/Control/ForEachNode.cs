@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.JsonPath;
 using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
@@ -59,7 +60,9 @@ public record ForEachNodeConfiguration : SourceTargetPathNodeConfiguration, IChi
 
     /// <summary>
     /// Gets or sets the path the collected iteration errors are written to. Requires
-    /// <see cref="ContinueOnError"/>.
+    /// <c>continueOnError</c>. Must not equal or overlap <c>targetPath</c>: the errors are
+    /// written after the result, so an overlapping path would silently replace or corrupt
+    /// the result - that collision is rejected before the first iteration.
     /// Unset (default), iteration errors are only logged and reported afterwards as the
     /// aggregated execution error.
     /// Set, the collected errors are written to this path as an array of
@@ -104,6 +107,21 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
                 // replace the result array instead of failing.
                 throw PipelineExecutionException.ConfigurationPropertiesMustDiffer(rootNodeContext.NodePath,
                     nameof(c.ErrorsPath), nameof(c.TargetPath), c.ErrorsPath);
+            }
+            // DataContext.Set treats a null/empty path as the document root, so the overlap
+            // test must see the effective target "$" in that case.
+            var targetPath = string.IsNullOrEmpty(c.TargetPath) ? "$" : c.TargetPath;
+            if (CanonicalPath.IsAncestor(c.ErrorsPath, targetPath) ||
+                CanonicalPath.IsAncestor(targetPath, c.ErrorsPath))
+            {
+                // Strict containment is as fatal as the equality above: an errorsPath enclosing
+                // targetPath replaces the subtree the result was just written into (with "$" the
+                // whole document, silently), one inside targetPath corrupts the result array,
+                // and with the root as target the errors write cannot even succeed - the result
+                // write has already turned the document into an array.
+                throw PipelineExecutionException.ConfigurationPropertyPathsMustNotOverlap(
+                    rootNodeContext.NodePath, nameof(c.ErrorsPath), nameof(c.TargetPath),
+                    c.ErrorsPath, c.TargetPath);
             }
         }
 

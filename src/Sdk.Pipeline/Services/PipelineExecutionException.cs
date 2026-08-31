@@ -250,4 +250,20 @@ public class PipelineExecutionException : Exception
         return new PipelineExecutionException(
             $"[{nodePath}]: Configuration properties '{firstPropertyName}' and '{secondPropertyName}' must not both address '{path}'");
     }
+
+    /// <summary>
+    /// Exception thrown when two configuration properties address overlapping paths
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="firstPropertyName">Name of the first configuration property</param>
+    /// <param name="secondPropertyName">Name of the second configuration property</param>
+    /// <param name="firstPath">Path the first property addresses</param>
+    /// <param name="secondPath">Path the second property addresses</param>
+    /// <returns></returns>
+    public static Exception ConfigurationPropertyPathsMustNotOverlap(NodePath nodePath, string firstPropertyName,
+        string secondPropertyName, string firstPath, string secondPath)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Configuration properties '{firstPropertyName}' ('{firstPath}') and '{secondPropertyName}' ('{secondPath}') must not address overlapping paths");
+    }
 }

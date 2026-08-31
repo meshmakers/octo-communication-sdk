@@ -1288,12 +1288,6 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
         // continueOnError the loop still aborts on the first failure, so a pipeline configuring
         // errorsPath alone would believe it owns errors the node keeps throwing on. That
         // misconfiguration fails loudly, before any iteration runs.
-        var items = new JsonArray(
-            new JsonObject { ["Id"] = 1 },
-            new JsonObject { ["Id"] = 2 },
-            new JsonObject { ["Id"] = 3 });
-        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
-
         var forEachNodeConfiguration = new ForEachNodeConfiguration
         {
             Path = "$.Items",
@@ -1310,11 +1304,7 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
         var testCounter = A.Fake<ITestCounter>();
         fixture.Services.AddSingleton(testCounter);
 
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
-        var rootNodeContext =
-            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
 
         var fn = A.Fake<NodeDelegate>();
         var testee = new ForEachNode(fn);
@@ -1337,12 +1327,6 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
     {
         // YamlDotNet turns a missing or valueless property into null (option off), but an
         // explicitly empty path is a mistake, not a switched-off option.
-        var items = new JsonArray(
-            new JsonObject { ["Id"] = 1 },
-            new JsonObject { ["Id"] = 2 },
-            new JsonObject { ["Id"] = 3 });
-        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
-
         var forEachNodeConfiguration = new ForEachNodeConfiguration
         {
             Path = "$.Items",
@@ -1359,11 +1343,7 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
         var testCounter = A.Fake<ITestCounter>();
         fixture.Services.AddSingleton(testCounter);
 
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
-        var rootNodeContext =
-            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
 
         var fn = A.Fake<NodeDelegate>();
         var testee = new ForEachNode(fn);
@@ -1380,12 +1360,6 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
     {
         // The errors are written after the result, so pointing both at the same path would
         // silently destroy the result array. That collision is rejected up front.
-        var items = new JsonArray(
-            new JsonObject { ["Id"] = 1 },
-            new JsonObject { ["Id"] = 2 },
-            new JsonObject { ["Id"] = 3 });
-        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
-
         var forEachNodeConfiguration = new ForEachNodeConfiguration
         {
             Path = "$.Items",
@@ -1402,11 +1376,7 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
         var testCounter = A.Fake<ITestCounter>();
         fixture.Services.AddSingleton(testCounter);
 
-        var logger = A.Fake<IPipelineLogger>();
-        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
-        var rootNodeContext =
-            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
-        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
 
         var fn = A.Fake<NodeDelegate>();
         var testee = new ForEachNode(fn);
@@ -1419,6 +1389,123 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
         A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
         A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
         Assert.False(dataContext.Exists("$.Result"));
+    }
+
+    [Theory]
+    [InlineData("$", "$.Result")]
+    [InlineData("$.a", "$.a.b")]
+    [InlineData("$.Result[0]", "$.Result")]
+    [InlineData("$.Result.errors", "$.Result")]
+    [InlineData("$.Errors", "")]
+    public async Task ProcessObjectAsync_ErrorsPath_OverlapsTargetPath_Fails(string errorsPath, string targetPath)
+    {
+        // Strict containment is as fatal as equality: the errors are written after the result,
+        // so an errorsPath enclosing targetPath replaces the subtree the result was just written
+        // into (with "$" the whole document), and one inside targetPath corrupts the result
+        // array itself. An empty targetPath addresses the document root and collides the same
+        // way. All of it silent or late - so the collision is rejected up front.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = targetPath,
+            ErrorsPath = errorsPath,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
+        Assert.Contains(nameof(ForEachNodeConfiguration.TargetPath), exception.Message);
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_DefaultTargetPath_Fails()
+    {
+        // targetPath left unset defaults to "$": the root result write then turns the whole
+        // document into the result array, so a subsequent errors write can never succeed. That
+        // configuration is rejected before the first iteration instead of surfacing as a
+        // low-level write error after the full loop ran.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            ErrorsPath = "$.Errors",
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
+        Assert.Contains(nameof(ForEachNodeConfiguration.TargetPath), exception.Message);
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+        Assert.False(dataContext.Exists("$.Errors"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_SiblingWithCommonPrefix_Succeeds()
+    {
+        // "$.ResultErrors" merely shares a textual prefix with "$.Result" - it is a sibling,
+        // not an overlap, and must stay accepted: the collision test ends at segment
+        // boundaries, not at common prefixes.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "$.ResultErrors",
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+        A.CallTo(() => testCounter.GetNext()).Returns(0);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappened(3, Times.Exactly);
+        Assert.Equal(3, dataContext.Length("$.Result"));
+        Assert.Equal(DataKind.Array, dataContext.GetKind("$.ResultErrors"));
+        Assert.Equal(0, dataContext.Length("$.ResultErrors"));
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
