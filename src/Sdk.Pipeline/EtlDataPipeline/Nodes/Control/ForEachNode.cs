@@ -105,10 +105,12 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
                     nameof(c.ErrorsPath), nameof(c.ContinueOnError));
             }
 
-            // The writes below use the canonical form, so every accepted spelling really lands
-            // where the guard decided it would. A path that cannot be canonicalized would put
-            // the errors in a phantom location instead - and because errorsPath suppresses the
-            // aggregated throw, the iteration failures would vanish silently.
+            // The writes below use the canonical form, so an accepted spelling addresses the
+            // location the guard checked - a non-canonicalizable path would land the errors in
+            // a phantom location instead and, because errorsPath suppresses the aggregated
+            // throw, make the iteration failures vanish silently. Document shape stays a
+            // per-message concern: a write through an index or into a non-object can still
+            // fail at runtime, like any other write.
             try
             {
                 errorsPath = CanonicalPath.NormalizeWritePath(c.ErrorsPath);
@@ -116,13 +118,14 @@ public class ForEachNode(NodeDelegate next) : ChildNodeBase
             catch (JsonPathException e)
             {
                 throw PipelineExecutionException.ConfigurationPropertyPathInvalid(rootNodeContext.NodePath,
-                    nameof(c.ErrorsPath), c.ErrorsPath, e.Message);
+                    nameof(c.ErrorsPath), e.Message);
             }
 
             // The overlap test compares canonical forms so equivalent spellings collide too. A
             // target the write grammar cannot address keeps its raw spelling here (its own
-            // failure mode is pre-existing and unchanged); null, empty, and whitespace-only
-            // targets address the document root.
+            // failure mode is pre-existing and unchanged); null and empty targets address the
+            // document root (see DataContext.Set), and a whitespace-only one - never writable
+            // at all - is conservatively treated as the root too.
             string targetPath;
             try
             {

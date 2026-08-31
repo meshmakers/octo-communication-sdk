@@ -103,7 +103,13 @@ public static class JsonPathParser
                         throw new JsonPathNotSupportedException("array slice", path, pos);
                     }
 
-                    var index = int.Parse(path.Substring(numStart, pos - numStart));
+                    // char.IsDigit admits Unicode digits and the digit run may exceed int -
+                    // both must surface as the parser's own error, not as a raw
+                    // FormatException/OverflowException.
+                    if (!int.TryParse(path.Substring(numStart, pos - numStart), out var index))
+                    {
+                        throw new JsonPathException("Invalid array index", path, numStart);
+                    }
                     ExpectClosingBracket(path, ref pos);
                     segments.Add(new IndexSegment(index));
                 }
@@ -210,7 +216,7 @@ public static class JsonPathParser
         return new JsonPathExpression(segments);
     }
 
-    private static bool IsIdentifierChar(char c) =>
+    internal static bool IsIdentifierChar(char c) =>
         char.IsLetterOrDigit(c) || c == '_' || c == '-';
 
     private static void ExpectClosingBracket(string path, ref int pos)

@@ -241,14 +241,13 @@ public class PipelineExecutionException : Exception
     /// </summary>
     /// <param name="nodePath">Path to the node</param>
     /// <param name="configurationPropertyName">Name of the configuration property</param>
-    /// <param name="path">The configured path</param>
-    /// <param name="reason">Why the path is not writable</param>
+    /// <param name="reason">Why the path is not writable; carries the offending path</param>
     /// <returns></returns>
     public static Exception ConfigurationPropertyPathInvalid(NodePath nodePath, string configurationPropertyName,
-        string path, string reason)
+        string reason)
     {
         return new PipelineExecutionException(
-            $"[{nodePath}]: Configuration property '{configurationPropertyName}' contains an invalid path '{path}': {reason}");
+            $"[{nodePath}]: Configuration property '{configurationPropertyName}' contains an invalid path: {reason}");
     }
 
     /// <summary>

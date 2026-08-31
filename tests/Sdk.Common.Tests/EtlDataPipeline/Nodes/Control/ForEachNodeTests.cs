@@ -1408,6 +1408,8 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
     [InlineData("$.Errors ")]
     [InlineData("$..errors")]
     [InlineData("$.Errors[*]")]
+    [InlineData("$.Errors[99999999999]")]
+    [InlineData("$.Errors[٣]")]
     public async Task ProcessObjectAsync_ErrorsPath_InvalidPath_Fails(string errorsPath)
     {
         // A syntactically broken errorsPath must not reach the loop: a trailing space or a

@@ -81,14 +81,14 @@ internal static class CanonicalPath
         return canonical;
     }
 
-    // Mirrors JsonPathParser.IsIdentifierChar: only names the dotted write grammar can
-    // round-trip are allowed; anything else must stay bracket-quoted and is not writable.
+    // Only names the parser's identifier grammar can round-trip through the dotted write
+    // form; anything else must stay bracket-quoted and is not writable.
     private static bool IsWritablePropertyName(string name)
     {
         if (name.Length == 0) return false;
         foreach (var ch in name)
         {
-            if (!char.IsLetterOrDigit(ch) && ch != '_' && ch != '-') return false;
+            if (!JsonPathParser.IsIdentifierChar(ch)) return false;
         }
         return true;
     }
