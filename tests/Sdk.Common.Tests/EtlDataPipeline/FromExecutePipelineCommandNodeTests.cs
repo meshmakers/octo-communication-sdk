@@ -108,4 +108,35 @@ public class FromExecutePipelineCommandNodeTests
         // A start failure must never kick off detached completion.
         A.CallTo(() => _context.EndExecutePipelineAsync(A<Guid>._)).MustNotHaveHappened();
     }
+
+    /// <summary>
+    ///     AB#5029/AB#5045: an <c>ExecutePipeline</c> command starts the execution WITHOUT a caller
+    ///     identity, so the pipeline resolves its own service identity (AB#5028).
+    /// </summary>
+    /// <remarks>
+    ///     This is the trigger behind "Execute" in the Studio and behind the ExecutePipeline API, so it
+    ///     is the row of the identity matrix most likely to be "improved" later — the person clicking
+    ///     the button IS authenticated, so forwarding their principal looks obviously right. It is not:
+    ///     the command travels over the bus and this node authenticates nobody, so a forwarded identity
+    ///     would be an assertion the target cannot check. If the execution should ever run as the
+    ///     clicking user, the identity has to be established here — verified, not relayed — and this
+    ///     test is the place that change has to argue with.
+    /// </remarks>
+    [Fact]
+    public async Task Handler_StartsTheExecutionWithoutAPrincipalAndWithoutACallerToken()
+    {
+        ExecutePipelineOptions? capturedOptions = null;
+        A.CallTo(() => _context.StartExecutePipelineAsync(A<ExecutePipelineOptions>._, A<object?>._))
+            .Invokes(call => capturedOptions = (ExecutePipelineOptions)call.Arguments[0]!)
+            .Returns(Task.FromResult(Guid.NewGuid()));
+
+        await _sut.StartAsync(_context);
+        Assert.NotNull(_capturedHandler);
+
+        await _capturedHandler!(new ExecutePipelineRequest(TenantId, null), _ => Task.CompletedTask);
+
+        Assert.NotNull(capturedOptions);
+        Assert.Null(capturedOptions!.VerifiedPrincipal);
+        Assert.Null(capturedOptions.CallerAccessToken);
+    }
 }

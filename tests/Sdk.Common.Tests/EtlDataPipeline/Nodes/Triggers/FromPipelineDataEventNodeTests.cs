@@ -255,6 +255,95 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         Assert.Contains("Variable not found", typedResponse.ErrorMessage);
     }
 
+    /// <summary>
+    ///     AB#5045: an execution started from a pipeline data event begins WITHOUT a caller identity.
+    /// </summary>
+    /// <remarks>
+    ///     The caller identity of the pipeline that raised the event ends at
+    ///     <c>ToPipelineDataEvent@1</c>; this execution resolves its own service identity (AB#5028).
+    ///     Forwarding a principal or the caller's token across the bus would let whoever may enqueue
+    ///     into the data flow act as whoever last triggered the sending pipeline, against a target that
+    ///     never authenticated them — and on this fire-and-forget path the message has no bounded
+    ///     lifetime, so the identity would stay usable for as long as it sits in the queue. This test
+    ///     exists so a well-meant "the identity should survive the chain" change fails here.
+    /// </remarks>
+    [Fact]
+    public async Task EventReceived_StartsTheExecutionWithoutAPrincipalAndWithoutACallerToken()
+    {
+        var eventHubControl = A.Fake<IEventHubControl>();
+        Func<PipelineDataReceived, Task>? capturedHandler = null;
+
+        A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
+                A<string>._, A<string>._, A<Func<PipelineDataReceived, Task>>._))
+            .Invokes((string _, string _, Func<PipelineDataReceived, Task> handler) => capturedHandler = handler)
+            .Returns(A.Fake<EndpointHandle>());
+
+        var triggerContext = CreateTriggerContext();
+        ExecutePipelineOptions? capturedOptions = null;
+        A.CallTo(() => triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
+            .Invokes(call => capturedOptions = (ExecutePipelineOptions)call.Arguments[0]!)
+            .Returns(Task.FromResult<object?>(null));
+
+        var testee = new FromPipelineDataEventNode(eventHubControl);
+        await testee.StartAsync(triggerContext);
+
+        Assert.NotNull(capturedHandler);
+        await capturedHandler!(new PipelineDataReceived
+        {
+            TenantId = "test-tenant",
+            Value = "{\"input\":\"data\"}",
+            TransactionStartedDateTime = DateTime.UtcNow
+        });
+
+        Assert.NotNull(capturedOptions);
+        Assert.Null(capturedOptions!.VerifiedPrincipal);
+        Assert.Null(capturedOptions.CallerAccessToken);
+    }
+
+    /// <summary>
+    ///     The AwaitResult twin of
+    ///     <see cref="EventReceived_StartsTheExecutionWithoutAPrincipalAndWithoutACallerToken" />.
+    /// </summary>
+    /// <remarks>
+    ///     Covered separately because the command path is the one that <i>looks</i> like a synchronous
+    ///     call — the sender blocks on the response, so it reads like an in-process hand-off where
+    ///     carrying the caller along would seem harmless. It is the same bus hop with the same
+    ///     enqueue-side authorization, and the target must resolve its own identity here too.
+    /// </remarks>
+    [Fact]
+    public async Task CommandReceived_StartsTheExecutionWithoutAPrincipalAndWithoutACallerToken()
+    {
+        var eventHubControl = A.Fake<IEventHubControl>();
+        ExecuteCommandHandler<PipelineDataCommandRequest>? capturedHandler = null;
+
+        A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
+                A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._))
+            .Invokes((string _, ExecuteCommandHandler<PipelineDataCommandRequest> handler) =>
+                capturedHandler = handler)
+            .Returns(A.Fake<EndpointHandle>());
+
+        var triggerContext = CreateTriggerContext();
+        ExecutePipelineOptions? capturedOptions = null;
+        A.CallTo(() => triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
+            .Invokes(call => capturedOptions = (ExecutePipelineOptions)call.Arguments[0]!)
+            .Returns(Task.FromResult<object?>(null));
+
+        var testee = new FromPipelineDataEventNode(eventHubControl);
+        await testee.StartAsync(triggerContext);
+
+        Assert.NotNull(capturedHandler);
+        await capturedHandler!(new PipelineDataCommandRequest
+        {
+            TenantId = "test-tenant",
+            Value = "{\"input\":\"data\"}",
+            TransactionStartedDateTime = DateTime.UtcNow
+        }, _ => Task.CompletedTask);
+
+        Assert.NotNull(capturedOptions);
+        Assert.Null(capturedOptions!.VerifiedPrincipal);
+        Assert.Null(capturedOptions.CallerAccessToken);
+    }
+
     private ITriggerContext CreateTriggerContext(string tenantId = "test-tenant",
         OctoObjectId? dataFlowRtId = null, RtEntityId? pipelineRtEntityId = null)
     {

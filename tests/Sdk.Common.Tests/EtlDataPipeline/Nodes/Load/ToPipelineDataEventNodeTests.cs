@@ -7,6 +7,7 @@ using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Loads;
+using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Sdk.Common.Tests.Fixtures;
 
@@ -389,6 +390,150 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
             testee.ProcessObjectAsync(dataContext, nodeContext));
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // AB#5045 — the identity boundary. A pipeline data event crosses the message bus and the target
+    // execution starts WITHOUT a principal (see FromPipelineDataEventNodeTests). The identity is
+    // deliberately not forwarded — that would let a pipeline act as a caller the target never
+    // authenticated — so the transition is made visible on the execution log instead of happening
+    // silently, which is the whole point of the work item.
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithAVerifiedCaller_RecordsThatTheCallerIdentityEndsHere()
+    {
+        var config = new ToPipelineDataEventNodeConfiguration
+        {
+            Path = "$",
+            TargetPath = "$",
+            TargetPipelineRtId = TestTargetPipelineId
+        };
+        var (dataContext, nodeContext, logger) = PrepareTestWithLogger(config, new { value = 1 });
+        var distributionEventHubService = A.Fake<IDistributionEventHubService>();
+        var etlContext = CreateEtlContext(
+            new VerifiedPrincipal("user-42", TestTenantId, "u@example.com", "U", ["Accounting"]));
+        var fn = A.Fake<NodeDelegate>();
+
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => logger.Info(A<string>._, A<string>._,
+                A<string>.That.Contains("AB#5045"), A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+
+        // The subject is named — an operator reading the execution has to see WHOSE identity stopped.
+        A.CallTo(() => logger.Info(A<string>._, A<string>._, A<string>._,
+                A<object[]>.That.Matches(a => a.Contains("user-42"))))
+            .MustHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithACallerTokenButNoPrincipal_StillRecordsTheBoundary()
+    {
+        // A trigger can carry the raw token without a projected principal; the hand-off is the same.
+        var config = new ToPipelineDataEventNodeConfiguration
+        {
+            Path = "$",
+            TargetPath = "$",
+            TargetPipelineRtId = TestTargetPipelineId,
+            AwaitResult = true
+        };
+        var (dataContext, nodeContext, logger) = PrepareTestWithLogger(config, new { value = 1 });
+        var distributionEventHubService = A.Fake<IDistributionEventHubService>();
+        A.CallTo(() => distributionEventHubService
+                .GetCommandResponseAsync<PipelineDataCommandRequest, PipelineDataCommandResponse>(
+                    A<string>._, A<PipelineDataCommandRequest>._, A<CancellationToken>._, A<TimeSpan?>._))
+            .Returns(new PipelineDataCommandResponse { Success = true });
+        var etlContext = CreateEtlContext(callerAccessToken: "ey.the.callers.token");
+        var fn = A.Fake<NodeDelegate>();
+
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        // The AwaitResult path blocks on a response and therefore READS like an in-process hand-off;
+        // it is the same bus hop and must be recorded too.
+        A.CallTo(() => logger.Info(A<string>._, A<string>._,
+                A<string>.That.Contains("AB#5045"), A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_WithoutACallerIdentity_DoesNotRaiseTheBoundaryToInfo()
+    {
+        // The overwhelming majority of chains are service-to-service. Logging a "the caller identity
+        // ends here" line for them at info level would drown the case that matters.
+        var config = new ToPipelineDataEventNodeConfiguration
+        {
+            Path = "$",
+            TargetPath = "$",
+            TargetPipelineRtId = TestTargetPipelineId
+        };
+        var (dataContext, nodeContext, logger) = PrepareTestWithLogger(config, new { value = 1 });
+        var distributionEventHubService = A.Fake<IDistributionEventHubService>();
+        var etlContext = CreateEtlContext();
+        var fn = A.Fake<NodeDelegate>();
+
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => logger.Info(A<string>._, A<string>._, A<string>._, A<object[]>._))
+            .MustNotHaveHappened();
+        A.CallTo(() => logger.Debug(A<string>._, A<string>._,
+                A<string>.That.Contains("AB#5045"), A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NeverPutsTheCallerTokenIntoTheMessage()
+    {
+        // 🔴 The message payload is pipeline data. A credential on it would be persisted by the bus,
+        // readable by every consumer of the exchange, and would outlive the request that produced it.
+        const string callerToken = "ey.the.callers.token";
+        var config = new ToPipelineDataEventNodeConfiguration
+        {
+            Path = "$",
+            TargetPath = "$",
+            TargetPipelineRtId = TestTargetPipelineId
+        };
+        var (dataContext, nodeContext) = PrepareTest(config, new { value = 1 });
+        var distributionEventHubService = A.Fake<IDistributionEventHubService>();
+        PipelineDataReceived? capturedMessage = null;
+        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
+                A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
+            .Invokes((string _, string _, PipelineDataReceived msg, CancellationToken? _) => capturedMessage = msg)
+            .Returns(Task.FromResult(Task.CompletedTask));
+
+        var etlContext = CreateEtlContext(
+            new VerifiedPrincipal("user-42", TestTenantId, "u@example.com", "U", ["Accounting"]),
+            callerToken);
+        var fn = A.Fake<NodeDelegate>();
+
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.NotNull(capturedMessage);
+        Assert.DoesNotContain(callerToken, capturedMessage!.Value ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("user-42", capturedMessage.Value ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    private (IDataContext, INodeContext, IPipelineLogger) PrepareTestWithLogger(
+        ToPipelineDataEventNodeConfiguration config, object? data = null)
+    {
+        var logger = A.Fake<IPipelineLogger>();
+        var seed = data ?? new { };
+        var json = JsonSerializer.Serialize(seed, SystemTextJsonOptions.Default);
+        var dataContext = new DataContextImpl(JsonDocument.Parse(json));
+
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ToPipelineDataEvent", 0, config, dataContext);
+
+        return (dataContext, nodeContext, logger);
+    }
+
     private (IDataContext, INodeContext) PrepareTest(ToPipelineDataEventNodeConfiguration config,
         object? data = null)
     {
@@ -405,13 +550,16 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         return (dataContext, nodeContext);
     }
 
-    private static IEtlContext CreateEtlContext()
+    private static IEtlContext CreateEtlContext(VerifiedPrincipal? verifiedPrincipal = null,
+        string? callerAccessToken = null)
     {
         var etlContext = A.Fake<IEtlContext>();
         A.CallTo(() => etlContext.TenantId).Returns(TestTenantId);
         A.CallTo(() => etlContext.DataFlowRtId).Returns(TestDataFlowRtId);
         A.CallTo(() => etlContext.PipelineRtEntityId).Returns(default(RtEntityId));
         A.CallTo(() => etlContext.TransactionStartedDateTime).Returns(DateTime.UtcNow);
+        A.CallTo(() => etlContext.VerifiedPrincipal).Returns(verifiedPrincipal);
+        A.CallTo(() => etlContext.CallerAccessToken).Returns(callerAccessToken);
         return etlContext;
     }
 }
