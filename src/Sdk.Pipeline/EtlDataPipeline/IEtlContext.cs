@@ -56,4 +56,19 @@ public interface IEtlContext
     /// <see cref="Properties" /> — that dictionary is shared across pipeline runs.
     /// </summary>
     VerifiedPrincipal? VerifiedPrincipal => null;
+
+    /// <summary>
+    /// Gets the <b>raw access token</b> the caller presented to the trigger, for nodes that must act
+    /// as the caller against another service (delegation / "on-behalf-of" — AB#5026 / AB#5031).
+    /// Null for anonymous and internal triggers.
+    /// </summary>
+    /// <remarks>
+    /// A default interface member so adapters implementing <see cref="IEtlContext" /> themselves are
+    /// not broken by the addition — the same pattern <see cref="VerifiedPrincipal" /> uses.
+    /// Deliberately NOT part of <see cref="Properties" /> (shared across pipeline runs) and NOT part
+    /// of <see cref="VerifiedPrincipal" /> (projected into the persistable, echoed data root); see
+    /// <see cref="Services.ExecutePipelineOptions.CallerAccessToken" /> for the full reasoning.
+    /// Never log this value and never write it into the data context.
+    /// </remarks>
+    string? CallerAccessToken => null;
 }

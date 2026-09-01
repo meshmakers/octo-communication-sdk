@@ -27,7 +27,8 @@ public class DefaultContextCreatorService(IServiceProvider serviceProvider) : IC
             pipelineExecutionId,
             pipelineRegistration.PipelineRtEntityId, executePipelineOptions.TransactionStartedDateTime,
             executePipelineOptions.ExternalReceivedDateTime, pipelineRegistration.GlobalConfiguration,
-            pipelineRegistration.Dictionary, executePipelineOptions.VerifiedPrincipal);
+            pipelineRegistration.Dictionary, executePipelineOptions.VerifiedPrincipal,
+            executePipelineOptions.CallerAccessToken);
 
         var etlContext = context as TContext;
         return Task.FromResult(etlContext ?? throw PipelineExecutionException.EtlContextTypeMismatch<TContext>(context));

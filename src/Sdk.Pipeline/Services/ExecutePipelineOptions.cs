@@ -40,4 +40,29 @@ public class ExecutePipelineOptions(DateTime transactionStartedDateTime)
     /// authorization (AB#4975). Null for anonymous and internal triggers.
     /// </summary>
     public VerifiedPrincipal? VerifiedPrincipal { get; set; }
+
+    /// <summary>
+    /// Gets or sets the <b>raw access token</b> the caller presented to the trigger, for nodes that
+    /// have to act as the caller against another service — the delegation ("on-behalf-of") grant
+    /// needs it as <c>subject_token</c> (AB#5026 / AB#5031). Null for anonymous and internal
+    /// triggers, and for triggers that do not carry a credential.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Deliberately NOT on <see cref="VerifiedPrincipal" />.</b> That record is a slim,
+    ///         token-free value object precisely because the trigger writes a projection of it into
+    ///         the pipeline data root, which is echoed back in the HTTP response, persistable by
+    ///         <c>SetPipelineExecutionResult@1</c> and visible in the Studio debug panel. Putting a
+    ///         bearer token on it would leak the caller's credential into every one of those places.
+    ///     </para>
+    ///     <para>
+    ///         <b>Deliberately NOT in the data context either</b>, for the same reason, and
+    ///         deliberately not in <c>IEtlContext.Properties</c>: that dictionary is the pipeline
+    ///         registration's own dictionary and is therefore shared across <b>all runs</b> of the
+    ///         pipeline — one user's token would still be sitting there for the next user's request.
+    ///         This property is a per-execution side channel: it travels from the trigger to the ETL
+    ///         context of exactly this execution and nowhere else.
+    ///     </para>
+    /// </remarks>
+    public string? CallerAccessToken { get; set; }
 }

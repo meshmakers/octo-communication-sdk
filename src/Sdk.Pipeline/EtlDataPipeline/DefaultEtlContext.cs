@@ -20,9 +20,14 @@ public class DefaultEtlContext : IEtlContext
     /// <param name="globalConfiguration">Global configuration for the pipeline provided by associating configuration to a pipeline</param>
     /// <param name="properties">properties that are shared between the different stages of the ETL process and different runs of the pipeline</param>
     /// <param name="verifiedPrincipal">Authenticated caller of the trigger, if any (AB#4975)</param>
-    public DefaultEtlContext(string tenantId, OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime transactionStartedDateTime, DateTime? externalReceivedDateTime, IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties, Services.VerifiedPrincipal? verifiedPrincipal = null)
+    /// <param name="callerAccessToken">
+    /// Raw access token the caller presented to the trigger, for delegation ("on-behalf-of")
+    /// requests (AB#5031). Never log it and never write it into the data context.
+    /// </param>
+    public DefaultEtlContext(string tenantId, OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime transactionStartedDateTime, DateTime? externalReceivedDateTime, IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties, Services.VerifiedPrincipal? verifiedPrincipal = null, string? callerAccessToken = null)
     {
         VerifiedPrincipal = verifiedPrincipal;
+        CallerAccessToken = callerAccessToken;
         TenantId = tenantId;
         PipelineExecutionId = pipelineExecutionId;
         DataFlowRtId = dataFlowRtId;
@@ -59,4 +64,7 @@ public class DefaultEtlContext : IEtlContext
 
     /// <inheritdoc />
     public Services.VerifiedPrincipal? VerifiedPrincipal { get; }
+
+    /// <inheritdoc />
+    public string? CallerAccessToken { get; }
 }
