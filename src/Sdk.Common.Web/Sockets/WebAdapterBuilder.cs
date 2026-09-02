@@ -6,6 +6,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Meshmakers.Octo.Sdk.ServiceClient.AssetRepositoryServices.Tenants;
+using Meshmakers.Octo.Sdk.ServiceClient.Authentication;
 using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
@@ -116,6 +117,19 @@ public class WebAdapterBuilder
 
         builder.Services.AddSingleton<IPipelineRegistryService, PipelineRegistryService>();
         builder.Services.AddSingleton<IServiceClientAccessToken, ServiceClientAccessToken>();
+
+        // AB#5072 - the adapter's own service credential for the controller's adapter hub.
+        // The access-token holder above is a singleton because the SDK's SignalR client reads it on
+        // every (re)connect: AdapterAccessTokenService writes into the very instance
+        // AdapterHubClient was handed, so a refresh reaches the next reconnect without any
+        // notification path. Registered as a hosted service BEFORE every other hosted service so its
+        // StartAsync (which acquires the first token) completes before the hub connects - hosted
+        // services are started sequentially.
+        builder.Services
+            .AddSingleton<IConfigureOptions<AuthenticatorOptions>, ConfigureAdapterAuthenticatorOptions>();
+        builder.Services.AddSingleton<IAuthenticatorClient, AuthenticatorClient>();
+        builder.Services.AddSingleton<AdapterAccessTokenService>();
+        builder.Services.AddHostedService(provider => provider.GetRequiredService<AdapterAccessTokenService>());
 
         builder.Services.AddSingleton<AdapterLifetimeManagement>();
 
