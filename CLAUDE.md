@@ -177,10 +177,22 @@ bind the same configuration section and name the same identity service, but `Aut
 Modbus, Zenon, the simulation plug) still need an issuer, so the outbound credential carries its own
 key. They normally hold the same value.
 
-**Not in this repo:** delivering the credentials into the adapter. The secret lives as a
+**Mostly not in this repo:** delivering the credentials into the adapter. The secret lives as a
 `ServiceAccountConfiguration` in the tenant DB; the route runs through the `ValueOverride`s the
-controller sends to the operator at deploy time and through the adapter chart. This repo only makes
-the adapter *able* to authenticate.
+controller sends to the operator at deploy time and through the adapter chart. This repo's C# only
+makes the adapter *able* to authenticate — but `src/charts/octo-plug-simulation` is itself one of
+those adapter charts and carries the delivery half.
+
+🔴 **Every SDK-based adapter chart has to render the three keys, or that adapter stays anonymous.**
+The three env vars are read by `AdapterOptions`, which every adapter shares, so the controller
+projects the credentials for *all* of them — but Helm silently ignores values a chart does not read.
+Eight charts carry the block, deliberately byte-identical: `octo-mesh-adapter`,
+`octo-loxone-adapter`, `octo-plug-simulation`, `octo-weclapp-adapter`, `octo-modbus-plug`,
+`octo-modbus-socket`, `octo-finapi-adapter`, `octo-eda-adapter`. A new adapter chart must copy it,
+and `authUri` needs no plumbing — the operator writes it into every workload's context values
+(`WorkloadContextValuesBuilder`). The value paths the controller writes are
+`serviceAccountClientId` and the secret-flagged `secrets.serviceAccountClientSecret`; they are
+pinned on the controller side in `PoolService`.
 
 Tests: `tests/Sdk.Common.Tests/Adapters/AdapterAccessTokenServiceTests.cs` (token published into the
 shared holder, scope shape, unconfigured never calls the authenticator in either direction, valid
