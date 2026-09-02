@@ -1280,4 +1280,648 @@ public class ForEachNodeTests(NodeFixture fixture, ITestOutputHelper testOutputH
             Assert.Equal(invoiceNumber, dataContext.Get<int>($"$.Result[{i}]"));
         }
     }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_WithoutContinueOnError_Fails()
+    {
+        // errorsPath only makes sense while the loop keeps collecting failures: without
+        // continueOnError the loop still aborts on the first failure, so a pipeline configuring
+        // errorsPath alone would believe it owns errors the node keeps throwing on. That
+        // misconfiguration fails loudly, before any iteration runs.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "$.Errors",
+            ContinueOnError = false,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
+        Assert.Contains(nameof(ForEachNodeConfiguration.ContinueOnError), exception.Message);
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+        Assert.False(dataContext.Exists("$.Result"));
+        Assert.False(dataContext.Exists("$.Errors"));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ProcessObjectAsync_ErrorsPath_BlankPath_Fails(string errorsPath)
+    {
+        // YamlDotNet turns a missing or valueless property into null (option off), but an
+        // explicitly empty path is a mistake, not a switched-off option.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = errorsPath,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Theory]
+    [InlineData("$.Result", "$.Result")]
+    [InlineData("$", "$.Result")]
+    [InlineData("$.a", "$.a.b")]
+    [InlineData("$.Result[0]", "$.Result")]
+    [InlineData("$.Result.errors", "$.Result")]
+    [InlineData("$.Errors", "")]
+    [InlineData("$.Result[00]", "$.Result[0]")]
+    [InlineData("Result", "$.Result")]
+    [InlineData("$['Result']", "$.Result")]
+    public async Task ProcessObjectAsync_ErrorsPath_OverlapsTargetPath_Fails(string errorsPath, string targetPath)
+    {
+        // The errors are written after the result, so any overlap destroys data or dies late:
+        // an equal or enclosing errorsPath replaces the result subtree (with "$" the whole
+        // document) silently, one inside targetPath overwrites a result element or fails only
+        // after the full loop ran. An empty targetPath addresses the document root and collides
+        // the same way, and equivalent spellings of the same location ("[00]", bare "Result",
+        // "$['Result']") are overlaps too - the guard compares canonical forms, not text.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = targetPath,
+            ErrorsPath = errorsPath,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
+        Assert.Contains(nameof(ForEachNodeConfiguration.TargetPath), exception.Message);
+        Assert.Contains("must not address overlapping paths", exception.Message);
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Theory]
+    [InlineData("$.Errors ")]
+    [InlineData("$..errors")]
+    [InlineData("$.Errors[*]")]
+    [InlineData("$.Errors[99999999999]")]
+    [InlineData("$.Errors[٣]")]
+    public async Task ProcessObjectAsync_ErrorsPath_InvalidPath_Fails(string errorsPath)
+    {
+        // A syntactically broken errorsPath must not reach the loop: a trailing space or a
+        // ".." typo would land the errors in a phantom property nobody reads - and because
+        // errorsPath suppresses the aggregated throw, the iteration failures would silently
+        // vanish. Wildcards are not writable at all.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = errorsPath,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
+        Assert.Contains("invalid path", exception.Message);
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_RelativeSpelling_Succeeds()
+    {
+        // Path options across the pipeline accept bare and leading-dot spellings; errorsPath
+        // does too, and the errors land at the canonical location.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "Errors",
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+        A.CallTo(() => testCounter.GetNext()).Returns(0);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappened(3, Times.Exactly);
+        Assert.Equal(3, dataContext.Length("$.Result"));
+        Assert.Equal(DataKind.Array, dataContext.GetKind("$.Errors"));
+        Assert.Equal(0, dataContext.Length("$.Errors"));
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_DefaultTargetPath_Fails()
+    {
+        // targetPath left unset defaults to "$": the root result write then turns the whole
+        // document into the result array, so a subsequent errors write can never succeed. That
+        // configuration is rejected before the first iteration instead of surfacing as a
+        // low-level write error after the full loop ran.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            ErrorsPath = "$.Errors",
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains(nameof(ForEachNodeConfiguration.ErrorsPath), exception.Message);
+        Assert.Contains(nameof(ForEachNodeConfiguration.TargetPath), exception.Message);
+        // Pins the message contract: both paths are rendered, the unset target as its
+        // effective root default.
+        Assert.Contains("must not address overlapping paths", exception.Message);
+        Assert.Contains("('$.Errors')", exception.Message);
+        Assert.Contains("('$')", exception.Message);
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+        Assert.False(dataContext.Exists("$.Errors"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_SiblingWithCommonPrefix_Succeeds()
+    {
+        // "$.ResultErrors" merely shares a textual prefix with "$.Result" - it is a sibling,
+        // not an overlap, and must stay accepted: the collision test ends at segment
+        // boundaries, not at common prefixes.
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "$.ResultErrors",
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+        A.CallTo(() => testCounter.GetNext()).Returns(0);
+
+        var (dataContext, nodeContext) = PrepareTest(forEachNodeConfiguration);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappened(3, Times.Exactly);
+        Assert.Equal(3, dataContext.Length("$.Result"));
+        Assert.Equal(DataKind.Array, dataContext.GetKind("$.ResultErrors"));
+        Assert.Equal(0, dataContext.Length("$.ResultErrors"));
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPathNull_ContinueOnError_StillThrowsAggregate()
+    {
+        // Inertness: the option defaults to null (not configured) and then nothing changes -
+        // the collected failures are still reported as the aggregated execution error.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 3 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = null,
+            MaxDegreeOfParallelism = 1,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 1,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains("1 of 3", exception.Message);
+        Assert.Equal(2, dataContext.Length("$.Result"));
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_WritesFailuresBeforeDownstreamAndDoesNotThrow()
+    {
+        // P9 acceptance: 3 elements, index 0 fails -> the error array carries exactly one entry
+        // (index/errorType/message), the result carries the other two, the downstream nodes see
+        // the errors, and the node does not fail the execution any more.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 3 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "$.Errors",
+            MaxDegreeOfParallelism = 1,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 1,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        // The errors must be readable by the downstream nodes, so capture what next() sees.
+        var errorCountSeenDownstream = -1;
+        var fn = A.Fake<NodeDelegate>();
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._))
+            .Invokes(() => errorCountSeenDownstream = dataContext.Length("$.Errors"));
+
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        // The surviving elements were processed and merged in source order.
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappened(2, Times.Exactly);
+        Assert.Equal(2, dataContext.Length("$.Result"));
+        Assert.Equal(2, dataContext.Get<int>("$.Result[0]"));
+        Assert.Equal(3, dataContext.Get<int>("$.Result[1]"));
+
+        // The failure is available as data, with the iteration index, the exception type and its
+        // message - the payload detail the aggregated error deliberately keeps out of its text.
+        Assert.Equal(DataKind.Array, dataContext.GetKind("$.Errors"));
+        Assert.Equal(1, dataContext.Length("$.Errors"));
+        Assert.Equal(0, dataContext.Get<int>("$.Errors[0].index"));
+        Assert.Equal(nameof(MyCustomException), dataContext.Get<string>("$.Errors[0].errorType"));
+        Assert.Equal("Poisoned item 1", dataContext.Get<string>("$.Errors[0].message"));
+
+        // Written before the downstream nodes ran, and no aggregated throw afterwards.
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        Assert.Equal(1, errorCountSeenDownstream);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_NoFailures_WritesEmptyArray()
+    {
+        // With nothing failing the path is still written, as an empty array: a downstream
+        // If@1 over the error count must not have to guard against a missing path.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 3 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "$.Errors",
+            MaxDegreeOfParallelism = 1,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = -999, // never matches
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => testCounter.GetNext()).MustHaveHappened(3, Times.Exactly);
+        Assert.Equal(3, dataContext.Length("$.Result"));
+        Assert.Equal(DataKind.Array, dataContext.GetKind("$.Errors"));
+        Assert.Equal(0, dataContext.Length("$.Errors"));
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_EmptySourceArray_WritesEmptyArray()
+    {
+        // The empty-source shortcut writes an empty result array and returns; the errors array
+        // follows the same rule so the shape a pipeline reads never depends on the input size.
+        var rootJson = new JsonObject { ["Items"] = new JsonArray() }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "$.Errors",
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new TestNodeConfiguration { TargetPath = "$.key" }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(DataKind.Array, dataContext.GetKind("$.Result"));
+        Assert.Equal(0, dataContext.Length("$.Result"));
+        Assert.Equal(DataKind.Array, dataContext.GetKind("$.Errors"));
+        Assert.Equal(0, dataContext.Length("$.Errors"));
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_AllItemsFail_WritesEveryFailure_NoThrow()
+    {
+        // Even when every element fails the pipeline stays in charge: empty result, complete
+        // error array, downstream nodes run, no throw.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 7 },
+            new JsonObject { ["Id"] = 7 },
+            new JsonObject { ["Id"] = 7 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "$.Errors",
+            MaxDegreeOfParallelism = 1,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 7,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
+        Assert.Equal(0, dataContext.Length("$.Result"));
+        Assert.Equal(3, dataContext.Length("$.Errors"));
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_Parallel_EntriesAreOrderedByIterationIndex()
+    {
+        // The errors carry the iteration index, so they must be ordered by it regardless of the
+        // scheduling - the same rule the result array follows (AB#4760).
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 7 },
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 7 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 7 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "$.Errors",
+            MaxDegreeOfParallelism = -1, // unlimited
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 7,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(3, dataContext.Length("$.Errors"));
+        Assert.Equal(0, dataContext.Get<int>("$.Errors[0].index"));
+        Assert.Equal(2, dataContext.Get<int>("$.Errors[1].index"));
+        Assert.Equal(4, dataContext.Get<int>("$.Errors[2].index"));
+        Assert.Equal(2, dataContext.Length("$.Result"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ErrorsPath_Cancellation_IsNotSwallowed()
+    {
+        // errorsPath does not touch the isolation semantics: cancellation is not an iteration
+        // failure, it aborts the loop and propagates instead of being written as data.
+        var items = new JsonArray(
+            new JsonObject { ["Id"] = 1 },
+            new JsonObject { ["Id"] = 2 },
+            new JsonObject { ["Id"] = 3 });
+        var rootJson = new JsonObject { ["Items"] = items }.ToJsonString();
+
+        var forEachNodeConfiguration = new ForEachNodeConfiguration
+        {
+            Path = "$.Items",
+            IterationPath = "$.Items",
+            TargetPath = "$.Result",
+            ErrorsPath = "$.Errors",
+            MaxDegreeOfParallelism = 1,
+            ContinueOnError = true,
+            Transformations = new List<NodeConfiguration>
+            {
+                new FailOnValueTestNodeConfiguration
+                {
+                    SourcePath = "$.key.Id",
+                    FailOnValue = 1,
+                    ThrowCanceled = true,
+                    TargetPath = "$.key",
+                }
+            }
+        };
+
+        var testCounter = A.Fake<ITestCounter>();
+        fixture.Services.AddSingleton(testCounter);
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(rootJson));
+        var rootNodeContext =
+            NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ForEach", 0, forEachNodeConfiguration, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ForEachNode(fn);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => testee.ProcessObjectAsync(dataContext, nodeContext));
+
+        A.CallTo(() => fn.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+        Assert.False(dataContext.Exists("$.Errors"));
+    }
 }

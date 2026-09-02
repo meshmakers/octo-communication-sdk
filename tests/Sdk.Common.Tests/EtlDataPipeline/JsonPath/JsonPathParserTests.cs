@@ -75,6 +75,22 @@ public class JsonPathParserTests
     }
 
     [Fact]
+    public void Parse_IndexBeyondInt32_Throws()
+    {
+        // Must surface as the parser's own error, not as a raw OverflowException.
+        var ex = Assert.Throws<JsonPathException>(() => JsonPathParser.Parse("$.arr[99999999999]"));
+        Assert.Contains("array index", ex.Message);
+    }
+
+    [Fact]
+    public void Parse_NonAsciiDigitIndex_Throws()
+    {
+        // char.IsDigit admits Unicode digits, but an array index must be a plain int.
+        var ex = Assert.Throws<JsonPathException>(() => JsonPathParser.Parse("$.arr[٣]"));
+        Assert.Contains("array index", ex.Message);
+    }
+
+    [Fact]
     public void Parse_ArraySlice_ThrowsNotSupported()
     {
         var ex = Assert.Throws<JsonPathNotSupportedException>(() => JsonPathParser.Parse("$.arr[1:3]"));
