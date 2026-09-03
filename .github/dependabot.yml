@@ -9,6 +9,8 @@ updates:
     schedule:
       interval: "weekly"
     ignore:
+      # Compiler-bound: Microsoft.CodeAnalysis.* stays at the Roslyn version of the pinned .NET SDK (Sdk.Common.Web packs the compile closure as analyzers; a newer Roslyn breaks every consumer with CS9057).
+      - dependency-name: "Microsoft.CodeAnalysis.*"
       # Microsoft.OpenApi stays on the 2.x line: Microsoft.AspNetCore.OpenApi 10.0.x requires [2.7.5, 3.0.0) (NU1608).
       - dependency-name: "Microsoft.OpenApi"
         update-types: ["version-update:semver-major"]
