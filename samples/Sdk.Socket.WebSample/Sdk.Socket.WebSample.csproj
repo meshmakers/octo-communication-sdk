@@ -13,7 +13,7 @@
              falls in the vulnerable range of advisory GHSA-v5pm-xwqc-g5wc (>= 2.0.0-preview11, <= 2.7.4);
              2.7.5 was the first patched release. NuGetAudit fails the build otherwise (warnings as errors).
              The pin cannot move to 3.x: AspNetCore.OpenApi 10.0.11 requires Microsoft.OpenApi [2.7.5, 3.0.0). -->
-        <PackageReference Include="Microsoft.OpenApi" Version="2.12.2" />
+        <PackageReference Include="Microsoft.OpenApi" Version="3.10.2" />
     </ItemGroup>
 
     <ItemGroup>
