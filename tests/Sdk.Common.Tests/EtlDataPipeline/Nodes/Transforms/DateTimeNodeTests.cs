@@ -805,6 +805,11 @@ public class DateTimeNodeTests(NodeFixture fixture) : IClassFixture<NodeFixture>
 
         A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
         Assert.Equal(ReferenceDate, dataContext.Get<DateTime>("$.result"));
+
+        // The UTC zone is the one destination for which ConvertTimeFromUtc returns a Utc-tagged
+        // value; the wall-clock contract holds there as well, so no trailing Z.
+        Assert.Equal("2025-06-15T14:30:45", dataContext.Get<string>("$.result"));
+        Assert.Equal(DateTimeKind.Unspecified, dataContext.Get<DateTime>("$.result").Kind);
     }
 
     [Fact]

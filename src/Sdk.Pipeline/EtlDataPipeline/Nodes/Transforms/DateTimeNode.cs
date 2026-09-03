@@ -275,7 +275,12 @@ public class DateTimeNode(NodeDelegate next) : IPipelineNode
 
         // UTC -> zone is always unambiguous: the skipped and the repeated local hour of a
         // daylight saving switch both map from exactly one instant.
-        return TimeZoneInfo.ConvertTimeFromUtc(utc, timeZone);
+        var converted = TimeZoneInfo.ConvertTimeFromUtc(utc, timeZone);
+
+        // ConvertTimeFromUtc tags the result Utc when the destination is the UTC zone itself and
+        // Unspecified for every other zone. The result of this operation is wall-clock time for
+        // all zones alike, so the kind is normalized and the value never serializes with a Z.
+        return DateTime.SpecifyKind(converted, DateTimeKind.Unspecified);
     }
 
     private static string GetTimeZoneId(IDataContext dataContext, DateTimeNodeConfiguration config,
