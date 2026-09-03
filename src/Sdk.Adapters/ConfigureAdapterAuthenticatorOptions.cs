@@ -42,6 +42,7 @@ public sealed class ConfigureAdapterAuthenticatorOptions : IConfigureOptions<Aut
         options.IssuerUri = adapterOptions.IssuerUri ?? string.Empty;
         options.ClientId = adapterOptions.ClientId ?? string.Empty;
         options.ClientSecret = adapterOptions.ClientSecret;
+        options.AdditionalValidIssuers = adapterOptions.AdditionalValidIssuers;
         // Drives acr_values=tenant:{TenantId} on the token request. Without it the identity service
         // issues for the system tenant since AB#5077 and the adapter is refused on its own route.
         options.TenantId = adapterOptions.TenantId;

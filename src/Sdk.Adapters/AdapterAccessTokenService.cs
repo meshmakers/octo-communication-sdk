@@ -131,13 +131,34 @@ public sealed class AdapterAccessTokenService : BackgroundService
             try
             {
                 await Task.Delay(NextDelay(), stoppingToken);
+                await EnsureTokenAsync();
             }
             catch (OperationCanceledException)
             {
                 return;
             }
+            catch (Exception ex)
+            {
+                // 🔴 Nothing may escape this loop (AB#5080). HostOptions.BackgroundServiceException-
+                // Behavior defaults to StopHost, so a single throw here does not degrade the token
+                // refresh — it takes the whole adapter down and leaves it crash-looping. This service
+                // is a helper: losing it must mean the adapter falls back to an anonymous hub
+                // connection, which is exactly how every adapter in the estate runs today, and never
+                // that the adapter stops running.
+                _logger.LogError(ex,
+                    "Unexpected failure in the adapter access-token loop for client {ClientId}; the " +
+                    "adapter keeps running with whatever token it already has (possibly none) and the " +
+                    "next attempt runs in {RetryInterval}", _options.ClientId, RetryIntervalOverride);
 
-            await EnsureTokenAsync();
+                try
+                {
+                    await Task.Delay(RetryIntervalOverride, stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
         }
     }
 
@@ -149,6 +170,18 @@ public sealed class AdapterAccessTokenService : BackgroundService
     /// </summary>
     private TimeSpan NextDelay()
     {
+        // 🔴 Guard the arithmetic, not just its result (AB#5080). _expiresAtUtc is DateTime.MinValue
+        // until the first successful acquisition, and DateTime.MinValue - RefreshSkew underflows and
+        // throws ArgumentOutOfRangeException *before* the comparison below can pick the retry
+        // cadence — so the one case this method exists to handle was the one that crashed. Since an
+        // unhandled BackgroundService exception stops the host by default, that turned "the identity
+        // service refused the token" into a crash loop for the entire adapter. Found on the local
+        // kind cluster; every unit test had a token, so none of them reached this line.
+        if (_expiresAtUtc - DateTime.MinValue <= RefreshSkew)
+        {
+            return RetryIntervalOverride;
+        }
+
         var untilRefresh = _expiresAtUtc - RefreshSkew - DateTime.UtcNow;
         return untilRefresh > RetryIntervalOverride ? untilRefresh : RetryIntervalOverride;
     }

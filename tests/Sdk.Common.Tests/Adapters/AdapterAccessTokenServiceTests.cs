@@ -279,6 +279,56 @@ public class AdapterAccessTokenServiceTests
     ///     foreign exception carries credential material is not this service's contract, and folding
     ///     it in would make the assertion pass or fail for the wrong reason.
     /// </summary>
+
+    /// <summary>
+    ///     🔴 AB#5080 — the regression this whole class missed. Every other test here hands the
+    ///     service a token first, so none of them ever reached the delay computation in its
+    ///     no-token-yet state: <c>_expiresAtUtc</c> is <see cref="DateTime.MinValue" /> until the
+    ///     first success, and subtracting the refresh skew from it underflows and throws
+    ///     <see cref="ArgumentOutOfRangeException" /> — in the one situation the code exists to
+    ///     survive. Because an unhandled <see cref="BackgroundService" /> exception stops the host by
+    ///     default, that turned a refused token into a crash-looping adapter. Found on the local kind
+    ///     cluster, not here.
+    /// </summary>
+    [Fact]
+    public async Task AcquisitionFailureWithNoPreviousToken_KeepsTheServiceRunning()
+    {
+        var authenticatorClient = A.Fake<IAuthenticatorClient>();
+        A.CallTo(() => authenticatorClient.RequestClientCredentialsTokenAsync(
+                A<ApiScopes>._, A<DefaultScopes>._, A<IEnumerable<string>>._, A<string>._, A<string>._))
+            .Throws(new InvalidOperationException("Issuer name does not match authority"));
+
+        var accessToken = new ServiceClientAccessToken();
+        var logger = new CapturingLogger();
+        var service = CreateService(authenticatorClient, accessToken, logger: logger);
+        service.RetryIntervalOverride = TimeSpan.FromMilliseconds(20);
+
+        // StartAsync does the first acquisition and then starts the refresh loop. Neither may throw:
+        // the acquisition failure is expected here, and the loop's delay computation is what used to
+        // blow up on the resulting empty state.
+        await service.StartAsync(CancellationToken.None);
+
+        // Give the loop a moment to reach its first NextDelay() and come back around.
+        await Task.Delay(TimeSpan.FromMilliseconds(150), TestContext.Current.CancellationToken);
+
+        // ExecuteTask is the BackgroundService's own task -- a faulted one is precisely what makes the
+        // host stop, so asserting on it is asserting on the crash loop itself.
+        Assert.NotNull(service.ExecuteTask);
+        Assert.False(service.ExecuteTask!.IsFaulted,
+            "the refresh loop faulted; an unhandled exception here stops the host and crash-loops the adapter");
+        Assert.Null(accessToken.AccessToken);
+
+        // 🔴 The discriminating assertion. The catch-all in ExecuteAsync keeps the host alive even
+        // when NextDelay() throws, so "the loop did not fault" alone passes with the arithmetic bug
+        // still in place -- it only proves the safety net. The safety net announces itself, so its
+        // silence is what proves the arithmetic is right: with the underflow present this line is
+        // logged on every iteration.
+        Assert.DoesNotContain(logger.Messages,
+            m => m.Contains("Unexpected failure in the adapter access-token loop"));
+
+        await service.StopAsync(CancellationToken.None);
+    }
+
     private sealed class CapturingLogger : ILogger<AdapterAccessTokenService>
     {
         public List<string> Messages { get; } = [];

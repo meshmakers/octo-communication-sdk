@@ -87,6 +87,27 @@ public class AdapterOptions
     public string? ClientSecret { get; set; }
 
     /// <summary>
+    ///     Issuer values accepted in the identity service's discovery document in addition to
+    ///     <see cref="IssuerUri" /> (AB#5081). Empty by default, i.e. the document's <c>issuer</c>
+    ///     must equal the address the adapter was pointed at.
+    /// </summary>
+    /// <remarks>
+    ///     Bound from the same <c>Adapter:AdditionalValidIssuers</c> key the inbound direction
+    ///     already uses (<c>OCTO_ADAPTER__ADDITIONALVALIDISSUERS__0</c>), on purpose: it is the same
+    ///     fact about the deployment — "this identity service is also known under these names" —
+    ///     and an adapter that needs it for the tokens it accepts needs it for the token it fetches.
+    ///     Sharing the key means a split-horizon installation that already works inbound needs no
+    ///     new setting to work outbound.
+    ///     <para>
+    ///         The case it exists for: an adapter in a container reaching the host's identity service
+    ///         as <c>https://mac.local:5003</c> while that service advertises
+    ///         <c>https://localhost:5003/</c>. Without it, discovery fails with "Issuer name does not
+    ///         match authority" and no token is ever acquired.
+    ///     </para>
+    /// </remarks>
+    public string[] AdditionalValidIssuers { get; set; } = [];
+
+    /// <summary>
     ///     Whether enough is configured to attempt a token request at all (AB#5072).
     /// </summary>
     /// <remarks>
