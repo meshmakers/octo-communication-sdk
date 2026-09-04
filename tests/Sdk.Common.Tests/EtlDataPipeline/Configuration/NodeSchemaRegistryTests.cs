@@ -215,6 +215,16 @@ public record ProcessBoundTriggerNodeConfiguration : TriggerNodeConfiguration
     public string? Name { get; set; }
 }
 
+/// <summary>
+/// Test configuration carrying the AB#5127 execution-identity property, to prove the
+/// <see cref="NodeExecutionIdentity"/> tri-state reaches the generated node schema.
+/// </summary>
+[NodeName("TestExecutionIdentity", 1)]
+public record ExecutionIdentityNodeConfiguration : NodeConfiguration
+{
+    public NodeExecutionIdentity Identity { get; set; } = NodeExecutionIdentity.Caller;
+}
+
 #endregion
 
 public class NodeSchemaRegistryTests
@@ -362,6 +372,24 @@ public class NodeSchemaRegistryTests
         // CONSTANT_CASE
         Assert.Contains("READ_HOLDING_REGISTER", values);
         Assert.Contains("HTTPREQUEST", values);
+    }
+
+    [Fact]
+    public void BuildDescriptor_ExecutionIdentity_ExposesTheTriStateInTheSchema()
+    {
+        // AB#5127: the identity property must reach the generated schema so the Studio node inspector
+        // renders it (the same route AB#5108's mcpDelegateToCaller shows up through).
+        var schema = GetSchemaForConfig<ExecutionIdentityNodeConfiguration>("TestExecutionIdentity@1");
+        var values = GetEnumValues(schema, "identity");
+
+        // PascalCase
+        Assert.Contains("Caller", values);
+        Assert.Contains("ServiceAccount", values);
+        Assert.Contains("System", values);
+        // CONSTANT_CASE
+        Assert.Contains("CALLER", values);
+        Assert.Contains("SERVICE_ACCOUNT", values);
+        Assert.Contains("SYSTEM", values);
     }
 
     [Fact]
