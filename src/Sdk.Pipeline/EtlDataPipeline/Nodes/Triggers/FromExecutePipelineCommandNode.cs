@@ -52,6 +52,26 @@ public class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
                     {
                         IsDryRun = message.IsDryRun
                     };
+
+                    // AB#5126: the invoker already holds a token, so carry it through onto the
+                    // execution as the caller (there is nothing to resolve against the directory
+                    // for a manual invocation) and enforce the trigger's three-state binding policy.
+                    var callerBinding = context.NodeContext
+                        .GetNodeConfiguration<FromExecutePipelineCommandNodeConfiguration>().CallerBinding;
+                    var outcome = ExecuteCommandCallerCarryThrough.Apply(message, callerBinding, executeOptions);
+                    if (outcome == CallerBindingOutcome.Reject)
+                    {
+                        // binding required, but the request carried no invoker — refuse, never run as
+                        // the service account (AB#5126). Reported back on the command response.
+                        context.NodeContext.Warning(
+                            "[{TenantId}] Rejecting manual execution of '{PipelineId}': caller binding is required but no invoker was carried",
+                            message.TenantId, context.PipelineRtEntityId);
+                        await responseFunc(new ExecutePipelineResponse(false,
+                            "Caller binding is required for this pipeline, but the execution request carried no invoker.",
+                            null, null));
+                        return;
+                    }
+
                     var pipelineExecutionId = await context.StartExecutePipelineAsync(executeOptions, input);
                     await responseFunc(new ExecutePipelineResponse(true, null, pipelineExecutionId, startDateTime));
 

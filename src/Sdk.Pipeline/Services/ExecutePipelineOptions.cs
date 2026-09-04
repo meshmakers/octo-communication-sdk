@@ -65,4 +65,12 @@ public class ExecutePipelineOptions(DateTime transactionStartedDateTime)
     ///     </para>
     /// </remarks>
     public string? CallerAccessToken { get; set; }
+
+    /// <summary>
+    /// Gets or sets the <b>effective trust</b> of the verified caller (AB#5126) — the
+    /// <c>min(enrollment, message)</c> the trigger's directory resolution produced, or
+    /// <see cref="CallerTrustLevel.None" /> for an anonymous / unresolved sender. Carried onto the
+    /// ETL context so a node can demand a minimum before it acts as the caller.
+    /// </summary>
+    public CallerTrustLevel CallerTrust { get; set; } = CallerTrustLevel.None;
 }

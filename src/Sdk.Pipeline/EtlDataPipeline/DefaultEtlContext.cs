@@ -24,10 +24,15 @@ public class DefaultEtlContext : IEtlContext
     /// Raw access token the caller presented to the trigger, for delegation ("on-behalf-of")
     /// requests (AB#5031). Never log it and never write it into the data context.
     /// </param>
-    public DefaultEtlContext(string tenantId, OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime transactionStartedDateTime, DateTime? externalReceivedDateTime, IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties, Services.VerifiedPrincipal? verifiedPrincipal = null, string? callerAccessToken = null)
+    /// <param name="callerTrust">
+    /// Effective trust of the verified caller, so a node can demand a minimum (AB#5126). Defaults to
+    /// <see cref="Services.CallerTrustLevel.None" /> — an execution with no verified caller.
+    /// </param>
+    public DefaultEtlContext(string tenantId, OctoObjectId dataFlowRtId, Guid pipelineExecutionId, RtEntityId pipelineRtEntityId, DateTime transactionStartedDateTime, DateTime? externalReceivedDateTime, IGlobalConfiguration globalConfiguration, IDictionary<string, object?> properties, Services.VerifiedPrincipal? verifiedPrincipal = null, string? callerAccessToken = null, Services.CallerTrustLevel callerTrust = Services.CallerTrustLevel.None)
     {
         VerifiedPrincipal = verifiedPrincipal;
         CallerAccessToken = callerAccessToken;
+        CallerTrust = callerTrust;
         TenantId = tenantId;
         PipelineExecutionId = pipelineExecutionId;
         DataFlowRtId = dataFlowRtId;
@@ -67,4 +72,7 @@ public class DefaultEtlContext : IEtlContext
 
     /// <inheritdoc />
     public string? CallerAccessToken { get; }
+
+    /// <inheritdoc />
+    public Services.CallerTrustLevel CallerTrust { get; }
 }

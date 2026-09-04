@@ -71,4 +71,17 @@ public interface IEtlContext
     /// Never log this value and never write it into the data context.
     /// </remarks>
     string? CallerAccessToken => null;
+
+    /// <summary>
+    /// Gets the <b>effective trust</b> of the verified caller (AB#5126), so a node can demand a
+    /// minimum — e.g. delegate only when the caller is at least <see cref="CallerTrustLevel.Strong" />.
+    /// <see cref="CallerTrustLevel.None" /> for anonymous / internal triggers and for a caller with
+    /// no verified-identifier binding.
+    /// </summary>
+    /// <remarks>
+    /// A default interface member for the same reason as <see cref="VerifiedPrincipal" /> and
+    /// <see cref="CallerAccessToken" />: adapters that implement <see cref="IEtlContext" /> themselves
+    /// are not broken by the addition.
+    /// </remarks>
+    CallerTrustLevel CallerTrust => CallerTrustLevel.None;
 }
