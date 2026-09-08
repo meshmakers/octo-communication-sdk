@@ -13,9 +13,17 @@ namespace Meshmakers.Octo.Sdk.Common.Services;
 /// <param name="Email">E-mail claim of the caller, if present</param>
 /// <param name="Name">Display name claim of the caller, if present</param>
 /// <param name="Roles">Role claims of the caller</param>
+/// <param name="PreferredChannel">
+///     The caller's preferred outbound channel for system-initiated messages (AB#5149), read from the
+///     user's identity record by the verified-caller directory. Canonical uppercase channel names —
+///     "TEAMS" | "SIGNAL" (extensible) — propagated verbatim; null when the user has no preference or
+///     the resolution path carries none (e.g. a bearer-token caller). Routing only: synchronous
+///     replies keep using the channel the message came in on.
+/// </param>
 public sealed record VerifiedPrincipal(
     string? SubjectId,
     string? TenantId,
     string? Email,
     string? Name,
-    IReadOnlyList<string> Roles);
+    IReadOnlyList<string> Roles,
+    string? PreferredChannel = null);

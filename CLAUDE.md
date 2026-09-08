@@ -78,7 +78,11 @@ in `octo-mesh-adapter`). What lives **here** is the carrier and the triggers tha
 - **`ExecutePipelineOptions.VerifiedPrincipal`** (AB#4975) — the caller a trigger authenticated. A
   slim, token-free value object, because the trigger projects it into the pipeline data root, which is
   echoed in HTTP responses, persistable by `SetPipelineExecutionResult@1` and shown in the Studio
-  debug panel.
+  debug panel. Carries `PreferredChannel` (AB#5149, optional last positional parameter so every
+  pre-existing constructor call keeps compiling): the user's preferred outbound channel for
+  system-initiated messages, canonical uppercase `"TEAMS"` | `"SIGNAL"` (extensible), filled by the
+  mesh adapter's verified-caller directory from the identity record and propagated verbatim — null
+  for callers resolved from bearer claims (no such claim exists).
 - **`ExecutePipelineOptions.CallerAccessToken`** (AB#5031) — the caller's **raw** bearer token, for
   nodes that must act as the caller against another service (the delegation / on-behalf-of grant needs
   it as `subject_token`). 🔴 It must never reach the data root, never `VerifiedPrincipal`, and never
