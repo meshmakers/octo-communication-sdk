@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Transforms;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 
 namespace Sdk.Common.Tests.EtlDataPipeline.Configuration;
@@ -893,6 +894,37 @@ public class NodeSchemaRegistryTests
         var descriptor = registry.GetDescriptor("FromPolling@1");
         Assert.NotNull(descriptor);
         Assert.True(descriptor.RequiresRunningProcess);
+    }
+
+    #endregion
+
+    #region Join@1 options (AB#5163)
+
+    [Fact]
+    public void BuildDescriptor_Join_ShowsBothOptions()
+    {
+        // The pipeline schema offers allowMissingKey and noMatchHandling on Join@1 as optional
+        // properties in the Options group, the enum in both spellings, and keeps the four paths
+        // required, so a Join@1 written without the options stays valid.
+        var schema = GetSchemaForConfig<JoinNodeConfiguration>("Join@1");
+        var properties = schema["properties"]!.AsObject();
+
+        var allowMissingKey = properties["allowMissingKey"]!.AsObject();
+        Assert.Equal("boolean", allowMissingKey["type"]!.GetValue<string>());
+        Assert.Equal("Options", allowMissingKey["x-group"]!.GetValue<string>());
+        Assert.Contains("left-join", allowMissingKey["description"]!.GetValue<string>());
+
+        // The optional enum is emitted as oneOf with a single $ref into the definitions.
+        var noMatchHandling = properties["noMatchHandling"]!.AsObject();
+        Assert.Equal("Options", noMatchHandling["x-group"]!.GetValue<string>());
+        var reference = noMatchHandling["oneOf"]!.AsArray().Single()!["$ref"]!.GetValue<string>();
+        Assert.Equal("#/definitions/JoinNoMatchHandlingDto", reference);
+        var values = schema["definitions"]!["JoinNoMatchHandlingDto"]!["enum"]!.AsArray()
+            .Select(t => t!.GetValue<string>()).ToList();
+        Assert.Equal(["Ignore", "IGNORE", "Fail", "FAIL"], values);
+
+        var required = schema["required"]!.AsArray().Select(t => t!.GetValue<string>()).ToList();
+        Assert.Equal(["keyPath", "joinPath", "joinKeyPath", "itemPath"], required);
     }
 
     #endregion
