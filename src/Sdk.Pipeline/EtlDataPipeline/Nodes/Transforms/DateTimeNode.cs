@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
 
@@ -63,6 +64,19 @@ public enum DateTimeOperationDto
     /// Extracts the time part as a string in "HH:mm:ss" format.
     /// </summary>
     ExtractTime = 10,
+
+    /// <summary>
+    /// Converts a UTC date/time value into the wall-clock time of an IANA time zone
+    /// (for example <c>Europe/Vienna</c>), taking daylight saving time into account.
+    /// The zone id comes from ValuePath, or from Value when no path is configured.
+    /// </summary>
+    ConvertToTimeZone = 11,
+
+    /// <summary>
+    /// Converts Unix time in milliseconds since 1970-01-01T00:00:00Z, read from Path,
+    /// into a UTC date/time value.
+    /// </summary>
+    FromUnixTimeMilliseconds = 12,
 }
 
 /// <summary>
@@ -79,7 +93,8 @@ public record DateTimeNodeConfiguration : SourceTargetPathNodeConfiguration
 
     /// <summary>
     /// A static value to be used in the operation. For Add* operations this is a number,
-    /// for Format it is the .NET format string.
+    /// for Format it is the .NET format string, and for ConvertToTimeZone it is the IANA
+    /// time zone id (for example <c>Europe/Vienna</c>).
     /// </summary>
     [PropertyGroup("Options", 1)]
     public object? Value { get; init; }
@@ -93,7 +108,8 @@ public record DateTimeNodeConfiguration : SourceTargetPathNodeConfiguration
 
 /// <summary>
 /// DateTime node that performs date/time operations on pipeline data.
-/// Supports arithmetic (Add*), comparison (DaysBetween), formatting, and extraction operations.
+/// Supports arithmetic (Add*), comparison (DaysBetween), formatting, extraction, IANA time zone
+/// conversion, and Unix epoch conversion operations.
 /// </summary>
 /// <param name="next">The next node in the pipeline to execute after this operation.</param>
 [NodeConfiguration(typeof(DateTimeNodeConfiguration))]
@@ -129,6 +145,8 @@ public class DateTimeNode(NodeDelegate next) : IPipelineNode
             DateTimeOperationDto.ExtractDate => GetSourceDateTime(dataContext, c, nodeContext).Date,
             DateTimeOperationDto.ExtractTime => GetSourceDateTime(dataContext, c, nodeContext)
                 .ToString("HH:mm:ss", CultureInfo.InvariantCulture),
+            DateTimeOperationDto.ConvertToTimeZone => ConvertToTimeZone(dataContext, c, nodeContext),
+            DateTimeOperationDto.FromUnixTimeMilliseconds => FromUnixTimeMilliseconds(dataContext, c, nodeContext),
             _ => throw new NotSupportedException($"Operation {c.Operation} is not supported")
         };
 
@@ -232,5 +250,92 @@ public class DateTimeNode(NodeDelegate next) : IPipelineNode
         return new DateTime(dateSource.Year, dateSource.Month, dateSource.Day,
             timeSource.Hour, timeSource.Minute, timeSource.Second,
             timeSource.Millisecond, DateTimeKind.Utc);
+    }
+
+    private static DateTime ConvertToTimeZone(IDataContext dataContext, DateTimeNodeConfiguration config,
+        INodeContext nodeContext)
+    {
+        var source = GetSourceDateTime(dataContext, config, nodeContext);
+        var timeZoneId = GetTimeZoneId(dataContext, config, nodeContext);
+
+        if (!TimeZoneInfo.TryFindSystemTimeZoneById(timeZoneId, out var timeZone))
+        {
+            throw PipelineExecutionException.TimeZoneNotFound(nodeContext.NodePath, timeZoneId);
+        }
+
+        // Pipeline timestamps are UTC instants; a value that lost its Z on the way through an
+        // upstream system is read as UTC too, so the result never depends on the machine's own
+        // time zone. ConvertTimeFromUtc rejects a Local kind outright, hence the normalization.
+        var utc = source.Kind switch
+        {
+            DateTimeKind.Local => source.ToUniversalTime(),
+            DateTimeKind.Unspecified => DateTime.SpecifyKind(source, DateTimeKind.Utc),
+            _ => source
+        };
+
+        // UTC -> zone is always unambiguous: the skipped and the repeated local hour of a
+        // daylight saving switch both map from exactly one instant.
+        var converted = TimeZoneInfo.ConvertTimeFromUtc(utc, timeZone);
+
+        // ConvertTimeFromUtc tags the result Utc when the destination is the UTC zone itself and
+        // Unspecified for every other zone. The result of this operation is wall-clock time for
+        // all zones alike, so the kind is normalized and the value never serializes with a Z.
+        return DateTime.SpecifyKind(converted, DateTimeKind.Unspecified);
+    }
+
+    private static string GetTimeZoneId(IDataContext dataContext, DateTimeNodeConfiguration config,
+        INodeContext nodeContext)
+    {
+        if (string.IsNullOrWhiteSpace(config.ValuePath))
+        {
+            return GetStringValue(config, nodeContext);
+        }
+
+        if (!dataContext.Exists(config.ValuePath!) ||
+            dataContext.GetKind(config.ValuePath!) == DataKind.Null)
+        {
+            throw PipelineExecutionException.ValueNotSet(nodeContext, config.ValuePath);
+        }
+
+        var timeZoneId = dataContext.Get<string>(config.ValuePath!);
+        if (string.IsNullOrWhiteSpace(timeZoneId))
+        {
+            throw PipelineExecutionException.ValueNotSet(nodeContext, config.ValuePath);
+        }
+
+        return timeZoneId!;
+    }
+
+    private static DateTime FromUnixTimeMilliseconds(IDataContext dataContext, DateTimeNodeConfiguration config,
+        INodeContext nodeContext)
+    {
+        if (!dataContext.Exists(config.Path) || dataContext.GetKind(config.Path) == DataKind.Null)
+        {
+            throw PipelineExecutionException.ValueNotSet(nodeContext, config.Path);
+        }
+
+        long milliseconds;
+        try
+        {
+            // Typed Get<long>() so STJ reads the JSON number - or a quoted one, which REST
+            // payloads use for large integers - straight into the CLR type. Get<object?>()
+            // would box a JsonElement that Convert.ToInt64 cannot handle.
+            milliseconds = dataContext.Get<long>(config.Path);
+        }
+        catch (JsonException e)
+        {
+            throw PipelineExecutionException.InvalidUnixTimestamp(nodeContext.NodePath, config.Path,
+                "the value is not a whole number", e);
+        }
+
+        try
+        {
+            return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).UtcDateTime;
+        }
+        catch (ArgumentOutOfRangeException e)
+        {
+            throw PipelineExecutionException.InvalidUnixTimestamp(nodeContext.NodePath, config.Path,
+                $"'{milliseconds}' is outside the range of representable dates", e);
+        }
     }
 }

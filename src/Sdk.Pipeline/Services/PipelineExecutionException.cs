@@ -251,6 +251,32 @@ public class PipelineExecutionException : Exception
     }
 
     /// <summary>
+    /// Exception thrown when a configured time zone id cannot be resolved on the running system
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="timeZoneId">The time zone id that could not be resolved</param>
+    /// <returns></returns>
+    public static Exception TimeZoneNotFound(NodePath nodePath, string timeZoneId)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Time zone '{timeZoneId}' not found. Expected an IANA time zone id, e.g. 'Europe/Vienna'.");
+    }
+
+    /// <summary>
+    /// Exception thrown when a value cannot be read as Unix time in milliseconds
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="path">Path the value was read from</param>
+    /// <param name="reason">Why the value is not a usable Unix timestamp</param>
+    /// <param name="inner">The underlying conversion or range error</param>
+    /// <returns></returns>
+    public static Exception InvalidUnixTimestamp(NodePath nodePath, string path, string reason, Exception inner)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Value at '{path}' is not a valid Unix time in milliseconds: {reason}", inner);
+    }
+
+    /// <summary>
     /// Exception thrown when two configuration properties address overlapping paths
     /// </summary>
     /// <param name="nodePath">Path to the node</param>

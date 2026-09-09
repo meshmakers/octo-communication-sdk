@@ -117,9 +117,20 @@ stages:
               publishWebProjects: false
               zipAfterPublish: false
               modifyOutputPath: false
-          # No tests yet — the moved test projects (Sdk.Common.Tests,
-          # Sdk.Common.IntegrationTests, Sdk.Common.PipelineParityTests) still
-          # need to land in this repo. Phase 3.5 follow-up.
+          # AB#5097 — the test projects landed with the Phase 3 carve-out, but CI
+          # never executed them. --no-build reuses the assemblies the Build step
+          # produced, so the configuration has to match that step's; DotNetCoreCLI@2
+          # appends "--logger trx --results-directory $(Agent.TempDirectory)" by
+          # itself (publishTestResults defaults to true) and publishes the TRX. Runs
+          # before the Docker/Helm/NuGet steps so a red test blocks the artifacts.
+          - task: DotNetCoreCLI@2
+            retryCountOnTaskFailure: 2
+            displayName: 'Test (Sdk.Common.Tests)'
+            inputs:
+              command: 'test'
+              projects: 'tests/Sdk.Common.Tests/Sdk.Common.Tests.csproj'
+              arguments: '--no-build --configuration $(buildConfiguration) /p:OctoNugetPrivateServer=$(nugetPrivateServer)'
+              testRunTitle: 'Sdk.Common.Tests'
           - template: templates/steps/build-and-push-docker.yml@pipelineTemplates
             parameters:
               publicRegistryServiceConnection: $(DockerRegistryPublicConnection)
