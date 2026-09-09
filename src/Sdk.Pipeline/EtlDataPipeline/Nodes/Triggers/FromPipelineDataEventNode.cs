@@ -13,6 +13,21 @@ namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 [NodeName("FromPipelineDataEvent", 1)]
 public record FromPipelineDataEventNodeConfiguration : TriggerNodeConfiguration;
 
+// AB#5045 — an execution started from a pipeline data event has NO caller identity, on purpose.
+//
+// Both consumers below build their ExecutePipelineOptions without a VerifiedPrincipal and without a
+// CallerAccessToken. The caller identity of the pipeline that raised the event ends at
+// ToPipelineDataEvent@1, which records the hand-off on its execution log. This execution therefore
+// resolves its own identity through the adapter's PipelineIdentityResolver (AB#5028): the pipeline's
+// service account, or the system context on a tenant that has none.
+//
+// 🔴 Do not "fix" this by carrying the principal or the token across. The sender picks the routing
+// key, so forwarding would let whoever may enqueue into the data flow act as whoever last triggered
+// the sending pipeline — against a target that never authenticated them. On the pub/sub path the
+// message has no bounded lifetime either, so the identity would stay usable for as long as it sits
+// in the queue. That is a privilege escalation, not a convenience. FromPipelineDataEventNodeTests
+// pins the absence of both values so a well-meant change fails a test rather than shipping.
+
 
 [NodeConfiguration(typeof(FromPipelineDataEventNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global

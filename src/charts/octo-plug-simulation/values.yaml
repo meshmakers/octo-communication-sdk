@@ -46,6 +46,19 @@ reportingServiceUri: ""
 # Disambiguates adapter pods deployed by this operator on shared brokers.
 instancePrefix: ""
 
+# The public uri of the oauth service. The adapter authenticates ITSELF against it
+# before it connects to the adapter hub (AB#5072, OCTO_ADAPTER__ISSUERURI). Supplied
+# for every workload by the communication operator, so it is normally never set by
+# hand. Must be the public issuer address, not a cluster-internal service name.
+authUri: ""
+
+# Client id of the adapter's own confidential OAuth client (AB#5072). Written by the
+# communication controller as a `ValueOverride` at deploy time from the
+# ServiceAccountConfiguration it provisions per adapter (AB#5027). Empty = the adapter
+# acquires no token and connects to the adapter hub anonymously. Its secret lives
+# under `secrets.serviceAccountClientSecret`.
+serviceAccountClientId: ""
+
 secrets:
   # Each value may be either:
   #   - a string  → plaintext, packed into the chart-owned `<fullname>-backend` Secret
@@ -57,6 +70,12 @@ secrets:
   databaseAdmin: ""
   streamDataPassword: ""
   rabbitmq: ""
+  # Client secret of `serviceAccountClientId` (AB#5072). Accepts a plaintext string
+  # (packed into the chart-owned `<fullname>-backend` Secret) or a
+  # `{valueFrom: {secretKeyRef: ...}}` map -- the latter is what the communication
+  # operator supplies from `{release}-octo-secrets`. Unlike the cluster secrets this
+  # one is OPTIONAL: unset means the adapter connects anonymously.
+  serviceAccountClientSecret: ""
   # Optional: PEM-encoded CA bundle. When set, the initContainer adds it to
   # the system trust store so the plug accepts self-signed / private CA
   # certs (e.g. mm-cloud-issuer on the test-2 cluster).

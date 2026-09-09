@@ -1,5 +1,6 @@
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 
@@ -48,4 +49,39 @@ public interface IEtlContext
     /// Gets the global configuration for the pipeline
     /// </summary>
     IGlobalConfiguration GlobalConfiguration { get; }
+
+    /// <summary>
+    /// Gets the authenticated caller of the trigger, verified by the trigger's own authorization
+    /// (AB#4975). Null for anonymous and internal triggers. Deliberately NOT part of
+    /// <see cref="Properties" /> — that dictionary is shared across pipeline runs.
+    /// </summary>
+    VerifiedPrincipal? VerifiedPrincipal => null;
+
+    /// <summary>
+    /// Gets the <b>raw access token</b> the caller presented to the trigger, for nodes that must act
+    /// as the caller against another service (delegation / "on-behalf-of" — AB#5026 / AB#5031).
+    /// Null for anonymous and internal triggers.
+    /// </summary>
+    /// <remarks>
+    /// A default interface member so adapters implementing <see cref="IEtlContext" /> themselves are
+    /// not broken by the addition — the same pattern <see cref="VerifiedPrincipal" /> uses.
+    /// Deliberately NOT part of <see cref="Properties" /> (shared across pipeline runs) and NOT part
+    /// of <see cref="VerifiedPrincipal" /> (projected into the persistable, echoed data root); see
+    /// <see cref="Services.ExecutePipelineOptions.CallerAccessToken" /> for the full reasoning.
+    /// Never log this value and never write it into the data context.
+    /// </remarks>
+    string? CallerAccessToken => null;
+
+    /// <summary>
+    /// Gets the <b>effective trust</b> of the verified caller (AB#5126), so a node can demand a
+    /// minimum — e.g. delegate only when the caller is at least <see cref="CallerTrustLevel.Strong" />.
+    /// <see cref="CallerTrustLevel.None" /> for anonymous / internal triggers and for a caller with
+    /// no verified-identifier binding.
+    /// </summary>
+    /// <remarks>
+    /// A default interface member for the same reason as <see cref="VerifiedPrincipal" /> and
+    /// <see cref="CallerAccessToken" />: adapters that implement <see cref="IEtlContext" /> themselves
+    /// are not broken by the addition.
+    /// </remarks>
+    CallerTrustLevel CallerTrust => CallerTrustLevel.None;
 }

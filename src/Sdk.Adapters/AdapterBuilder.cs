@@ -7,6 +7,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Buffering.EdgeBuffer;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Meshmakers.Octo.Sdk.ServiceClient.AssetRepositoryServices.Tenants;
+using Meshmakers.Octo.Sdk.ServiceClient.Authentication;
 using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -162,6 +163,18 @@ public class AdapterBuilder
 
             services.AddSingleton<IPipelineRegistryService, PipelineRegistryService>();
             services.AddSingleton<IServiceClientAccessToken, ServiceClientAccessToken>();
+
+            // AB#5072 - the adapter's own service credential for the controller's adapter hub.
+            // The access-token holder above is a singleton because the SDK's SignalR client reads it
+            // on every (re)connect: AdapterAccessTokenService writes into the very instance
+            // AdapterHubClient was handed, so a refresh reaches the next reconnect without any
+            // notification path. Registered as a hosted service BEFORE every other hosted service so
+            // its StartAsync (which acquires the first token) completes before the hub connects -
+            // hosted services are started sequentially.
+            services.AddSingleton<IConfigureOptions<AuthenticatorOptions>, ConfigureAdapterAuthenticatorOptions>();
+            services.AddSingleton<IAuthenticatorClient, AuthenticatorClient>();
+            services.AddSingleton<AdapterAccessTokenService>();
+            services.AddHostedService(provider => provider.GetRequiredService<AdapterAccessTokenService>());
 
             services.AddSingleton<AdapterHubCallbackService>();
             services.AddSingleton<IAdapterHubCallbacks>(provider =>

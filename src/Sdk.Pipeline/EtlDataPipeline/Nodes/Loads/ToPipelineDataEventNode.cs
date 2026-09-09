@@ -63,6 +63,8 @@ public class ToPipelineDataEventNode(
             throw DataPipelineException.MissingRequiredConfiguration("ToPipelineDataEvent", "TargetPipelineRtId");
         }
 
+        RecordIdentityBoundary(adapterEtlContext, nodeContext, c);
+
         // Transform the data context so that only the target object is sent
         var o = dataContext.Get<JsonNode>(c.Path);
         var target = new JsonObject();
@@ -132,5 +134,57 @@ public class ToPipelineDataEventNode(
         }
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>
+    ///     Records that an execution's caller identity <b>ends here</b> (AB#5045).
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         A pipeline data event crosses the message bus, and the trigger on the other side
+    ///         (<c>FromPipelineDataEvent@1</c>) builds its <c>ExecutePipelineOptions</c> without a
+    ///         <c>VerifiedPrincipal</c> and without a caller token — deliberately, and permanently.
+    ///         The target execution therefore resolves its own identity (<c>PipelineIdentityResolver</c>,
+    ///         AB#5028): the pipeline's service account, or the system context on a tenant that has none.
+    ///     </para>
+    ///     <para>
+    ///         🔴 <b>Why the identity is not forwarded.</b> Doing so would let a pipeline act as a caller
+    ///         it never authenticated against: the sender picks the routing key, so whoever may enqueue
+    ///         into the data flow would inherit the identity of whoever last triggered the sending
+    ///         pipeline — and on the fire-and-forget path the message has no bounded lifetime, so the
+    ///         identity would stay usable for as long as it sits in the queue. That is a privilege
+    ///         escalation, and it is not something to introduce as a side effect of a chaining node.
+    ///     </para>
+    ///     <para>
+    ///         What the decision costs is that one logical request runs half under the user and half
+    ///         under the service — so the hand-off is made <b>visible</b> instead of silent, on the
+    ///         execution log the adapter and the Studio debug panel already surface. Deliberately not on
+    ///         the message: its payload is pipeline data, and no credential may ever travel on it.
+    ///     </para>
+    /// </remarks>
+    private static void RecordIdentityBoundary(IEtlContext etlContext, INodeContext nodeContext,
+        ToPipelineDataEventNodeConfiguration configuration)
+    {
+        var subjectId = etlContext.VerifiedPrincipal?.SubjectId;
+        var hasCallerToken = !string.IsNullOrEmpty(etlContext.CallerAccessToken);
+
+        if (subjectId == null && !hasCallerToken)
+        {
+            // Nothing ends here: this execution has no caller identity either, so both sides run on
+            // a service identity and the chain is homogeneous.
+            nodeContext.Debug(
+                "Pipeline data event to '{HomogeneousTargetPipelineRtId}': this execution carries no caller identity, so the target execution is service-identity based like this one (AB#5045).",
+                configuration.TargetPipelineRtId);
+            return;
+        }
+
+        nodeContext.Info(
+            "The caller identity of this execution ({BoundarySubjectId}{BoundaryTokenState}) ENDS HERE (AB#5045): "
+            + "the pipeline data event to '{BoundaryTargetPipelineRtId}' carries neither the principal nor the caller's "
+            + "token, so the target execution runs under its own service identity (AB#5028) and sees what that account "
+            + "may see - not what the caller may see. Not forwarding it is deliberate: a pipeline must not be able to "
+            + "act as a caller the target never authenticated.",
+            subjectId ?? "no principal, caller token only", hasCallerToken ? ", with a caller token" : string.Empty,
+            configuration.TargetPipelineRtId);
     }
 }
