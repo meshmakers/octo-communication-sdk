@@ -191,6 +191,32 @@ public class PipelineExecutionException : Exception
     }
 
     /// <summary>
+    /// Exception thrown when a join key has no match in the join array and the node is configured to fail on it
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="keyPath">Path the key was read from</param>
+    /// <param name="keyValue">The key value that has no match</param>
+    /// <param name="joinPath">Path to the join array that was searched</param>
+    /// <returns></returns>
+    public static Exception JoinKeyNotMatched(NodePath nodePath, string keyPath, string keyValue, string joinPath)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Join key '{keyValue}' from '{keyPath}' has no match in '{joinPath}'");
+    }
+
+    /// <summary>
+    /// Exception thrown when a join path resolves to no records and the node is configured to fail on unmatched keys
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="joinPath">Path to the join array that resolved to no records</param>
+    /// <returns></returns>
+    public static Exception JoinPathHasNoRecords(NodePath nodePath, string joinPath)
+    {
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Join path '{joinPath}' resolved to no records and noMatchHandling is 'Fail'");
+    }
+
+    /// <summary>
     /// Exception thrown when iterations of a loop node failed while the loop continued on error.
     /// The message names only the failed indices; the child exceptions (whose messages may carry
     /// item payload content) travel in the inner <see cref="AggregateException"/>.

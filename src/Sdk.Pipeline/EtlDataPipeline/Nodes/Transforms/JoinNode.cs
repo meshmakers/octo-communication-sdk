@@ -7,7 +7,20 @@ using Meshmakers.Octo.Sdk.Common.Services;
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Transforms;
 
 /// <summary>
-/// Configuration for a join node that performs inner joins between source data and lookup arrays.
+/// Defines how a join node treats a source object whose key has no match in the join array.
+/// </summary>
+public enum JoinNoMatchHandlingDto
+{
+    /// <summary>The source object receives an empty array at the item path and the run continues.</summary>
+    Ignore = 0,
+    /// <summary>The run fails with an exception naming the unmatched key, its path and the join path; an empty join array fails with an exception naming the join path.</summary>
+    Fail = 1,
+}
+
+/// <summary>
+/// Configuration for a join node that attaches to each object selected by <c>path</c> the array of
+/// join records whose key matches the object's key (a nested left join: an object without a match
+/// keeps an empty array). Elements at <c>path</c> that are not objects are skipped.
 /// </summary>
 [NodeName("Join", 1)]
 public record JoinNodeConfiguration : PathNodeConfiguration
@@ -35,10 +48,30 @@ public record JoinNodeConfiguration : PathNodeConfiguration
     /// </summary>
     [PropertyGroup("Paths", 5, "jsonpath")]
     public required string ItemPath { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether a source object without a usable key (key path missing, null or empty)
+    /// is kept as a left-join row with an empty array at <c>itemPath</c>. Off (default), such a
+    /// source object fails the run; only with an empty join array and <c>noMatchHandling</c> Ignore
+    /// is the key not read and every source object receives an empty array. Source objects with a
+    /// key are joined as before either way.
+    /// </summary>
+    [PropertyGroup("Options", 0)]
+    public bool AllowMissingKey { get; set; }
+
+    /// <summary>
+    /// Gets or sets how a source object whose key has no match in the join array is handled
+    /// (Ignore, the default, or Fail). A source object without a key is governed by
+    /// <c>allowMissingKey</c>, not by this option. Under Fail an empty join array fails the run at
+    /// the first source object, whatever its key.
+    /// </summary>
+    [PropertyGroup("Options", 1)]
+    public JoinNoMatchHandlingDto NoMatchHandling { get; set; } = JoinNoMatchHandlingDto.Ignore;
 }
 
 /// <summary>
-/// A transformation node that performs inner join operations between source data and lookup arrays based on matching key values.
+/// A transformation node that attaches to each selected source object the join records whose key
+/// matches the object's key, as an array at the item path (nested left join).
 /// </summary>
 [NodeConfiguration(typeof(JoinNodeConfiguration))]
 public class JoinNode(NodeDelegate next) : IPipelineNode
@@ -80,6 +113,7 @@ public class JoinNode(NodeDelegate next) : IPipelineNode
             }
         }
 
+        var failOnNoMatch = c.NoMatchHandling == JoinNoMatchHandlingDto.Fail;
         var sourceMatchCount = 0;
         await dataContext.UpdateMatchesAsync(c.Path, matchCtx =>
         {
@@ -89,8 +123,16 @@ public class JoinNode(NodeDelegate next) : IPipelineNode
                 return Task.CompletedTask;
             }
 
+            // Empty lookup. Ignore keeps the pre-existing behavior: every source object gets an
+            // empty array without its key being read. Fail reports the lookup itself, which is the
+            // better diagnosis than a mismatch of the first key.
             if (joinRecords.Count == 0)
             {
+                if (failOnNoMatch)
+                {
+                    throw PipelineExecutionException.JoinPathHasNoRecords(nodeContext.NodePath, c.JoinPath);
+                }
+
                 matchCtx.Set(itemPath, new JsonArray());
                 return Task.CompletedTask;
             }
@@ -103,7 +145,14 @@ public class JoinNode(NodeDelegate next) : IPipelineNode
                     : sourceKeyNode.ToJsonString());
             if (string.IsNullOrEmpty(sourceValue))
             {
-                throw PipelineExecutionException.ValueNotSet(nodeContext, c.KeyPath);
+                if (!c.AllowMissingKey)
+                {
+                    throw PipelineExecutionException.ValueNotSet(nodeContext, c.KeyPath);
+                }
+
+                // Left join: the source object stays, with nothing joined to it.
+                matchCtx.Set(itemPath, new JsonArray());
+                return Task.CompletedTask;
             }
 
             var newArray = new JsonArray();
@@ -113,6 +162,18 @@ public class JoinNode(NodeDelegate next) : IPipelineNode
                 {
                     newArray.Add(joinNode.DeepClone());
                 }
+            }
+
+            if (newArray.Count == 0 && failOnNoMatch)
+            {
+                // Only a scalar key goes into the message: an object-valued key (a misconfigured
+                // keyPath) would put a whole document subtree into the error text, which reaches
+                // logs and, under ForEach continueOnError with errorsPath, the pipeline document.
+                var keyText = sourceKeyNode?.GetValueKind() is JsonValueKind.Object or JsonValueKind.Array
+                    ? "<non-scalar key>"
+                    : sourceValue;
+                throw PipelineExecutionException.JoinKeyNotMatched(nodeContext.NodePath, c.KeyPath, keyText,
+                    c.JoinPath);
             }
             matchCtx.Set(itemPath, newArray);
             return Task.CompletedTask;
