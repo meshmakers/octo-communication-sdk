@@ -26,15 +26,17 @@ parameters:
     default: 'auto'
 
 resources:
+  # Chain link: exactly ONE upstream pipeline resource per repo. Pipeline
+  # resource triggers do NOT batch, so a repo with two trigger parents is
+  # started twice per main cascade. The chain is therefore a single-parent
+  # tree; artificial ordering edges (marked below) resolve real DAG joins.
+  # Full picture: octo-mesh-deployment/pipelines/orchestrator-ci.yml.
+  # Ordering edge: comm-sdk needs only octo-sdk (transitively upstream),
+  # but hanging it behind common-services keeps octo-mesh-adapter
+  # (needs common-services AND comm-sdk) single-parent.
   pipelines:
-    # Only octo-sdk needed — it transitively depends on DEH + CK-Engine (its
-    # own resources.pipelines re-fires it when those build), and once it
-    # publishes the slim Sdk.Common / Sdk.ServiceClient / Communication.Contracts
-    # we want to rebuild against, this repo fires too. octo-common-services is
-    # NOT a dependency here (no Sdk.Pipeline / Sdk.Adapters / Web project
-    # references it).
-    - pipeline: octo-sdk
-      source: octo-sdk-CI
+    - pipeline: octo-common-services
+      source: octo-common-services-CI
       trigger:
         branches:
           include:
