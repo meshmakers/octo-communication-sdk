@@ -80,6 +80,16 @@ public class WebAdapterBuilder
         var startupOptions = new AdapterOptions();
         builder.Configuration.GetSection("Adapter").Bind(startupOptions);
 
+        // AB#4924 — a pool member is a different composition, not a flag on the dedicated one. It has
+        // no AdapterRtId and no DedicatedTenantId, so the dedicated hub route, its execution service
+        // and its health check cannot apply; and the dedicated IAdapterTenantScope must not be
+        // registered at all, because a plain AddSingleton here would win over the lease-aware scope
+        // that AddAdapterPoolMember() TryAdds from the caller's delegate. That override would fail
+        // nowhere: the member would run, and simply never enforce a lease.
+        var poolMemberOptions = new AdapterPoolMemberOptions();
+        builder.Configuration.GetSection(AdapterPoolMemberOptions.SectionName).Bind(poolMemberOptions);
+        var isPoolMember = poolMemberOptions.IsEnabled;
+
         builder.Services.AddLogging(loggingBuilder =>
         {
             loggingBuilder.ClearProviders();
@@ -101,7 +111,10 @@ public class WebAdapterBuilder
         }, c =>
         {
             c.AutomaticallyStartBusDuringStartup = false;
-            c.UniqueServiceAddress = $"adapter_{startupOptions.AdapterRtId}";
+            // A pool member has no AdapterRtId; its member id is the stable identity it is known by.
+            c.UniqueServiceAddress = isPoolMember
+                ? $"adapterpool_{poolMemberOptions.EffectiveMemberId}"
+                : $"adapter_{startupOptions.AdapterRtId}";
 
             configureDistributionEventHub?.Invoke(c);
         });
@@ -116,9 +129,15 @@ public class WebAdapterBuilder
                 options.EndpointUri = socketOptions.Value.CommunicationControllerServicesUri;
             });
 
-        // AB#4924 increment 3 — see AdapterBuilder for the rationale.
-        builder.Services.AddSingleton<IAdapterTenantScope, AdapterTenantScope>();
-        builder.Services.AddSingleton<IPostConfigureOptions<AdapterOptions>, ConfigureLegacyAdapterTenantId>();
+        if (!isPoolMember)
+        {
+            // AB#4924 increment 3 — see AdapterBuilder for the rationale. Skipped on a pool member:
+            // AddAdapterPoolMember() supplies the lease-aware scope, and there is no process-wide
+            // tenant to bind the legacy key to.
+            builder.Services.AddSingleton<IAdapterTenantScope, AdapterTenantScope>();
+            builder.Services
+                .AddSingleton<IPostConfigureOptions<AdapterOptions>, ConfigureLegacyAdapterTenantId>();
+        }
 
         builder.Services.AddSingleton<IPipelineRegistryService, PipelineRegistryService>();
         builder.Services.AddSingleton<IServiceClientAccessToken, ServiceClientAccessToken>();
@@ -138,30 +157,39 @@ public class WebAdapterBuilder
 
         builder.Services.AddSingleton<AdapterLifetimeManagement>();
 
-        builder.Services.AddSingleton<AdapterHubCallbackService>();
-        builder.Services.AddSingleton<IAdapterHubCallbacks>(provider =>
-            provider.GetRequiredService<AdapterHubCallbackService>());
-        builder.Services.AddSingleton<IAdapterHubCallbackService>(provider =>
-            provider.GetRequiredService<AdapterHubCallbackService>());
-        builder.Services.AddSingleton<IAdapterHubClient, AdapterHubClient>();
-        builder.Services.AddSingleton<IPipelineExecutionReporter, AdapterPipelineExecutionReporter>();
-        builder.Services.AddTransient<IPipelineDebugger, AdapterPipelineDebugger>();
-        builder.Services.AddSingleton<AdapterExecutionService>();
-        builder.Services.AddHostedService<AdapterHealthFileService>();
-        builder.Services.AddHostedService<AdapterMetricsSamplerService>();
-
-        // AdapterConnection reports the SignalR connection state for observability
-        // (visible at /health) but is NOT tagged "ready" — kubelet's readiness probe
-        // must not depend on runtime data state (e.g. tenant enabled in OctoMesh),
-        // otherwise a not-yet-enabled tenant blocks deployment indefinitely.
-        builder.Services.AddHealthChecks()
-            .AddCheck<AdapterConnectionHealthCheck>(
-                "AdapterConnection",
-                HealthStatus.Unhealthy);
-
-        if (startupOptions.UseHostedService)
+        if (isPoolMember)
         {
-            builder.Services.AddHostedService<HostedAdapterExecutionService>();
+            // The management connection, the registration on every (re)connect, and the heartbeat.
+            // Without this the member connects to nothing and is never leased (AB#4924).
+            builder.Services.AddHostedService<AdapterPoolMemberService>();
+        }
+        else
+        {
+            builder.Services.AddSingleton<AdapterHubCallbackService>();
+            builder.Services.AddSingleton<IAdapterHubCallbacks>(provider =>
+                provider.GetRequiredService<AdapterHubCallbackService>());
+            builder.Services.AddSingleton<IAdapterHubCallbackService>(provider =>
+                provider.GetRequiredService<AdapterHubCallbackService>());
+            builder.Services.AddSingleton<IAdapterHubClient, AdapterHubClient>();
+            builder.Services.AddSingleton<IPipelineExecutionReporter, AdapterPipelineExecutionReporter>();
+            builder.Services.AddTransient<IPipelineDebugger, AdapterPipelineDebugger>();
+            builder.Services.AddSingleton<AdapterExecutionService>();
+            builder.Services.AddHostedService<AdapterHealthFileService>();
+            builder.Services.AddHostedService<AdapterMetricsSamplerService>();
+
+            // AdapterConnection reports the SignalR connection state for observability
+            // (visible at /health) but is NOT tagged "ready" — kubelet's readiness probe
+            // must not depend on runtime data state (e.g. tenant enabled in OctoMesh),
+            // otherwise a not-yet-enabled tenant blocks deployment indefinitely.
+            builder.Services.AddHealthChecks()
+                .AddCheck<AdapterConnectionHealthCheck>(
+                    "AdapterConnection",
+                    HealthStatus.Unhealthy);
+
+            if (startupOptions.UseHostedService)
+            {
+                builder.Services.AddHostedService<HostedAdapterExecutionService>();
+            }
         }
 
 

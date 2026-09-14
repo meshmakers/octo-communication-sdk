@@ -113,6 +113,13 @@ public class AdapterBuilder
             var startupOptions = new AdapterOptions();
             b.Configuration.GetSection("Adapter").Bind(startupOptions);
 
+            // AB#4924 — see WebAdapterBuilder for the full rationale. A pool member has no
+            // AdapterRtId and no DedicatedTenantId, and the dedicated IAdapterTenantScope registered
+            // here would silently win over the lease-aware one.
+            var poolMemberOptions = new AdapterPoolMemberOptions();
+            b.Configuration.GetSection(AdapterPoolMemberOptions.SectionName).Bind(poolMemberOptions);
+            var isPoolMember = poolMemberOptions.IsEnabled;
+
             services.Configure<EdgeDataBufferConfiguration>(options =>
                 b.Configuration.GetSection("EdgeDataBuffer").Bind(options));
 
@@ -140,7 +147,9 @@ public class AdapterBuilder
             }, c =>
             {
                 c.AutomaticallyStartBusDuringStartup = false;
-                c.UniqueServiceAddress = $"adapter_{startupOptions.AdapterRtId}";
+                c.UniqueServiceAddress = isPoolMember
+                    ? $"adapterpool_{poolMemberOptions.EffectiveMemberId}"
+                    : $"adapter_{startupOptions.AdapterRtId}";
                 configureDistributionEventHub?.Invoke(c);
             });
 
@@ -163,12 +172,16 @@ public class AdapterBuilder
                     options.EndpointUri = toolOptions.Value.CommunicationControllerServicesUri;
                 });
 
-            // AB#4924 increment 3 — the per-execution tenant, entered by EtlDataOrchestrator.
-            // Singleton carrying an AsyncLocal: a DI scope does not flow across an async call
-            // chain, the tenant of an execution must. See AdapterTenantScope.
-            services.AddSingleton<IAdapterTenantScope, AdapterTenantScope>();
-            // One-release deprecation window for OCTO_ADAPTER__TENANTID (eight charts set it).
-            services.AddSingleton<IPostConfigureOptions<AdapterOptions>, ConfigureLegacyAdapterTenantId>();
+            if (!isPoolMember)
+            {
+                // AB#4924 increment 3 — the per-execution tenant, entered by EtlDataOrchestrator.
+                // Singleton carrying an AsyncLocal: a DI scope does not flow across an async call
+                // chain, the tenant of an execution must. See AdapterTenantScope.
+                services.AddSingleton<IAdapterTenantScope, AdapterTenantScope>();
+                // One-release deprecation window for OCTO_ADAPTER__TENANTID (eight charts set it).
+                services
+                    .AddSingleton<IPostConfigureOptions<AdapterOptions>, ConfigureLegacyAdapterTenantId>();
+            }
 
             services.AddSingleton<IPipelineRegistryService, PipelineRegistryService>();
             services.AddSingleton<IServiceClientAccessToken, ServiceClientAccessToken>();
@@ -185,22 +198,31 @@ public class AdapterBuilder
             services.AddSingleton<AdapterAccessTokenService>();
             services.AddHostedService(provider => provider.GetRequiredService<AdapterAccessTokenService>());
 
-            services.AddSingleton<AdapterHubCallbackService>();
-            services.AddSingleton<IAdapterHubCallbacks>(provider =>
-                provider.GetRequiredService<AdapterHubCallbackService>());
-            services.AddSingleton<IAdapterHubCallbackService>(provider =>
-                provider.GetRequiredService<AdapterHubCallbackService>());
-            services.AddSingleton<IAdapterHubClient, AdapterHubClient>();
-            services.AddSingleton<IPipelineExecutionReporter, AdapterPipelineExecutionReporter>();
-            services.AddTransient<IPipelineDebugger, AdapterPipelineDebugger>();
-
-            services.AddSingleton<AdapterExecutionService>();
-            services.AddHostedService<AdapterHealthFileService>();
-            services.AddHostedService<AdapterMetricsSamplerService>();
-
-            if (startupOptions.UseHostedService)
+            if (isPoolMember)
             {
-                services.AddHostedService<HostedAdapterExecutionService>();
+                // The management connection, the registration on every (re)connect, and the
+                // heartbeat. Without this the member connects to nothing and is never leased.
+                services.AddHostedService<AdapterPoolMemberService>();
+            }
+            else
+            {
+                services.AddSingleton<AdapterHubCallbackService>();
+                services.AddSingleton<IAdapterHubCallbacks>(provider =>
+                    provider.GetRequiredService<AdapterHubCallbackService>());
+                services.AddSingleton<IAdapterHubCallbackService>(provider =>
+                    provider.GetRequiredService<AdapterHubCallbackService>());
+                services.AddSingleton<IAdapterHubClient, AdapterHubClient>();
+                services.AddSingleton<IPipelineExecutionReporter, AdapterPipelineExecutionReporter>();
+                services.AddTransient<IPipelineDebugger, AdapterPipelineDebugger>();
+
+                services.AddSingleton<AdapterExecutionService>();
+                services.AddHostedService<AdapterHealthFileService>();
+                services.AddHostedService<AdapterMetricsSamplerService>();
+
+                if (startupOptions.UseHostedService)
+                {
+                    services.AddHostedService<HostedAdapterExecutionService>();
+                }
             }
         });
 
