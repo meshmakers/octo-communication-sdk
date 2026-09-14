@@ -91,6 +91,10 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
         var category = DeriveCategory(configType, nodeType, isTrigger);
         var deprecatedAttr = configType.GetCustomAttribute<NodeDeprecatedAttribute>();
         var requiresRunningProcess = configType.GetCustomAttribute<NodeRequiresRunningProcessAttribute>() != null;
+        // AB#4924. Absent means Batch, the conservative class: a trigger nobody has classified
+        // must never jump a queue.
+        var executionClass = configType.GetCustomAttribute<NodeExecutionClassAttribute>()?.ExecutionClass
+                             ?? PipelineExecutionClass.Batch;
 
         string schemaJson;
         try
@@ -116,6 +120,7 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
             schemaJson = InjectNodeKindExtension(schemaJson, configType);
             schemaJson = InjectDeprecatedExtension(schemaJson, deprecatedAttr);
             schemaJson = InjectRequiresRunningProcessExtension(schemaJson, requiresRunningProcess);
+            schemaJson = InjectExecutionClassExtension(schemaJson, isTrigger, executionClass);
         }
         catch (Exception)
         {
@@ -124,7 +129,7 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
         }
 
         return new NodeDescriptor(nodeName, version, category, isTrigger, supportsChildren, schemaJson,
-            deprecatedAttr != null, deprecatedAttr?.Message, requiresRunningProcess);
+            deprecatedAttr != null, deprecatedAttr?.Message, requiresRunningProcess, executionClass);
     }
 
     private static JsonObject ParseObject(string schemaJson)
@@ -252,6 +257,28 @@ internal class NodeSchemaRegistry : INodeSchemaRegistry
 
         var root = ParseObject(schemaJson);
         root["x-requiresRunningProcess"] = true;
+        return SerializeObject(root);
+    }
+
+    /// <summary>
+    /// Injects the [NodeExecutionClass] attribute as the node-level JSON Schema extension
+    /// "x-executionClass" (AB#4924), so the graphical editor can show why a job will sit where it
+    /// does in a pool queue.
+    /// </summary>
+    /// <remarks>
+    /// Unlike "x-requiresRunningProcess" this is emitted for every TRIGGER, including the default
+    /// Batch — an editor showing the class only for the nodes that opted in would leave the reader
+    /// unable to tell "classified as Batch" from "not classified", which is exactly the question
+    /// the extension exists to answer. Non-trigger nodes get nothing: the class is a property of
+    /// how work arrived, and only a trigger knows that.
+    /// </remarks>
+    private static string InjectExecutionClassExtension(string schemaJson, bool isTrigger,
+        PipelineExecutionClass executionClass)
+    {
+        if (!isTrigger) return schemaJson;
+
+        var root = ParseObject(schemaJson);
+        root["x-executionClass"] = executionClass.ToString();
         return SerializeObject(root);
     }
 

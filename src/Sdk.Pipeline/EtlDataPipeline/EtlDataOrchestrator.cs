@@ -5,6 +5,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Microsoft.Extensions.DependencyInjection;
+using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 
@@ -39,6 +40,29 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
         // we can't dispose the scope here, because some nodes will create their sub pipeline, which will outlive this scope.
         var scope = _globalServiceProvider.CreateScope();
         var serviceProvider = scope.ServiceProvider;
+
+        // AB#4924 increment 3 — enter the tenant of THIS execution.
+        //
+        // This is the single chokepoint every pipeline execution passes through, which is why the
+        // tenant is entered here and nowhere else. The services around the node layer (HTTP route
+        // prefixing, service-account token acquisition, the CK model cache) used to read a
+        // process-wide AdapterOptions.TenantId; that property is gone, and this is what they read
+        // instead.
+        //
+        // On a dedicated adapter etlContext.TenantId equals the adapter's own tenant on every
+        // execution, so this changes no behaviour — but it makes the per-execution path the ONLY
+        // path, and the whole fleet exercises it for a release before any lease exists. When
+        // leasing arrives, only the value differs between consecutive executions; this site does
+        // not change at all.
+        //
+        // Deliberately NOT disposed with the scope: the comment above explains that sub-pipelines
+        // outlive this scope, and the tenant must stay in scope for them. The AsyncLocal is
+        // restored when this method's async context ends, and a sub-pipeline that enters its own
+        // execution restores the outer tenant on the way out.
+        var tenantScope = serviceProvider.GetService<IAdapterTenantScope>();
+        using var tenantLease = tenantScope is not null && !string.IsNullOrWhiteSpace(etlContext.TenantId)
+            ? tenantScope.BeginExecution(etlContext.TenantId)
+            : null;
         var contextAccessor = serviceProvider.GetRequiredService<IEtlContextAccessor<TEtlContext>>();
         contextAccessor.EtlContextFactory = () => etlContext;
 

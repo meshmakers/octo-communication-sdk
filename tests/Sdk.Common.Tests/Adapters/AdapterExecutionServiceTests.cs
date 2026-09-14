@@ -34,7 +34,7 @@ public class AdapterExecutionServiceTests
         {
             AdapterRtId = adapterRtId,
             AdapterCkTypeId = "System.Communication/Adapter",
-            TenantId = "testTenant",
+            DedicatedTenantId = "testTenant",
             CommunicationControllerServicesUri = "https://localhost:5015"
         });
 

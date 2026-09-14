@@ -155,11 +155,20 @@ public class AdapterBuilder
             services.AddOptions<AdapterHubClientOptions>()
                 .Configure<IOptions<AdapterOptions>>((options, toolOptions) =>
                 {
-                    options.TenantId = toolOptions.Value.TenantId;
+                    // Connection-level: this is the adapter's OWN hub route, so the dedicated
+                    // tenant is the right and only answer here (AB#4924).
+                    options.TenantId = toolOptions.Value.DedicatedTenantId;
                     options.AdapterRtId = toolOptions.Value.AdapterRtId;
                     options.AdapterCkTypeId = toolOptions.Value.AdapterCkTypeId;
                     options.EndpointUri = toolOptions.Value.CommunicationControllerServicesUri;
                 });
+
+            // AB#4924 increment 3 — the per-execution tenant, entered by EtlDataOrchestrator.
+            // Singleton carrying an AsyncLocal: a DI scope does not flow across an async call
+            // chain, the tenant of an execution must. See AdapterTenantScope.
+            services.AddSingleton<IAdapterTenantScope, AdapterTenantScope>();
+            // One-release deprecation window for OCTO_ADAPTER__TENANTID (eight charts set it).
+            services.AddSingleton<IPostConfigureOptions<AdapterOptions>, ConfigureLegacyAdapterTenantId>();
 
             services.AddSingleton<IPipelineRegistryService, PipelineRegistryService>();
             services.AddSingleton<IServiceClientAccessToken, ServiceClientAccessToken>();

@@ -109,11 +109,16 @@ public class WebAdapterBuilder
         builder.Services.AddOptions<AdapterHubClientOptions>()
             .Configure<IOptions<AdapterOptions>>((options, socketOptions) =>
             {
-                options.TenantId = socketOptions.Value.TenantId;
+                // Connection-level: the adapter's OWN hub route (AB#4924).
+                options.TenantId = socketOptions.Value.DedicatedTenantId;
                 options.AdapterRtId = socketOptions.Value.AdapterRtId;
                 options.AdapterCkTypeId = socketOptions.Value.AdapterCkTypeId;
                 options.EndpointUri = socketOptions.Value.CommunicationControllerServicesUri;
             });
+
+        // AB#4924 increment 3 — see AdapterBuilder for the rationale.
+        builder.Services.AddSingleton<IAdapterTenantScope, AdapterTenantScope>();
+        builder.Services.AddSingleton<IPostConfigureOptions<AdapterOptions>, ConfigureLegacyAdapterTenantId>();
 
         builder.Services.AddSingleton<IPipelineRegistryService, PipelineRegistryService>();
         builder.Services.AddSingleton<IServiceClientAccessToken, ServiceClientAccessToken>();

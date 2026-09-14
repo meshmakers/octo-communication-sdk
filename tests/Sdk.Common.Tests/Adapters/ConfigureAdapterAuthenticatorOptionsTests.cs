@@ -24,7 +24,7 @@ public class ConfigureAdapterAuthenticatorOptionsTests
     {
         var options = Project(new AdapterOptions
         {
-            TenantId = "acmeTenant",
+            DedicatedTenantId = "acmeTenant",
             IssuerUri = "https://connect.test-2.mm.cloud",
             ClientId = "octo-mesh-adapter",
             ClientSecret = "secret"
@@ -38,7 +38,7 @@ public class ConfigureAdapterAuthenticatorOptionsTests
     {
         var options = Project(new AdapterOptions
         {
-            TenantId = "acmeTenant",
+            DedicatedTenantId = "acmeTenant",
             IssuerUri = "https://connect.test-2.mm.cloud",
             ClientId = "octo-mesh-adapter",
             ClientSecret = "secret"
@@ -55,7 +55,7 @@ public class ConfigureAdapterAuthenticatorOptionsTests
         // AuthorizationClient builds its discovery cache only for a non-blank IssuerUri, so the
         // client must still be constructible on an adapter that was given no credentials at all —
         // AdapterAccessTokenService simply never calls it.
-        var options = Project(new AdapterOptions { TenantId = "acmeTenant" });
+        var options = Project(new AdapterOptions { DedicatedTenantId = "acmeTenant" });
 
         Assert.Equal(string.Empty, options.IssuerUri);
         Assert.Equal(string.Empty, options.ClientId);

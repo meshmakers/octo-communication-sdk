@@ -15,6 +15,12 @@ namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 ///     Whether this trigger node only works while the adapter process is running
 ///     (see <see cref="NodeRequiresRunningProcessAttribute"/>)
 /// </param>
+/// <param name="ExecutionClass">
+///     The scheduling class this trigger implies on a leased adapter pool
+///     (see <see cref="NodeExecutionClassAttribute"/>). Defaults to
+///     <see cref="PipelineExecutionClass.Batch"/> — a trigger that declares nothing must never
+///     jump a queue.
+/// </param>
 public record NodeDescriptor(
     string NodeName,
     int Version,
@@ -24,4 +30,5 @@ public record NodeDescriptor(
     string ConfigurationSchemaJson,
     bool IsDeprecated = false,
     string? DeprecationMessage = null,
-    bool RequiresRunningProcess = false);
+    bool RequiresRunningProcess = false,
+    PipelineExecutionClass ExecutionClass = PipelineExecutionClass.Batch);

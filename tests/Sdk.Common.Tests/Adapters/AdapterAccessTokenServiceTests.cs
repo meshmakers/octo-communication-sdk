@@ -24,7 +24,7 @@ public class AdapterAccessTokenServiceTests
     private static AdapterOptions ConfiguredOptions() =>
         new()
         {
-            TenantId = TenantId,
+            DedicatedTenantId = TenantId,
             IssuerUri = IssuerUri,
             ClientId = ClientId,
             ClientSecret = ClientSecret
@@ -89,7 +89,7 @@ public class AdapterAccessTokenServiceTests
         var authenticatorClient = A.Fake<IAuthenticatorClient>();
         var accessToken = new ServiceClientAccessToken();
         using var service = CreateService(authenticatorClient, accessToken,
-            new AdapterOptions { TenantId = TenantId });
+            new AdapterOptions { DedicatedTenantId = TenantId });
 
         var acquired = await service.EnsureTokenAsync();
 
@@ -105,7 +105,7 @@ public class AdapterAccessTokenServiceTests
     {
         var authenticatorClient = A.Fake<IAuthenticatorClient>();
         using var service = CreateService(authenticatorClient, new ServiceClientAccessToken(),
-            new AdapterOptions { TenantId = TenantId, IssuerUri = IssuerUri });
+            new AdapterOptions { DedicatedTenantId = TenantId, IssuerUri = IssuerUri });
 
         Assert.False(await service.EnsureTokenAsync());
         A.CallTo(() => authenticatorClient.RequestClientCredentialsTokenAsync(
@@ -118,7 +118,7 @@ public class AdapterAccessTokenServiceTests
     {
         var authenticatorClient = A.Fake<IAuthenticatorClient>();
         using var service = CreateService(authenticatorClient, new ServiceClientAccessToken(),
-            new AdapterOptions { TenantId = TenantId, ClientId = ClientId, ClientSecret = ClientSecret });
+            new AdapterOptions { DedicatedTenantId = TenantId, ClientId = ClientId, ClientSecret = ClientSecret });
 
         Assert.False(await service.EnsureTokenAsync());
         A.CallTo(() => authenticatorClient.RequestClientCredentialsTokenAsync(
@@ -225,7 +225,7 @@ public class AdapterAccessTokenServiceTests
         var authenticatorClient = A.Fake<IAuthenticatorClient>();
         var accessToken = new ServiceClientAccessToken();
         using var service = CreateService(authenticatorClient, accessToken,
-            new AdapterOptions { TenantId = TenantId });
+            new AdapterOptions { DedicatedTenantId = TenantId });
 
         await service.StartAsync(CancellationToken.None);
         try

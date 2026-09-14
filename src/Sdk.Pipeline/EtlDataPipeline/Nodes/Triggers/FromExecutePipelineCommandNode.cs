@@ -10,7 +10,11 @@ namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 /// <summary>
 /// Configuration for node FromExecutePipelineCommand
 /// </summary>
+// AB#4924: Interactive. This is the Studio "Execute" button and the ExecutePipeline API — a
+// person is watching. It travels over the bus, but the class describes who is WAITING for
+// the result, not how the command arrived.
 [NodeName("FromExecutePipelineCommand", 1)]
+[NodeExecutionClass(PipelineExecutionClass.Interactive)]
 public record FromExecutePipelineCommandNodeConfiguration : TriggerNodeConfiguration;
 
 /// <summary>

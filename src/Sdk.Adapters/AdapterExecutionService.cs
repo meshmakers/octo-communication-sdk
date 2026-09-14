@@ -121,7 +121,9 @@ public class AdapterExecutionService : IAdapterHubCallbacks
     {
         // The controller broadcasts this to every connected adapter (the adapter cache on the
         // controller may be stale or wiped during a tenant update); only react for our own tenant.
-        if (!string.Equals(tenantId, _adapterOptions.Value.TenantId, StringComparison.OrdinalIgnoreCase))
+        // Process-level filter on a broadcast: "is this OUR tenant" is a question about the
+        // adapter, not about any execution (AB#4924).
+        if (!string.Equals(tenantId, _adapterOptions.Value.DedicatedTenantId, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -340,7 +342,7 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                     List<DeploymentUpdateErrorMessageDto> deploymentErrorMessages = [];
                     if (!isReconnect)
                     {
-                        var tenantId = _adapterOptions.Value.TenantId;
+                        var tenantId = _adapterOptions.Value.DedicatedTenantId;
                         if (string.IsNullOrWhiteSpace(tenantId) || tenantId == null)
                         {
                             return;
@@ -500,7 +502,7 @@ public class AdapterExecutionService : IAdapterHubCallbacks
     {
         try
         {
-            var tenantId = _adapterOptions.Value.TenantId;
+            var tenantId = _adapterOptions.Value.DedicatedTenantId;
             if (string.IsNullOrWhiteSpace(tenantId) || tenantId == null)
             {
                 return;
@@ -595,7 +597,7 @@ public class AdapterExecutionService : IAdapterHubCallbacks
         _logger.Info("Connecting to adapter hub at {CommunicationControllerServicesUri}",
             _adapterOptions.Value.CommunicationControllerServicesUri);
         _logger.Info("TenantId {TenantId}, AdapterRtId {AdapterRtId}",
-            _adapterOptions.Value.TenantId, _adapterOptions.Value.AdapterRtId);
+            _adapterOptions.Value.DedicatedTenantId, _adapterOptions.Value.AdapterRtId);
 
         if (_adapterOptions.Value.AdapterRtId == null)
         {
@@ -640,7 +642,7 @@ public class AdapterExecutionService : IAdapterHubCallbacks
 
             _logger.Info("Found {Count} interrupted executions to report", interruptedIds.Count);
 
-            var tenantId = _adapterOptions.Value.TenantId;
+            var tenantId = _adapterOptions.Value.DedicatedTenantId;
             if (string.IsNullOrWhiteSpace(tenantId))
             {
                 return;
@@ -731,7 +733,8 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                 d.ConfigurationSchemaJson,
                 d.IsDeprecated,
                 d.DeprecationMessage,
-                d.RequiresRunningProcess)).ToList();
+                d.RequiresRunningProcess,
+                (int)d.ExecutionClass)).ToList();
         }
         catch (Exception e)
         {

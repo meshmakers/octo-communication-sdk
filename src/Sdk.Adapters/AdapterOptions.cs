@@ -12,7 +12,11 @@ public class AdapterOptions
     /// </summary>
     public AdapterOptions()
     {
-        TenantId = "meshTest";
+        // Unchanged default: increment 3 is a behaviour-preserving refactor, and this value
+        // is what every local development setup relies on. It is a trap of its own — a
+        // misconfigured adapter silently acts as "meshTest" rather than failing — but
+        // changing it is a behaviour change and belongs to its own work item.
+        DedicatedTenantId = "meshTest";
         CommunicationControllerServicesUri = "https://localhost:5015";
         BrokerHost = "localhost";
         BrokerVirtualHost = "/";
@@ -39,9 +43,36 @@ public class AdapterOptions
     public string? AdapterCkTypeId { get; set; }
 
     /// <summary>
-    ///     Gets or sets the tenant id
+    ///     The single tenant a <b>dedicated</b> adapter is pinned to — the tenant whose
+    ///     <c>/{tenantId}/adapterHub</c> route it connects on and whose name goes into
+    ///     <c>acr_values</c> on its own token.
     /// </summary>
-    public string? TenantId { get; set; }
+    /// <remarks>
+    ///     <para>
+    ///         🔴 <b>This replaced <c>TenantId</c>, which was DELETED rather than renamed in place,
+    ///         and the new name is doing real work</b> (AB#4924, increment 3). A property called
+    ///         <c>TenantId</c> on a process-wide options object reads like "the tenant", so any
+    ///         service or node could reach for it instead of the tenant of the work item it was
+    ///         actually running — and on a shared pool member that answer would be another tenant's,
+    ///         while looking entirely plausible in a log. Deleting the property turned every such
+    ///         read into a compile error; this name makes the remaining ones say what they mean.
+    ///     </para>
+    ///     <para>
+    ///         Use it ONLY for connection-level concerns that genuinely belong to the process: the
+    ///         hub route, the adapter's own credential, its own unregister-on-shutdown. Anything on
+    ///         the execution path must use <c>IEtlContext.TenantId</c> inside a node, or
+    ///         <c>IAdapterTenantScope</c> in the services around the node layer. It is null on a
+    ///         pool member, which has no tenant of its own — so a mistaken read fails loudly instead
+    ///         of returning somebody else's tenant.
+    ///     </para>
+    ///     <para>
+    ///         ⚠️ The legacy environment key <c>OCTO_ADAPTER__TENANTID</c> is still bound, for one
+    ///         release, with a deprecation warning — eight Helm charts set it and renaming the key
+    ///         without a window would take the adapter fleet down on upgrade. See
+    ///         <c>ConfigureLegacyAdapterTenantId</c>.
+    ///     </para>
+    /// </remarks>
+    public string? DedicatedTenantId { get; set; }
 
     /// <summary>
     ///     Gets or sets the communication controller services uri
@@ -120,7 +151,7 @@ public class AdapterOptions
     ///     <para>
     ///         🔴 <b>Unconfigured is a supported state and must stay one.</b> Every adapter in the
     ///         estate runs without these keys today; a hard requirement here would take the whole
-    ///         fleet down on upgrade. <see cref="TenantId" /> is not part of the check either: it
+    ///         fleet down on upgrade. <see cref="DedicatedTenantId" /> is not part of the check either: it
     ///         always carries a value (the adapter cannot address its own hub route without one) and
     ///         gating on it would only hide a misconfiguration behind an anonymous connection.
     ///     </para>

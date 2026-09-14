@@ -13,7 +13,7 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 ///     builders so the projection can be pinned by a test, and so both
 ///     <c>AdapterBuilder</c> and <c>WebAdapterBuilder</c> share one definition instead of two copies
 ///     that can drift. The field that makes that worth doing is
-///     <see cref="AdapterOptions.TenantId" />: it becomes <c>acr_values=tenant:{TenantId}</c> on the
+///     <see cref="AdapterOptions.DedicatedTenantId" />: it becomes <c>acr_values=tenant:{TenantId}</c> on the
 ///     token request, and dropping it hands the adapter a token for the <b>system</b> tenant
 ///     (AB#5077), which the controller then refuses on the adapter's own tenant route with a 403 —
 ///     a failure that reads like a broken gate and points nowhere near this mapping.
@@ -45,6 +45,9 @@ public sealed class ConfigureAdapterAuthenticatorOptions : IConfigureOptions<Aut
         options.AdditionalValidIssuers = adapterOptions.AdditionalValidIssuers;
         // Drives acr_values=tenant:{TenantId} on the token request. Without it the identity service
         // issues for the system tenant since AB#5077 and the adapter is refused on its own route.
-        options.TenantId = adapterOptions.TenantId;
+        // The adapter's OWN credential, for its OWN hub connection - dedicated tenant, not the
+        // tenant of any execution. A pool member has none and acquires the borrower's
+        // credential per lease instead (AB#4924 concept §4, Q6).
+        options.TenantId = adapterOptions.DedicatedTenantId;
     }
 }

@@ -234,7 +234,7 @@ public sealed class AdapterAccessTokenService : BackgroundService
 
             _logger.LogInformation(
                 "Adapter access token acquired for client {ClientId} in tenant '{TenantId}', expires at {ExpiresAtUtc:O}",
-                _options.ClientId, _options.TenantId ?? string.Empty, _expiresAtUtc);
+                _options.ClientId, _options.DedicatedTenantId ?? string.Empty, _expiresAtUtc);
             return true;
         }
         catch (Exception e)

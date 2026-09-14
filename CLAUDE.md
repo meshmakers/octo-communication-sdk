@@ -204,6 +204,80 @@ token not re-acquired, refresh-window replacement, failure keeps the previous to
 response not published, `StartAsync` acquires before returning in both shapes, and neither secret nor
 token in the **rendered** log output) and `ConfigureAdapterAuthenticatorOptionsTests.cs`.
 
+## Tenant isolation — `AdapterOptions.TenantId` is gone (AB#4924, increment 3)
+
+Shared adapter leasing (`octo-communication-controller-services/docs/concepts/shared-adapter-leasing.md`)
+will lease one adapter process to a tenant for one work item at a time. The invariant that makes
+that safe is that the process retains **nothing tenant-scoped** between work items, and the largest
+single threat to it was not a subtle cache — it was a process-wide tenant value that looks like the
+right answer.
+
+🔴 **`AdapterOptions.TenantId` was therefore DELETED, not deprecated.** While it existed, any node or
+service could read it instead of the tenant of the work item it was actually running; on a leased
+process that is another tenant's data with a log line that looks entirely plausible. Deleting it
+turns every such read into a compile error — which is the only mechanism that actually works.
+
+| Use | Read this |
+|---|---|
+| Connection-level: the adapter's own hub route, its own credential, its own unregister-on-shutdown | `AdapterOptions.DedicatedTenantId` |
+| Inside a node | `IEtlContext.TenantId` / `INodeContext` — unchanged, the node layer was always explicit |
+| Services around the node layer (HTTP routing, token acquisition, caches) | `IAdapterTenantScope` |
+
+**`IAdapterTenantScope`** (`src/Sdk.Pipeline/Services/`) is the tenant of the **current execution**.
+`EtlDataOrchestrator.ExecutePipelineAsync` enters it from `etlContext.TenantId` — one chokepoint,
+which every execution already passes through, so the mechanism is live for the whole fleet today.
+On a dedicated adapter the value equals the adapter's own tenant on every execution, which is why
+this increment is behaviour-preserving; leasing changes only the value, never this site.
+
+- A **singleton carrying an `AsyncLocal`**, not a scoped service: executions run concurrently and a DI scope does not flow across an async call chain, whereas the tenant of an execution must. The `AsyncLocal` is an **instance** field — a static one would couple two hosts sharing a process.
+- `TenantId` **throws** outside an execution rather than returning null or a default. A caller reaching for the tenant outside one has a bug, and the outcome that must never happen is a plausible-looking wrong answer.
+- Nested `BeginExecution` **restores** the outer tenant on dispose, so a node starting a sub-pipeline does not strip the tenant off the rest of the outer pipeline.
+- `IsPoolMember` is hard-coded `false` and deliberately **not** bindable — increment 3 ships for the fleet to bake before any lease exists, and an environment variable that could flip it would defeat that.
+
+⚠️ **`OCTO_ADAPTER__TENANTID` is still bound for one release** by `ConfigureLegacyAdapterTenantId`,
+with a deprecation warning naming the adapter. Eight Helm charts set that key, and the options binder
+ignores a key with no matching property **silently** — without the shim every one of those adapters
+would have fallen back to the `"meshTest"` default and connected on the wrong tenant route, reporting
+nothing at startup. The new key is `OCTO_ADAPTER__DEDICATEDTENANTID` and wins when both are set.
+
+**Tests** (`tests/Sdk.Common.Tests/TenantIsolation/`, 12 of them): the reflection guard that
+`AdapterOptions` carries no member named `TenantId` by any route; a DI sweep asserting every SDK
+singleton whose surface mentions a tenant is on a cleared allow-list **with a reason**; concurrent
+interleaving over 12 tenants; a poison canary; 200 randomised interleavings. They were checked
+against a deliberate mutation — clearing instead of restoring in `Restore.Dispose` makes the nesting
+test fail.
+
+🔴 **What these tests are not.** They exercise the *scope mechanism* under concurrency, not a real
+two-tenant pipeline execution — that needs a lease, which does not exist yet. The full interleave
+suite (pipeline output over real MongoDB, post-release state, log-target and identity assertions,
+and a DI sweep on the `octo-mesh-adapter` side where the caches actually live) is an **entry
+criterion for enabling leasing**, listed in the implementation plan's increment 6.
+
+## Trigger execution class (AB#4924 increment 4)
+
+A trigger node declares the scheduling class it implies when its pipeline runs on a leased adapter
+pool. Two classes only — `Interactive` (key 0) and `Batch` (key 1) — never a numeric priority: a
+number needs somebody to assign it and makes "why is my job not running" unanswerable in a queue
+view.
+
+```csharp
+[NodeName("FromHttpRequest", 2)]
+[NodeExecutionClass(PipelineExecutionClass.Interactive)]
+public record FromHttpRequestNodeConfiguration2 : TriggerNodeConfiguration { … }
+```
+
+Mechanics mirror `RequiresRunningProcess` exactly: the attribute goes on the node **configuration**
+record, `NodeSchemaRegistry.BuildDescriptor` picks it up by reflection, and it travels on
+`NodeDescriptor` / `NodeDescriptorDto.ExecutionClass`. Follow `NodeDeprecatedAttribute` rather than
+`NodeRequiresRunningProcessAttribute` when adding more of these — it is a parameterized attribute,
+not a marker.
+
+- 🔴 **Append new descriptor fields last, with a default.** `NodeDescriptorDto` is the wire contract between an adapter and the controller; a trailing defaulted parameter is what lets an older adapter's payload still deserialize on a newer controller.
+- The enum values are the keys of the `PipelineExecutionClass` CK enum in `System.Communication` and must stay in lockstep — they are persisted on every pipeline entity. They are ordered so ascending value equals scheduling order.
+- Absent means `Batch`, the conservative answer: a trigger nobody classified must never jump a queue.
+- The schema extension `x-executionClass` is emitted for **every trigger**, including the default — unlike `x-requiresRunningProcess`, which is emitted only when true. An editor showing the class only for nodes that opted in could not distinguish "classified Batch" from "not classified", which is the question the extension exists to answer. Non-triggers get nothing.
+- Currently `Interactive`: `FromHttpRequest@1`, `FromHttpRequest@2` (both in `octo-mesh-adapter`), `FromExecutePipelineCommand@1`. Everything else relies on the default.
+
 ## Node inventory (`src/Sdk.Pipeline/EtlDataPipeline/Nodes/`)
 
 - **Triggers**: `FromPipelineDataEvent@1`, `FromExecutePipelineCommand@1`, `FromPolling@1`
