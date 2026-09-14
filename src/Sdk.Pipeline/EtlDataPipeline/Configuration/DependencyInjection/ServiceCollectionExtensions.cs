@@ -1,4 +1,5 @@
 using Meshmakers.Common.Shared.Services;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
@@ -97,6 +98,14 @@ public static class ServiceCollectionExtensions
         services.AddTransient<IPipelineDebugSerializer, PipelineDebugSerializer>();
         services.AddTransient<ICompressionService, CompressionService>();
         services.AddTransient<IEtlDataOrchestrator, EtlDataOrchestrator>();
+
+        // AB#4924 - the per-execution tenant the orchestrator enters. Registered HERE, next to the
+        // orchestrator that requires it, rather than only in AdapterBuilder/WebAdapterBuilder:
+        // increment 6 replaced the orchestrator's GetService tolerance with GetRequiredService, and
+        // every host that can resolve an IEtlDataOrchestrator must therefore be able to resolve this.
+        // TryAdd so a pool member (AddAdapterPoolMember) can register the lease-aware implementation
+        // before this call without being overwritten by the dedicated one.
+        services.TryAddSingleton<IAdapterTenantScope, AdapterTenantScope>();
 
         // Add services for nodes
         services.AddTransient<IPollingService, PollingService>();

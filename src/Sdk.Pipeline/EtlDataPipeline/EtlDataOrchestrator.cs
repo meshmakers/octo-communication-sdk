@@ -59,8 +59,15 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
         // outlive this scope, and the tenant must stay in scope for them. The AsyncLocal is
         // restored when this method's async context ends, and a sub-pipeline that enters its own
         // execution restores the outer tenant on the way out.
-        var tenantScope = serviceProvider.GetService<IAdapterTenantScope>();
-        using var tenantLease = tenantScope is not null && !string.IsNullOrWhiteSpace(etlContext.TenantId)
+        // 🔴 GetRequiredService, not GetService (AB#4924 increment 6). Increment 3 tolerated a
+        // missing registration so adapter hosts that do not build on AdapterBuilder kept working
+        // unchanged while the refactor baked. That tolerance has to go before the first lease: on a
+        // pool member a missing scope means every execution silently runs with no tenant entered,
+        // which is a confusing null at best and another tenant's data at worst. The registration
+        // moved into AddDataPipeline() — the same call that registers this orchestrator — so every
+        // host that can resolve an IEtlDataOrchestrator can resolve the scope too.
+        var tenantScope = serviceProvider.GetRequiredService<IAdapterTenantScope>();
+        using var tenantLease = !string.IsNullOrWhiteSpace(etlContext.TenantId)
             ? tenantScope.BeginExecution(etlContext.TenantId)
             : null;
         var contextAccessor = serviceProvider.GetRequiredService<IEtlContextAccessor<TEtlContext>>();

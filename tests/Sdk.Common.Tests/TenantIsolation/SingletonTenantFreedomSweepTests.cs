@@ -54,6 +54,38 @@ public class SingletonTenantFreedomSweepTests
                 "Projects the adapter's OWN credential (AB#5072). The tenant it carries is the "
                 + "dedicated tenant for the adapter's own hub connection; a pool member has none and "
                 + "acquires the borrower's credential per lease instead.",
+            ["AdapterPoolTenantScope"] =
+                "AB#4924 increment 6. Holds the LEASE tenant in a process-wide field, which is the "
+                + "one deliberate exception to 'no process-wide tenant' - the lease arrives on a hub "
+                + "callback and the executions it serves run on other async chains, so an AsyncLocal "
+                + "would not reach them. What makes it safe is that the field is null between leases, "
+                + "which AdapterPoolTenantScopeTests asserts directly, and that an execution for a "
+                + "tenant other than the leased one is refused.",
+            ["AdapterPoolClient"] =
+                "AB#4924 increment 6. Drives one lease at a time and holds no tenant of its own: the "
+                + "lease it is working on lives on IAdapterLeaseScope, and the LeaseDto is a parameter "
+                + "rather than a field. AdapterPoolClientTests pins that the tenant is gone from the "
+                + "process before the release is reported.",
+        };
+
+    /// <summary>
+    ///     Singleton registrations made through a factory, cleared by SERVICE type with a reason.
+    /// </summary>
+    /// <remarks>
+    ///     🔴 A factory hides the implementation type, which is exactly what this sweep exists to
+    ///     inspect — so a factory registration is an offender unless somebody named it here. The two
+    ///     entries below are aliases onto an instance that is itself on
+    ///     <see cref="ClearedSingletons" />, which is the only shape that deserves the exemption.
+    /// </remarks>
+    private static readonly IReadOnlyDictionary<string, string> ClearedFactorySingletons =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["IAdapterTenantScope"] =
+                "Alias onto the single AdapterPoolTenantScope instance, which is cleared above.",
+            ["IAdapterLeaseScope"] =
+                "Alias onto the single AdapterPoolTenantScope instance, which is cleared above.",
+            ["IAdapterPoolHubCallbacks"] =
+                "Alias onto the single AdapterPoolClient instance, which is cleared above.",
         };
 
     /// <summary>
@@ -77,6 +109,40 @@ public class SingletonTenantFreedomSweepTests
         // startup error rather than a readable assertion.
         services.AddSingleton<IAdapterTenantScope, AdapterTenantScope>();
 
+        var offenders = SweepFor(services);
+
+        Assert.True(offenders.Count == 0,
+            "A singleton in the adapter host touches a tenant without having been cleared "
+            + "(AB#4924). Decide whether it retains tenant state across executions; if it does not, "
+            + "add it to ClearedSingletons with the reason. Offenders: "
+            + string.Join("; ", offenders));
+    }
+
+    /// <summary>
+    ///     AB#4924 increment 6 — the same sweep over the <b>pool member</b> composition.
+    /// </summary>
+    /// <remarks>
+    ///     🔴 A pool member is where a retained tenant actually costs something: on a dedicated adapter
+    ///     a singleton holding one tenant's data is invisible, because the process only ever serves
+    ///     that tenant. This is the composition where it becomes a cross-tenant read, so it gets its
+    ///     own sweep rather than riding on the dedicated one.
+    /// </remarks>
+    [Fact]
+    public void EverySingletonOfThePoolMemberCompositionIsOnTheClearedList()
+    {
+        var services = new ServiceCollection();
+        services.AddAdapterPoolMember();
+
+        var offenders = SweepFor(services);
+
+        Assert.True(offenders.Count == 0,
+            "A singleton in the adapter POOL MEMBER host touches a tenant without having been cleared "
+            + "(AB#4924). On a pool member a retained tenant is a cross-tenant read, not a harmless "
+            + "cache. Offenders: " + string.Join("; ", offenders));
+    }
+
+    private static List<string> SweepFor(IServiceCollection services)
+    {
         var offenders = new List<string>();
 
         foreach (var descriptor in services)
@@ -92,8 +158,12 @@ public class SingletonTenantFreedomSweepTests
             {
                 // A factory registration hides its implementation type. That is itself worth
                 // knowing about, because it hides exactly what this sweep exists to inspect.
-                offenders.Add($"{descriptor.ServiceType.Name}: registered by factory, "
-                              + "implementation type not inspectable");
+                if (!ClearedFactorySingletons.ContainsKey(descriptor.ServiceType.Name))
+                {
+                    offenders.Add($"{descriptor.ServiceType.Name}: registered by factory, "
+                                  + "implementation type not inspectable");
+                }
+
                 continue;
             }
 
@@ -109,11 +179,7 @@ public class SingletonTenantFreedomSweepTests
             }
         }
 
-        Assert.True(offenders.Count == 0,
-            "A singleton in the adapter host touches a tenant without having been cleared "
-            + "(AB#4924). Decide whether it retains tenant state across executions; if it does not, "
-            + "add it to ClearedSingletons with the reason. Offenders: "
-            + string.Join("; ", offenders));
+        return offenders;
     }
 
     [Fact]
@@ -123,10 +189,15 @@ public class SingletonTenantFreedomSweepTests
         // entry must still name a real type in the SDK.
         var sdkTypes = typeof(AdapterTenantScope).Assembly.GetTypes()
             .Concat(typeof(AdapterOptions).Assembly.GetTypes())
+            // The pool-member composition aliases a contract interface (IAdapterPoolHubCallbacks),
+            // which lives in Communication.Contracts rather than in either SDK assembly.
+            .Concat(typeof(Meshmakers.Octo.Communication.Contracts.Hubs.IAdapterPoolHubCallbacks)
+                .Assembly.GetTypes())
             .Select(t => t.Name)
             .ToHashSet(StringComparer.Ordinal);
 
         var stale = ClearedSingletons.Keys.Where(name => !sdkTypes.Contains(name)).ToList();
+        stale.AddRange(ClearedFactorySingletons.Keys.Where(name => !sdkTypes.Contains(name)));
 
         Assert.True(stale.Count == 0,
             "ClearedSingletons names types that no longer exist: " + string.Join(", ", stale));
