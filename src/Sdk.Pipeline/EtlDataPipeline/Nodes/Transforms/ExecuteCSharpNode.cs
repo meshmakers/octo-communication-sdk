@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
@@ -335,6 +336,12 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
             AttributeValueTypesDto.Boolean => (object?)dataContext.Get<bool>(path),
             AttributeValueTypesDto.Double => (object?)dataContext.Get<double>(path),
             AttributeValueTypesDto.DateTime => (object?)dataContext.Get<DateTime>(path),
+            // Array types (AB#5232): deserialize straight to the typed CLR array so the
+            // script sees string[]/int[] instead of a boxed JsonElement. RecordArray keeps
+            // the generic path (elements are complex objects) and is materialized to
+            // object[] in ConvertArgumentValue.
+            AttributeValueTypesDto.StringArray => dataContext.Get<string[]>(path),
+            AttributeValueTypesDto.IntArray => dataContext.Get<int[]>(path),
             _ => dataContext.Get<JsonNode>(path)?.Deserialize<object?>(SystemTextJsonOptions.Default)
         };
     }
@@ -351,6 +358,14 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
             AttributeValueTypesDto.Boolean => Convert.ToBoolean(value, CultureInfo.InvariantCulture),
             AttributeValueTypesDto.Double => Convert.ToDouble(value, CultureInfo.InvariantCulture),
             AttributeValueTypesDto.DateTime => Convert.ToDateTime(value, CultureInfo.InvariantCulture),
+            // Array types (AB#5232): whatever shape the value arrives in (typed array from
+            // ResolveTypedFromPath, JsonElement/JsonNode array, or a native list from a
+            // fixed configuration Value), the script always receives the declared CLR array.
+            AttributeValueTypesDto.StringArray =>
+                MaterializeArray(value, e => Convert.ToString(e, CultureInfo.InvariantCulture)!),
+            AttributeValueTypesDto.IntArray =>
+                MaterializeArray(value, e => Convert.ToInt32(e, CultureInfo.InvariantCulture)),
+            AttributeValueTypesDto.RecordArray => MaterializeArray<object?>(value, e => e),
             _ => value
         };
     }
@@ -369,6 +384,14 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
                 AttributeValueTypesDto.Boolean => Convert.ToBoolean(result, CultureInfo.InvariantCulture),
                 AttributeValueTypesDto.Double => Convert.ToDouble(result, CultureInfo.InvariantCulture),
                 AttributeValueTypesDto.DateTime => Convert.ToDateTime(result, CultureInfo.InvariantCulture),
+                // Array return types (AB#5232): a script may return T[], List<T> or a lazy
+                // LINQ enumerable — materialize all of them to the declared CLR array so the
+                // value written to the data context is a proper JSON array of the right type.
+                AttributeValueTypesDto.StringArray =>
+                    MaterializeArray(result, e => Convert.ToString(e, CultureInfo.InvariantCulture)!),
+                AttributeValueTypesDto.IntArray =>
+                    MaterializeArray(result, e => Convert.ToInt32(e, CultureInfo.InvariantCulture)),
+                AttributeValueTypesDto.RecordArray => MaterializeArray<object?>(result, e => e),
                 _ => result
             };
         }
@@ -377,6 +400,73 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
             nodeContext.Error($"Failed to convert result to {returnType}: {ex.Message}");
             throw new PipelineExecutionException($"[{nodeContext.NodePath}]: Result conversion failed", ex);
         }
+    }
+
+    /// <summary>
+    /// Materializes an incoming array-typed value into a typed CLR array (AB#5232).
+    /// Accepts every shape an array argument can arrive in: an already-typed array,
+    /// a boxed <see cref="JsonElement"/>/<see cref="JsonNode"/> array (values resolved
+    /// from the data context), or a native list (fixed configuration values, script
+    /// return values including lazy LINQ enumerables).
+    /// </summary>
+    private static T[] MaterializeArray<T>(object value, Func<object?, T> convertElement)
+    {
+        if (value is T[] typedArray)
+        {
+            return typedArray;
+        }
+
+        if (value is JsonNode node)
+        {
+            value = node.Deserialize<JsonElement>(SystemTextJsonOptions.Default);
+        }
+
+        if (value is JsonElement element)
+        {
+            if (element.ValueKind != JsonValueKind.Array)
+            {
+                throw new InvalidOperationException(
+                    $"Expected a JSON array for an array-typed argument, but got {element.ValueKind}.");
+            }
+
+            return element.EnumerateArray().Select(e => convertElement(JsonElementToClr(e))).ToArray();
+        }
+
+        if (value is string)
+        {
+            // string is IEnumerable<char> — never a valid array value; fail clearly.
+            throw new InvalidOperationException(
+                "Expected an array value for an array-typed argument, but got a string.");
+        }
+
+        if (value is IEnumerable enumerable)
+        {
+            return enumerable.Cast<object?>()
+                .Select(o => convertElement(o is JsonElement je ? JsonElementToClr(je) : o))
+                .ToArray();
+        }
+
+        throw new InvalidOperationException(
+            $"Cannot materialize a value of type {value.GetType().Name} into an array.");
+    }
+
+    /// <summary>
+    /// Unwraps a scalar <see cref="JsonElement"/> to its CLR value so element conversion
+    /// (<see cref="Convert.ToString(object?, IFormatProvider?)"/> etc.) works — JsonElement
+    /// itself is not <see cref="IConvertible"/>. Complex elements (objects/arrays, i.e.
+    /// RecordArray members) stay JsonElement.
+    /// </summary>
+    private static object? JsonElementToClr(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            _ => element
+        };
     }
 
     private static string GetCSharpTypeName(AttributeValueTypesDto dataType)
@@ -389,6 +479,13 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
             AttributeValueTypesDto.Boolean => "bool",
             AttributeValueTypesDto.Double => "double",
             AttributeValueTypesDto.DateTime => "DateTime",
+            // Array types (AB#5232): declare real CLR arrays so scripts can foreach/LINQ
+            // over the argument directly. These are ALL the array kinds the CK type system
+            // defines (AttributeValueTypesDto) — there is no Double/Boolean/DateTime/Int64
+            // array in the enum. IntArray covers the IntegerArray alias (same value).
+            AttributeValueTypesDto.StringArray => "string[]",
+            AttributeValueTypesDto.IntArray => "int[]",
+            AttributeValueTypesDto.RecordArray => "object[]",
             _ => "object"
         };
     }
