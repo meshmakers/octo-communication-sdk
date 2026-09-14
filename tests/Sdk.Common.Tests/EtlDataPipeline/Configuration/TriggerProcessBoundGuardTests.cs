@@ -41,10 +41,13 @@ public class TriggerProcessBoundGuardTests
 
             // Pipeline chaining inside one DataFlow. Classified wake-capable by the on-demand design
             // (docs/concepts/on-demand-adapter-lifecycle.md §5) and pinned as such by the controller
-            // test suite. ⚠️ AB#5228 note: the consumer queue is actually registered
-            // Durable=false/AutoDelete=true (EventHubControl.RegisterRoutedEventConsumer with an
-            // exchange), so a data event sent from a DIFFERENT workload to a hibernated one is
-            // dropped. Reported for a follow-up decision — the fix belongs on the queue, not here.
+            // test suite. ⚠️ That classification is currently wrong, tracked as AB#5231: both
+            // consumer queues are registered Durable=false/AutoDelete=true (EventHubControl.cs:54
+            // and :96) and ToPipelineDataEvent@1 publishes straight to the exchange without the
+            // AB#4918 wake gate, so a data event sent from a DIFFERENT workload to a hibernated one
+            // is dropped silently. Left on this list deliberately: marking the node process-bound
+            // would block on-demand for same-workload chaining, which cannot lose anything. The fix
+            // belongs on the queue or the send path, not on this attribute.
             ["FromPipelineDataEvent@1"] =
                 "Chaining within a DataFlow; classified wake-capable by the on-demand design."
         };
