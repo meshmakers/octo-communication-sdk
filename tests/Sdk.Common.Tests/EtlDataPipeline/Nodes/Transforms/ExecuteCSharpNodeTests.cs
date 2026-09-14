@@ -520,4 +520,231 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
 
         Assert.Equal(1, dataContext.Get<int>("$.result"));
     }
+
+    // AB#5232 platform bug 2: array-typed arguments used to be declared as `object` and
+    // arrived as a boxed JsonElement, so `foreach (var s in myStringArrayArg)` failed to
+    // COMPILE ("does not contain a public instance definition for 'GetEnumerator'").
+    // A StringArray argument must be a real string[] the script can enumerate directly.
+    [Fact]
+    public async Task ProcessObjectAsync_StringArrayArgument_ForeachCompilesAndRuns()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = @"
+                var result = """";
+                foreach (var s in names)
+                {
+                    result += s + ""|"";
+                }
+                return result;
+            ",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "names", ValuePath = "$.names", DataType = AttributeValueTypesDto.StringArray }
+            },
+            ReturnType = AttributeValueTypesDto.String,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject { ["names"] = new JsonArray("alpha", "beta", "gamma") };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("alpha|beta|gamma|", dataContext.Get<string>("$.result"));
+    }
+
+    // AB#5232: a numeric array argument. The CK type system defines exactly three array
+    // kinds (StringArray, IntArray/IntegerArray, RecordArray) — there is no DoubleArray —
+    // so IntArray is the numeric array type; it materializes as int[] and supports LINQ.
+    // The double RESULT of the aggregation checks that array elements feed numeric code.
+    [Fact]
+    public async Task ProcessObjectAsync_IntArrayArgument_SumAndAverageWork()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "values.Length == 0 ? 0.0 : values.Sum() / (double)values.Length",
+            Usings = new List<string> { "System.Linq" },
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "values", ValuePath = "$.values", DataType = AttributeValueTypesDto.IntArray }
+            },
+            ReturnType = AttributeValueTypesDto.Double,
+            TargetPath = "$.avg"
+        };
+        var testData = new JsonObject { ["values"] = new JsonArray(2, 4, 9) };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(5.0, dataContext.Get<double>("$.avg"));
+    }
+
+    // AB#5232: an empty JSON array materializes as an empty typed array — foreach runs
+    // zero times, Length is 0, no null-reference and no cast error.
+    [Fact]
+    public async Task ProcessObjectAsync_EmptyArrayArgument_MaterializesEmptyTypedArray()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = @"
+                var count = 0;
+                foreach (var s in names) { count++; }
+                return count + names.Length;
+            ",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "names", ValuePath = "$.names", DataType = AttributeValueTypesDto.StringArray }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject { ["names"] = new JsonArray() };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(0, dataContext.Get<int>("$.result"));
+    }
+
+    // AB#5232: null/absent behavior is UNCHANGED — a missing path resolves to null, which
+    // coalesces to default(string[]) i.e. null, so scripts that null-check keep working.
+    [Fact]
+    public async Task ProcessObjectAsync_MissingArrayArgument_StaysNull()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "names == null ? \"NULL\" : \"NOT NULL\"",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "names", ValuePath = "$.missing", DataType = AttributeValueTypesDto.StringArray }
+            },
+            ReturnType = AttributeValueTypesDto.String,
+            TargetPath = "$.result"
+        };
+        var (dataContext, nodeContext) = PrepareTest(config);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("NULL", dataContext.Get<string>("$.result"));
+    }
+
+    // AB#5232: a fixed configuration Value (native list, the YamlDotNet shape) is
+    // materialized into the typed array exactly like a path-resolved one.
+    [Fact]
+    public async Task ProcessObjectAsync_FixedValueArrayArgument_MaterializesTypedArray()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "string.Join(\",\", tags)",
+            Arguments = new List<ScriptArgument>
+            {
+                new()
+                {
+                    Name = "tags",
+                    Value = new List<object> { "a", "b", "c" },
+                    DataType = AttributeValueTypesDto.StringArray
+                }
+            },
+            ReturnType = AttributeValueTypesDto.String,
+            TargetPath = "$.result"
+        };
+        var (dataContext, nodeContext) = PrepareTest(config);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("a,b,c", dataContext.Get<string>("$.result"));
+    }
+
+    // AB#5232 backward compatibility: a typed array IS an object, so scripts that treat
+    // the argument generically (pass it around, ToString-free usage via Length etc.)
+    // keep compiling and running.
+    [Fact]
+    public async Task ProcessObjectAsync_ArrayArgumentUsedAsObject_StillWorks()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = @"
+                object boxed = names;
+                return ((string[])boxed).Length;
+            ",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "names", ValuePath = "$.names", DataType = AttributeValueTypesDto.StringArray }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject { ["names"] = new JsonArray("x", "y") };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(2, dataContext.Get<int>("$.result"));
+    }
+
+    // AB#5232: RecordArray materializes as object[] — enumerable, with complex elements
+    // preserved (JsonElement per record).
+    [Fact]
+    public async Task ProcessObjectAsync_RecordArrayArgument_IsEnumerableObjectArray()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = @"
+                var count = 0;
+                foreach (var r in records) { count++; }
+                return count;
+            ",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "records", ValuePath = "$.records", DataType = AttributeValueTypesDto.RecordArray }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject
+        {
+            ["records"] = new JsonArray(
+                new JsonObject { ["id"] = 1 },
+                new JsonObject { ["id"] = 2 })
+        };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(2, dataContext.Get<int>("$.result"));
+    }
+
+    // AB#5232: a script returning a lazy LINQ enumerable with ReturnType StringArray is
+    // materialized to a proper JSON string array in the data context.
+    [Fact]
+    public async Task ProcessObjectAsync_StringArrayReturnType_MaterializesEnumerableResult()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "names.Where(n => n.StartsWith(\"a\"))",
+            Usings = new List<string> { "System.Linq" },
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "names", ValuePath = "$.names", DataType = AttributeValueTypesDto.StringArray }
+            },
+            ReturnType = AttributeValueTypesDto.StringArray,
+            TargetPath = "$.filtered"
+        };
+        var testData = new JsonObject { ["names"] = new JsonArray("apple", "banana", "avocado") };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        var filtered = dataContext.Get<string[]>("$.filtered");
+        Assert.NotNull(filtered);
+        Assert.Equal(new[] { "apple", "avocado" }, filtered);
+    }
 }

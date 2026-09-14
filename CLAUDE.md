@@ -219,6 +219,22 @@ token in the **rendered** log output) and `ConfigureAdapterAuthenticatorOptionsT
 Domain nodes (entity CRUD, stream data, HTTP, files, PDF, mail, …) live in `octo-mesh-adapter`, not
 here.
 
+### ExecuteCSharp argument typing (AB#5232)
+
+`ExecuteCSharp@1` arguments are declared in the generated script with the real C# type for their
+`DataType`: the scalars map to `string`/`int`/`long`/`bool`/`double`/`DateTime`, and the **array**
+kinds map to typed CLR arrays — `StringArray → string[]`, `IntArray`/`IntegerArray` → `int[]`,
+`RecordArray → object[]` (elements stay `JsonElement` for complex records). Those three are ALL the
+array kinds `AttributeValueTypesDto` defines; everything else falls back to `object`. Incoming values
+are materialized into those arrays regardless of shape (typed array, `JsonElement`/`JsonNode` array,
+or a native list from a fixed configuration `Value`), and array `ReturnType`s materialize `T[]`,
+`List<T>` and lazy LINQ enumerables alike. Before AB#5232 array arguments were declared `object` and
+arrived as a boxed `JsonElement`, so `foreach` over them failed to compile — pipeline scripts written
+against that era cast the argument via `((JsonElement)arg).EnumerateArray()`; such scripts must be
+made version-tolerant (check `arg is JsonElement` and fall back to the typed array) while pre-fix
+adapter images are still deployed. Null/absent arguments still coalesce to the type's default
+(`null` for arrays).
+
 ## Development Notes
 
 - Target framework `net10.0` only; `netstandard2.0` was dropped platform-wide in Phase 3.
