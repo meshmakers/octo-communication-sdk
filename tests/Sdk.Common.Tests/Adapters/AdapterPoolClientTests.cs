@@ -369,4 +369,79 @@ public class AdapterPoolClientTests
         Assert.False(scope.HasLease);
         Assert.Contains("leave:token", journal.Entries);
     }
+
+    /// <summary>
+    ///     AB#4924 increment 9 (plan §11). The member is the only party that can time the work item:
+    ///     for a leased execution the controller stamps <c>StartedAt</c> at claim time, so its own
+    ///     view of "how long did the pipeline run" is identical to "how long was the member held" by
+    ///     construction, and the per-lease warm-up concept §2.3 exists to expose would read as zero
+    ///     forever. The measurement travels back on the release.
+    /// </summary>
+    [Fact]
+    public async Task TheRelease_CarriesTheTimeTheWorkItemActuallyRan()
+    {
+        var journal = new Journal();
+        var scope = new AdapterPoolTenantScope();
+        var hubClient = new RecordingHubClient(journal, scope);
+        var client = CreateClient(scope,
+            hubClient,
+            [new JournalParticipant(journal, "token")],
+            new JournalWorkItem(journal, scope, body: () => Task.Delay(30)));
+
+        await client.LeaseAsync(ALease());
+
+        var release = Assert.Single(hubClient.Releases);
+        Assert.NotNull(release.WorkDurationMs);
+        // At least the delay the work item took, and nowhere near the whole lease — participants and
+        // the release round trip are OUTSIDE this span on purpose, because they are the overhead.
+        Assert.InRange(release.WorkDurationMs!.Value, 20, 10_000);
+    }
+
+    /// <summary>
+    ///     A lease the member refused — it is draining — never ran a work item, so it reports no work
+    ///     span at all. A zero here would tell the controller the member spent 100 % of the lease on
+    ///     overhead, which is the most alarming possible reading of "nothing happened".
+    /// </summary>
+    [Fact]
+    public async Task ALeaseRefusedBeforeTheWorkItemRan_ReportsNoWorkSpanAtAll()
+    {
+        var journal = new Journal();
+        var scope = new AdapterPoolTenantScope();
+        var hubClient = new RecordingHubClient(journal, scope);
+        var client = CreateClient(scope, hubClient, [], new JournalWorkItem(journal, scope));
+
+        await client.DrainAsync("the operator asked");
+        await client.LeaseAsync(ALease());
+
+        var release = Assert.Single(hubClient.Releases);
+        Assert.Equal(LeaseReleaseReasonDto.Drained, release.Reason);
+        Assert.Null(release.WorkDurationMs);
+    }
+
+    /// <summary>
+    ///     A work item that threw still held the tenant for as long as it ran. Dropping that sample
+    ///     would bias the overhead distribution towards the leases that succeeded.
+    /// </summary>
+    [Fact]
+    public async Task AWorkItemThatThrew_StillReportsHowLongItRan()
+    {
+        var journal = new Journal();
+        var scope = new AdapterPoolTenantScope();
+        var hubClient = new RecordingHubClient(journal, scope);
+        var client = CreateClient(scope,
+            hubClient,
+            [],
+            new JournalWorkItem(journal, scope, body: async () =>
+            {
+                await Task.Delay(30);
+                throw new InvalidOperationException("the pipeline blew up");
+            }));
+
+        await client.LeaseAsync(ALease());
+
+        var release = Assert.Single(hubClient.Releases);
+        Assert.False(release.Success);
+        Assert.NotNull(release.WorkDurationMs);
+        Assert.InRange(release.WorkDurationMs!.Value, 20, 10_000);
+    }
 }

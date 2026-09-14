@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Communication.Contracts.Hubs;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -189,6 +190,15 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
         var entered = new List<IAdapterLeaseParticipant>(_participants.Count);
         IDisposable? leaseScope = null;
 
+        // 🔴 AB#4924 increment 9. The member is the ONLY party that can measure this. The controller
+        // stamps StartedAt on a leased execution at claim time, so its own view of "how long did the
+        // pipeline run" is identical to "how long was the member held" by construction, and the
+        // per-lease warm-up concept §2.3 exists to expose would read as zero forever. Timed around
+        // the work item alone: everything outside it — entering the lease scope, the borrower login,
+        // the CK model, the pipeline registration, and every leave — is the overhead, and the
+        // controller derives it by subtraction.
+        long? workDurationMs = null;
+
         try
         {
             leaseScope = _leaseScope.BeginLease(lease.TenantId);
@@ -202,7 +212,18 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
                 entered.Add(participant);
             }
 
-            outcome = await _workItem.RunAsync(lease, CancellationToken.None);
+            var workStarted = Stopwatch.GetTimestamp();
+            try
+            {
+                outcome = await _workItem.RunAsync(lease, CancellationToken.None);
+            }
+            finally
+            {
+                // Stamped even when the work item threw: a failed run still held the tenant for that
+                // long, and dropping the sample would quietly bias the distribution towards the runs
+                // that succeeded.
+                workDurationMs = (long)Stopwatch.GetElapsedTime(workStarted).TotalMilliseconds;
+            }
         }
         catch (Exception e)
         {
@@ -247,11 +268,12 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
 
         // Only now — the tenant is gone from the process, so the controller is free to hand this
         // member another one.
-        await ReportReleaseAsync(lease, reason, outcome.Success, outcome.StatusMessage, outcome.OutputData);
+        await ReportReleaseAsync(lease, reason, outcome.Success, outcome.StatusMessage, outcome.OutputData,
+            workDurationMs);
     }
 
     private async Task ReportReleaseAsync(LeaseDto lease, LeaseReleaseReasonDto reason, bool success,
-        string? statusMessage, string? outputData = null)
+        string? statusMessage, string? outputData = null, long? workDurationMs = null)
     {
         try
         {
@@ -264,6 +286,10 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
                 // AB#4924 §9.9 / D4: the only route a leased execution's output has back to its
                 // entity. The member has no adapter-hub connection to report an execution end on.
                 OutputData = outputData,
+                // Null on every path where the work item never ran — a lease refused because the
+                // member is draining or already holds one. The controller records no overhead
+                // sample for those rather than a fabricated zero (AB#4924 increment 9).
+                WorkDurationMs = workDurationMs,
                 ReleasedAtUtc = DateTime.UtcNow
             });
         }
