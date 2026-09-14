@@ -247,11 +247,11 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
 
         // Only now — the tenant is gone from the process, so the controller is free to hand this
         // member another one.
-        await ReportReleaseAsync(lease, reason, outcome.Success, outcome.StatusMessage);
+        await ReportReleaseAsync(lease, reason, outcome.Success, outcome.StatusMessage, outcome.OutputData);
     }
 
     private async Task ReportReleaseAsync(LeaseDto lease, LeaseReleaseReasonDto reason, bool success,
-        string? statusMessage)
+        string? statusMessage, string? outputData = null)
     {
         try
         {
@@ -261,6 +261,9 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
                 Reason = reason,
                 Success = success,
                 StatusMessage = statusMessage,
+                // AB#4924 §9.9 / D4: the only route a leased execution's output has back to its
+                // entity. The member has no adapter-hub connection to report an execution end on.
+                OutputData = outputData,
                 ReleasedAtUtc = DateTime.UtcNow
             });
         }
