@@ -85,7 +85,11 @@ public class SingletonTenantFreedomSweepTests
             ["IAdapterLeaseScope"] =
                 "Alias onto the single AdapterPoolTenantScope instance, which is cleared above.",
             ["IAdapterPoolHubCallbacks"] =
-                "Alias onto the single AdapterPoolClient instance, which is cleared above.",
+                "DeferredAdapterPoolHubCallbacks: holds an IServiceProvider and nothing else, and "
+                + "resolves AdapterPoolClient per call. It exists to break the construction cycle "
+                + "client -> hub client -> callbacks -> client, which Microsoft DI could not see "
+                + "through a factory lambda and which hung the member process silently. It carries no "
+                + "tenant state of its own; the instance it forwards to is cleared above.",
         };
 
     /// <summary>

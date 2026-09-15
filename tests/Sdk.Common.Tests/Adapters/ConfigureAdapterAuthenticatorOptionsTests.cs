@@ -12,11 +12,59 @@ namespace Sdk.Common.Tests.Adapters;
 /// </summary>
 public class ConfigureAdapterAuthenticatorOptionsTests
 {
-    private static AuthenticatorOptions Project(AdapterOptions adapterOptions)
+    private static AuthenticatorOptions Project(AdapterOptions adapterOptions,
+        AdapterPoolMemberOptions? poolMemberOptions = null)
     {
         var authenticatorOptions = new AuthenticatorOptions();
-        new ConfigureAdapterAuthenticatorOptions(Options.Create(adapterOptions)).Configure(authenticatorOptions);
+        new ConfigureAdapterAuthenticatorOptions(Options.Create(adapterOptions),
+                Options.Create(poolMemberOptions ?? new AdapterPoolMemberOptions()))
+            .Configure(authenticatorOptions);
         return authenticatorOptions;
+    }
+
+    /// <summary>
+    ///     🔴 AB#4924 — a pool member authenticates as the <b>lending</b> tenant, because its
+    ///     management connection is authorized against that tenant (concept §8, Q4). The earlier
+    ///     comment here claimed a member had no connection tenant at all; it registered under the
+    ///     constructor default instead, and staged LogOnly authorization accepted it silently.
+    /// </summary>
+    [Fact]
+    public void APoolMemberAuthenticatesAsTheLendingTenant()
+    {
+        var options = Project(new AdapterOptions
+            {
+                IssuerUri = "https://connect.test-2.mm.cloud",
+                ClientId = "octo-mesh-adapter",
+                ClientSecret = "secret"
+                // No DedicatedTenantId: a member has no tenant of its own to execute for.
+            },
+            new AdapterPoolMemberOptions
+            {
+                PoolTenantId = "lender",
+                PoolRtId = "665f0000000000000000ee21"
+            });
+
+        Assert.Equal("lender", options.TenantId);
+    }
+
+    /// <summary>
+    ///     Half a pool configuration is not a pool member (<c>IsEnabled</c> needs both ids), so the
+    ///     dedicated path must still apply — otherwise a typo in one variable would silently
+    ///     re-point a dedicated adapter's credential.
+    /// </summary>
+    [Fact]
+    public void AnIncompletePoolConfigurationLeavesTheDedicatedTenantInPlace()
+    {
+        var options = Project(new AdapterOptions
+            {
+                DedicatedTenantId = "acmeTenant",
+                IssuerUri = "https://connect.test-2.mm.cloud",
+                ClientId = "octo-mesh-adapter",
+                ClientSecret = "secret"
+            },
+            new AdapterPoolMemberOptions { PoolTenantId = "lender" });   // PoolRtId missing
+
+        Assert.Equal("acmeTenant", options.TenantId);
     }
 
     [Fact]

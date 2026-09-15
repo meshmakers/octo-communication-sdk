@@ -3,6 +3,7 @@ using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Meshmakers.Octo.Sdk.ServiceClient.AssetRepositoryServices.Tenants;
 using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -41,7 +42,14 @@ public static class AdapterPoolServiceCollectionExtensions
     /// </remarks>
     public static IServiceCollection AddAdapterPoolMember(this IServiceCollection services)
     {
-        services.AddOptions<AdapterPoolMemberOptions>();
+        // 🔴 BindConfiguration, not a bare AddOptions. Without the bind the options object stays
+        // at its defaults, IsEnabled is always false, and AdapterPoolMemberService logs "started
+        // without a configured pool … Doing nothing" on a process that was configured correctly.
+        // Every host binds the section into a LOCAL instance to decide whether to compose a member
+        // at all; none of them bound it into DI, so the running service never saw it.
+        services.AddOptions<AdapterPoolMemberOptions>()
+            .Configure<IConfiguration>((options, configuration) =>
+                configuration.GetSection(AdapterPoolMemberOptions.SectionName).Bind(options));
 
         // Both interfaces, one instance: the fleet consumes IAdapterTenantScope and knows nothing
         // about leases, while the pool client needs the lease half.
@@ -72,7 +80,11 @@ public static class AdapterPoolServiceCollectionExtensions
                 });
 
         services.TryAddSingleton<AdapterPoolClient>();
-        services.TryAddSingleton<IAdapterPoolHubCallbacks>(p => p.GetRequiredService<AdapterPoolClient>());
+        // 🔴 A deferred forwarder, NOT `p => p.GetRequiredService<AdapterPoolClient>()`. That factory
+        // closed a cycle — client → hub client → callbacks → client — which Microsoft DI cannot see
+        // through, so it never threw and never overflowed; the member simply went silent for ever.
+        // See DeferredAdapterPoolHubCallbacks.
+        services.TryAddSingleton<IAdapterPoolHubCallbacks, DeferredAdapterPoolHubCallbacks>();
         services.TryAddSingleton<IServiceClientAccessToken, ServiceClientAccessToken>();
         services.TryAddSingleton<IAdapterPoolHubClient, AdapterPoolHubClient>();
 

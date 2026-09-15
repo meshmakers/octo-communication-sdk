@@ -13,7 +13,18 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 ///         🔴 <b>There is no <c>DedicatedTenantId</c> here, and there must not be.</b> A pool member
 ///         that carried one would have a process-wide tenant to fall back on, which is the exact
 ///         hazard <c>AdapterOptions.TenantId</c> was deleted to remove (increment 3). Between leases
-///         a member serves nobody.
+///         a member serves nobody — for the work it executes.
+///     </para>
+///     <para>
+///         🔴 <b>That is not the same as having no connection tenant.</b> An earlier version of this
+///         remark said a member "has none" full stop, and that was wrong: the management connection
+///         is authorized against the <b>lending</b> tenant (concept §8, Q4), so the member's own
+///         credential needs one. It is derived from <see cref="PoolTenantId" /> by
+///         <c>ConfigureAdapterAuthenticatorOptions</c> rather than configured separately — two
+///         settings that must agree are two settings that can disagree. Without it the constructor
+///         default applies, the member registers under the wrong tenant, and staged <c>LogOnly</c>
+///         authorization accepts that silently. It cost a diagnosis during the first end-to-end
+///         lease run.
 ///     </para>
 /// </remarks>
 public class AdapterPoolMemberOptions
