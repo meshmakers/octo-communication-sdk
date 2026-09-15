@@ -1,5 +1,6 @@
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.Adapters;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.ServiceClient;
 using Meshmakers.Octo.Sdk.ServiceClient.AssetRepositoryServices.Tenants;
@@ -115,9 +116,13 @@ public class AdapterPoolClientTests
         public List<LeaseResultDto> Releases { get; } = [];
         public int RegistrationAttempts { get; private set; }
 
+        /// <summary>AB#4924: what the member actually put on the wire.</summary>
+        public PoolMemberRegistrationDto? LastRegistration { get; private set; }
+
         public Task<PoolMemberRegistrationResultDto> RegisterPoolMemberAsync(PoolMemberRegistrationDto registration)
         {
             RegistrationAttempts++;
+            LastRegistration = registration;
             if (_throwFactory is not null)
             {
                 return Task.FromException<PoolMemberRegistrationResultDto>(_throwFactory());
@@ -158,7 +163,8 @@ public class AdapterPoolClientTests
     }
 
     private static AdapterPoolClient CreateClient(IAdapterLeaseScope scope, IAdapterPoolHubClient hubClient,
-        IEnumerable<IAdapterLeaseParticipant> participants, IAdapterLeaseWorkItem workItem)
+        IEnumerable<IAdapterLeaseParticipant> participants, IAdapterLeaseWorkItem workItem,
+        INodeSchemaRegistry? nodeSchemaRegistry = null, IPipelineSchemaGenerator? pipelineSchemaGenerator = null)
     {
         return new AdapterPoolClient(scope, hubClient, participants, workItem,
             new OptionsWrapper<AdapterPoolMemberOptions>(new AdapterPoolMemberOptions
@@ -167,7 +173,89 @@ public class AdapterPoolClientTests
                 PoolRtId = "665f0000000000000000ee21",
                 MemberId = "octo-pool-0"
             }),
-            NullLogger<AdapterPoolClient>.Instance);
+            NullLogger<AdapterPoolClient>.Instance, nodeSchemaRegistry, pipelineSchemaGenerator);
+    }
+
+    private const string PoolSchemaJson = "{\"$id\":\"pool-schema\"}";
+
+    private sealed class StubNodeSchemaRegistry(params NodeDescriptor[] descriptors) : INodeSchemaRegistry
+    {
+        public IReadOnlyList<NodeDescriptor> GetAllDescriptors() => descriptors;
+
+        public NodeDescriptor? GetDescriptor(string qualifiedName) =>
+            descriptors.FirstOrDefault(d => $"{d.NodeName}@{d.Version}" == qualifiedName);
+    }
+
+    private sealed class StubSchemaGenerator(string schema) : IPipelineSchemaGenerator
+    {
+        public string GenerateSchema() => schema;
+    }
+
+    private sealed class ThrowingNodeSchemaRegistry : INodeSchemaRegistry
+    {
+        public IReadOnlyList<NodeDescriptor> GetAllDescriptors() =>
+            throw new InvalidOperationException("the registry is broken");
+
+        public NodeDescriptor? GetDescriptor(string qualifiedName) => null;
+    }
+
+    /// <summary>
+    ///     🔴 AB#4924 — the registration carries the member's node descriptors and pipeline schema.
+    /// </summary>
+    /// <remarks>
+    ///     Without them the controller has nothing to answer "which nodes can this pool run" with, and
+    ///     a BORROWER's DeployPipeline falls through to the name-based fallback: every leased pipeline
+    ///     keeps the CK default execution class, and its definition is validated against no schema.
+    ///     The old <c>NodeNames</c> field was hard-coded to an empty list here, which is why the gap
+    ///     was invisible.
+    /// </remarks>
+    [Fact]
+    public async Task Registration_CarriesTheMembersNodeDescriptorsAndPipelineSchema()
+    {
+        var journal = new Journal();
+        var scope = new AdapterPoolTenantScope();
+        var hubClient = new RecordingHubClient(journal, scope);
+        var client = CreateClient(scope, hubClient, [], new JournalWorkItem(journal, scope),
+            new StubNodeSchemaRegistry(
+                new NodeDescriptor("FromCustomThing", 1, "Trigger", true, false, "{}",
+                    ExecutionClass: PipelineExecutionClass.Interactive),
+                new NodeDescriptor("FromPolling", 1, "Trigger", true, false, "{}",
+                    RequiresRunningProcess: true)),
+            new StubSchemaGenerator(PoolSchemaJson));
+
+        await client.RegisterAsync();
+
+        var registration = hubClient.LastRegistration;
+        Assert.NotNull(registration);
+        Assert.Equal(2, registration!.NodeDescriptors.Count);
+        var interactive = Assert.Single(registration.NodeDescriptors, d => d.NodeName == "FromCustomThing");
+        // The two fields the controller's deploy path actually reads.
+        Assert.Equal((int)PipelineExecutionClass.Interactive, interactive.ExecutionClass);
+        Assert.True(Assert.Single(registration.NodeDescriptors, d => d.NodeName == "FromPolling")
+            .RequiresRunningProcess);
+        Assert.Equal(PoolSchemaJson, registration.PipelineSchemaJson);
+    }
+
+    /// <summary>
+    ///     A member that cannot describe itself still registers and is still leasable — the same
+    ///     degradation the dedicated path already makes.
+    /// </summary>
+    [Fact]
+    public async Task Registration_WithoutAUsableRegistry_StillSucceedsAndReportsNoDescriptors()
+    {
+        var journal = new Journal();
+        var scope = new AdapterPoolTenantScope();
+        var hubClient = new RecordingHubClient(journal, scope);
+        var client = CreateClient(scope, hubClient, [], new JournalWorkItem(journal, scope),
+            new ThrowingNodeSchemaRegistry());
+
+        var result = await client.RegisterAsync();
+
+        Assert.NotNull(result);
+        Assert.True(result!.Accepted);
+        Assert.NotNull(hubClient.LastRegistration);
+        Assert.Empty(hubClient.LastRegistration!.NodeDescriptors);
+        Assert.Null(hubClient.LastRegistration.PipelineSchemaJson);
     }
 
     /// <summary>

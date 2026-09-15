@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Communication.Contracts.Hubs;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
 using Microsoft.AspNetCore.SignalR;
@@ -48,6 +49,12 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     private readonly IAdapterPoolHubClient _poolHubClient;
     private readonly IAdapterLeaseWorkItem _workItem;
 
+    // AB#4924 — what this member can run. Optional exactly as on the dedicated path
+    // (AdapterExecutionService): a host that composed no data pipeline has no registry, and a member
+    // without descriptors still registers and is still leasable.
+    private readonly INodeSchemaRegistry? _nodeSchemaRegistry;
+    private readonly IPipelineSchemaGenerator? _pipelineSchemaGenerator;
+
     // One lease at a time, and the gate is a semaphore rather than a lock because the whole path is
     // asynchronous. It also serialises a drain against an in-flight lease, which is what lets a drain
     // wait for the work item instead of yanking the tenant out from under it.
@@ -70,9 +77,13 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     /// <param name="workItem">What to run while the lease is held.</param>
     /// <param name="options">The pool this member belongs to.</param>
     /// <param name="logger">Logger.</param>
+    /// <param name="nodeSchemaRegistry">The nodes this member can execute; null when the host composed no data pipeline.</param>
+    /// <param name="pipelineSchemaGenerator">The composite pipeline schema generator; null when the host composed no data pipeline.</param>
     public AdapterPoolClient(IAdapterLeaseScope leaseScope, IAdapterPoolHubClient poolHubClient,
         IEnumerable<IAdapterLeaseParticipant> participants, IAdapterLeaseWorkItem workItem,
-        IOptions<AdapterPoolMemberOptions> options, ILogger<AdapterPoolClient> logger)
+        IOptions<AdapterPoolMemberOptions> options, ILogger<AdapterPoolClient> logger,
+        INodeSchemaRegistry? nodeSchemaRegistry = null,
+        IPipelineSchemaGenerator? pipelineSchemaGenerator = null)
     {
         _leaseScope = leaseScope;
         _poolHubClient = poolHubClient;
@@ -80,6 +91,8 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
         _workItem = workItem;
         _options = options.Value;
         _logger = logger;
+        _nodeSchemaRegistry = nodeSchemaRegistry;
+        _pipelineSchemaGenerator = pipelineSchemaGenerator;
     }
 
     /// <summary>Whether this member was asked to drain and takes no further lease.</summary>
@@ -91,12 +104,23 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     /// <returns>The controller's answer, or <c>null</c> when the controller does not support the hub.</returns>
     public async Task<PoolMemberRegistrationResultDto?> RegisterAsync()
     {
+        // 🔴 AB#4924 — the SAME projection the dedicated path sends on RegisterAdapterWithSchemaAsync.
+        // Without it the controller has no node descriptors for a pool member at all, and a BORROWER's
+        // DeployPipeline falls back to the name list: the execution class of every leased pipeline
+        // stays at the CK default Batch, process-bound triggers go unclassified, and the definition is
+        // validated against no schema.
+        var nodeDescriptors = AdapterNodeDescriptorProjection.TryProject(_nodeSchemaRegistry,
+            e => _logger.LogWarning(e, "Failed to project node descriptors; registering this pool member without them"));
+        var pipelineSchemaJson = AdapterNodeDescriptorProjection.TryGenerateSchema(_pipelineSchemaGenerator,
+            e => _logger.LogWarning(e, "Failed to generate the pipeline schema; registering this pool member without it"));
+
         var registration = new PoolMemberRegistrationDto
         {
             PoolTenantId = _options.PoolTenantId ?? string.Empty,
             PoolRtId = _options.PoolRtId ?? string.Empty,
             MemberId = _options.EffectiveMemberId,
-            NodeNames = []
+            NodeDescriptors = nodeDescriptors ?? [],
+            PipelineSchemaJson = pipelineSchemaJson
         };
 
         try
@@ -105,8 +129,10 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
             if (result.Accepted)
             {
                 _logger.LogInformation(
-                    "Registered as member '{MemberId}' of adapter pool {PoolRtId} in tenant '{PoolTenantId}'",
-                    result.MemberId, registration.PoolRtId, registration.PoolTenantId);
+                    "Registered as member '{MemberId}' of adapter pool {PoolRtId} in tenant '{PoolTenantId}' with " +
+                    "{NodeCount} node descriptor(s) and {SchemaState} pipeline schema",
+                    result.MemberId, registration.PoolRtId, registration.PoolTenantId,
+                    registration.NodeDescriptors.Count, pipelineSchemaJson == null ? "no" : "a");
             }
             else
             {

@@ -717,44 +717,17 @@ public class AdapterExecutionService : IAdapterHubCallbacks
         return (PipelineExecutionStatus.Failed, null);
     }
 
+    // AB#4924: shared with AdapterPoolClient - the pool member reports the same descriptors on its
+    // own registration, and two projections would be two answers to one question.
     private IReadOnlyList<NodeDescriptorDto>? GetNodeDescriptorDtos()
     {
-        if (_nodeSchemaRegistry == null) return null;
-
-        try
-        {
-            var descriptors = _nodeSchemaRegistry.GetAllDescriptors();
-            return descriptors.Select(d => new NodeDescriptorDto(
-                d.NodeName,
-                d.Version,
-                d.Category,
-                d.IsTrigger,
-                d.SupportsChildren,
-                d.ConfigurationSchemaJson,
-                d.IsDeprecated,
-                d.DeprecationMessage,
-                d.RequiresRunningProcess,
-                (int)d.ExecutionClass)).ToList();
-        }
-        catch (Exception e)
-        {
-            _logger.Warn(e, "Failed to generate node descriptors, registering without them");
-            return null;
-        }
+        return AdapterNodeDescriptorProjection.TryProject(_nodeSchemaRegistry,
+            e => _logger.Warn(e, "Failed to generate node descriptors, registering without them"));
     }
 
     private string? GetPipelineSchemaJson()
     {
-        if (_pipelineSchemaGenerator == null) return null;
-
-        try
-        {
-            return _pipelineSchemaGenerator.GenerateSchema();
-        }
-        catch (Exception e)
-        {
-            _logger.Warn(e, "Failed to generate pipeline schema, registering without it");
-            return null;
-        }
+        return AdapterNodeDescriptorProjection.TryGenerateSchema(_pipelineSchemaGenerator,
+            e => _logger.Warn(e, "Failed to generate pipeline schema, registering without it"));
     }
 }

@@ -303,6 +303,24 @@ close, because the controller's next act is to hand the member another tenant.
 - Both directions degrade through the once-only `HubException` pattern (same as AB#4917's scale-status
   channel): controller, `octo-sdk` and this SDK ship together, so it only covers a rolling upgrade.
 
+### Registration carries the member's node descriptors (AB#4924)
+
+`AdapterPoolClient.RegisterAsync` sends `NodeDescriptors` + `PipelineSchemaJson` on
+`PoolMemberRegistrationDto` — the **same** values a dedicated adapter sends on
+`RegisterAdapterWithSchemaAsync`, projected by the shared `AdapterNodeDescriptorProjection`
+(extracted out of `AdapterExecutionService`; there is deliberately only one projection, because two
+would be two answers to one question).
+
+🔴 **Why it matters on the other side of the wire:** the controller has no other source of "which
+nodes can this pool run". A *borrowing* tenant's `DeployPipeline` resolves the pipeline's execution
+class and validates its definition against these descriptors, so a member that reports none leaves
+every leased pipeline at the CK default `Batch` and validated against no schema. The predecessor
+field `NodeNames` was hard-coded to `[]` here and read nowhere, which is why the gap was invisible.
+
+`INodeSchemaRegistry` and `IPipelineSchemaGenerator` are **optional** constructor parameters: a host
+that composed no data pipeline still registers and stays leasable, and a registry that throws is
+logged and degraded, never propagated.
+
 ### `IAdapterLeaseParticipant` — the isolation invariant, made composable
 
 The SDK cannot see the caches an adapter repository owns, so each of them registers a participant
