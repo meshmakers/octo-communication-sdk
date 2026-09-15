@@ -42,14 +42,23 @@ public static class AdapterPoolServiceCollectionExtensions
     /// </remarks>
     public static IServiceCollection AddAdapterPoolMember(this IServiceCollection services)
     {
-        // 🔴 BindConfiguration, not a bare AddOptions. Without the bind the options object stays
-        // at its defaults, IsEnabled is always false, and AdapterPoolMemberService logs "started
-        // without a configured pool … Doing nothing" on a process that was configured correctly.
-        // Every host binds the section into a LOCAL instance to decide whether to compose a member
-        // at all; none of them bound it into DI, so the running service never saw it.
+        // 🔴 Bound, not merely registered. Without the bind the options object stays at its
+        // defaults, IsEnabled is always false, and AdapterPoolMemberService logs "started without a
+        // configured pool … Doing nothing" on a process that was configured correctly. Every host
+        // binds the section into a LOCAL instance to decide whether to compose a member at all;
+        // none of them bound it into DI, so the running service never saw it.
+        //
+        // 🔴 GetService, not Configure<IConfiguration>. The first attempt at this fix took
+        // IConfiguration as a hard dependency of the options configuration, which made
+        // AddAdapterPoolMember() unusable in any composition that does not register one — and broke
+        // twelve leasing integration tests in octo-mesh-adapter, in a repo the change never
+        // touched. A DI extension must compose in a bare ServiceCollection; a host without
+        // configuration simply gets the defaults, which is exactly what it got before.
         services.AddOptions<AdapterPoolMemberOptions>()
-            .Configure<IConfiguration>((options, configuration) =>
-                configuration.GetSection(AdapterPoolMemberOptions.SectionName).Bind(options));
+            .Configure<IServiceProvider>((options, serviceProvider) =>
+                serviceProvider.GetService<IConfiguration>()
+                    ?.GetSection(AdapterPoolMemberOptions.SectionName)
+                    .Bind(options));
 
         // Both interfaces, one instance: the fleet consumes IAdapterTenantScope and knows nothing
         // about leases, while the pool client needs the lease half.
