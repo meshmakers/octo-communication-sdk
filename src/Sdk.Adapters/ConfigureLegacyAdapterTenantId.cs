@@ -29,12 +29,6 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 /// </remarks>
 public sealed class ConfigureLegacyAdapterTenantId : IPostConfigureOptions<AdapterOptions>
 {
-    /// <summary>
-    ///     The default <see cref="AdapterOptions.DedicatedTenantId" /> set by the constructor.
-    ///     Treated as "not configured" here, so the legacy key still wins over it.
-    /// </summary>
-    private const string UnconfiguredDefault = "meshTest";
-
     private readonly IConfiguration _configuration;
     private readonly ILogger<ConfigureLegacyAdapterTenantId> _logger;
 
@@ -58,8 +52,8 @@ public sealed class ConfigureLegacyAdapterTenantId : IPostConfigureOptions<Adapt
         }
 
         var newKeyConfigured = !string.IsNullOrWhiteSpace(options.DedicatedTenantId)
-                               && !string.Equals(options.DedicatedTenantId, UnconfiguredDefault,
-                                   StringComparison.Ordinal);
+                               && !string.Equals(options.DedicatedTenantId,
+                                   AdapterOptions.UnconfiguredTenantDefault, StringComparison.Ordinal);
 
         if (newKeyConfigured)
         {

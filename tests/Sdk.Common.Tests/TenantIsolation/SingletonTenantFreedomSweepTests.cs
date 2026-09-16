@@ -54,6 +54,11 @@ public class SingletonTenantFreedomSweepTests
                 "Projects the adapter's OWN credential (AB#5072). The tenant it carries is the "
                 + "dedicated tenant for the adapter's own hub connection; a pool member has none and "
                 + "acquires the borrower's credential per lease instead.",
+            ["ConfigurePoolMemberAdapterTenantId"] =
+                "AB#4924. Reads the pool configuration once, at options construction, to CLEAR "
+                + "AdapterOptions.DedicatedTenantId on a member. It retains nothing: the only tenant "
+                + "it touches is the lender's, and only to name it in a warning. Removing a "
+                + "process-wide tenant is the opposite of caching one.",
             ["AdapterPoolTenantScope"] =
                 "AB#4924 increment 6. Holds the LEASE tenant in a process-wide field, which is the "
                 + "one deliberate exception to 'no process-wide tenant' - the lease arrives on a hub "

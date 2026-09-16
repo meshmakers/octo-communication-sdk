@@ -135,7 +135,8 @@ The adapter acquires its **own** client-credentials access token at startup and 
    `OCTO_ADAPTER__ISSUERURI`, `__CLIENTID`, `__CLIENTSECRET`). `IsEnabled` is `IssuerUri && ClientId`
    — the secret is deliberately not part of the check, so a confidential client with a missing secret
    fails loudly at the token endpoint instead of silently degrading to an anonymous connection that
-   looks healthy until the gate is armed. The tenant is the already-present `AdapterOptions.TenantId`.
+   looks healthy until the gate is armed. The tenant is `AdapterOptions.DedicatedTenantId` — or, on a
+   pool member, the **lending** tenant from `AdapterPool:PoolTenantId`; see below.
 2. **`ConfigureAdapterAuthenticatorOptions`** (`IConfigureOptions<AuthenticatorOptions>`) projects
    those four onto the SDK's `AuthenticatorOptions`, which `AuthenticatorClient` reads.
 3. **`AdapterAccessTokenService`** (`BackgroundService`) requests the token
@@ -267,6 +268,30 @@ never enforces the lease, and every execution looks fine.
 composition root rather than a bindable switch, for the same reason `AdapterTenantScope.IsPoolMember`
 is hard-coded false: a process that was not built as a pool member must not become one by environment
 variable.
+
+### 🔴 A pool member carries no `DedicatedTenantId` — enforced, not assumed (AB#4924)
+
+`ConfigurePoolMemberAdapterTenantId` (`IPostConfigureOptions<AdapterOptions>`, registered by
+`AddAdapterPoolMember()`) **clears** `AdapterOptions.DedicatedTenantId` whenever the pool
+configuration is complete, and logs one warning if something had configured it.
+
+It exists because "it is null on a pool member" was a claim three call sites in two repositories rely
+on and that nothing made true: `AdapterOptions`' constructor sets `"meshTest"`, and the AB#4924 local
+runbook instructed the operator to set the key to the **lending** tenant. The reads are
+`AdapterExecutionService.CkModelChangedAsync`, `HttpRequestService` (route prefix and authorization)
+and — the one that costs something — `ServiceAccountTokenService.ResolveTenantId` in
+`octo-mesh-adapter`, where a `ServiceAccountConfiguration` naming no tenant falls back to this value.
+With the lender's id present, a borrower's leased execution would have acquired a token for the
+lender instead of declining.
+
+The member's own connection credential is unaffected: `ConfigureAdapterAuthenticatorOptions` derives
+it from `AdapterPoolMemberOptions.PoolTenantId`. Nothing else on a member reads the property —
+`AdapterHubClient` and `AdapterExecutionService` are not registered at all in the pool-member branch
+of either builder. The clearing is gated on `AdapterPoolMemberOptions.IsEnabled` rather than on the
+call, so a host that composes the member services while the configuration names no pool keeps its
+dedicated tenant.
+
+Tests: `tests/Sdk.Common.Tests/Adapters/ConfigurePoolMemberAdapterTenantIdTests.cs`.
 
 ### `AdapterPoolTenantScope` — two nested notions of "the current tenant"
 

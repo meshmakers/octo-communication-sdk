@@ -60,6 +60,12 @@ public static class AdapterPoolServiceCollectionExtensions
                     ?.GetSection(AdapterPoolMemberOptions.SectionName)
                     .Bind(options));
 
+        // 🔴 The counterpart of the binding above: with the pool configured, this process must not
+        // also carry a dedicated tenant. AdapterOptions' constructor default made "it is null on a
+        // pool member" false at all three call sites that rely on it, and the runbook made it worse
+        // by naming the lender. See ConfigurePoolMemberAdapterTenantId.
+        services.AddSingleton<IPostConfigureOptions<AdapterOptions>, ConfigurePoolMemberAdapterTenantId>();
+
         // Both interfaces, one instance: the fleet consumes IAdapterTenantScope and knows nothing
         // about leases, while the pool client needs the lease half.
         services.TryAddSingleton<AdapterPoolTenantScope>();

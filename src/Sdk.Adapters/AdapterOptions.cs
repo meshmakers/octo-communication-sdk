@@ -8,6 +8,14 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 public class AdapterOptions
 {
     /// <summary>
+    ///     The <see cref="DedicatedTenantId" /> the constructor applies when nothing configured one.
+    ///     Callers that have to tell "configured" from "defaulted" apart compare against this —
+    ///     <c>ConfigureLegacyAdapterTenantId</c> so the deprecated key still wins over it, and
+    ///     <c>ConfigurePoolMemberAdapterTenantId</c> so it does not warn about a value no operator set.
+    /// </summary>
+    public const string UnconfiguredTenantDefault = "meshTest";
+
+    /// <summary>
     ///     Constructor
     /// </summary>
     public AdapterOptions()
@@ -16,7 +24,7 @@ public class AdapterOptions
         // is what every local development setup relies on. It is a trap of its own — a
         // misconfigured adapter silently acts as "meshTest" rather than failing — but
         // changing it is a behaviour change and belongs to its own work item.
-        DedicatedTenantId = "meshTest";
+        DedicatedTenantId = UnconfiguredTenantDefault;
         CommunicationControllerServicesUri = "https://localhost:5015";
         BrokerHost = "localhost";
         BrokerVirtualHost = "/";
@@ -64,6 +72,14 @@ public class AdapterOptions
     ///         <c>IAdapterTenantScope</c> in the services around the node layer. It is null on a
     ///         pool member, which has no tenant of its own — so a mistaken read fails loudly instead
     ///         of returning somebody else's tenant.
+    ///     </para>
+    ///     <para>
+    ///         🔴 <b>That last sentence was a claim, not a fact, until <c>ConfigurePoolMemberAdapterTenantId</c>
+    ///         made it one.</b> The constructor default below reaches a pool member like any other
+    ///         process, so an unconfigured member carried <c>"meshTest"</c> and one configured per the
+    ///         old runbook carried the <b>lending</b> tenant — while executing a borrower's pipeline.
+    ///         Whatever else changes here, the invariant that has to survive is that a member's value
+    ///         is null.
     ///     </para>
     ///     <para>
     ///         ⚠️ The legacy environment key <c>OCTO_ADAPTER__TENANTID</c> is still bound, for one

@@ -329,9 +329,28 @@ public class AdapterAccessTokenServiceTests
         await service.StopAsync(CancellationToken.None);
     }
 
+    /// <remarks>
+    ///     🔴 Synchronized, and <see cref="Messages" /> hands out a <b>snapshot</b>. The service under
+    ///     test logs from its own refresh loop while the test asserts on this collection — with a bare
+    ///     <c>List&lt;string&gt;</c> the assertion throws "Collection was modified" instead of failing
+    ///     or passing, and only when the loop happens to tick during the enumeration. That made it a
+    ///     flake that appears under a full parallel test run and never in isolation.
+    /// </remarks>
     private sealed class CapturingLogger : ILogger<AdapterAccessTokenService>
     {
-        public List<string> Messages { get; } = [];
+        private readonly List<string> _messages = [];
+        private readonly Lock _sync = new();
+
+        public IReadOnlyList<string> Messages
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _messages.ToArray();
+                }
+            }
+        }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -340,7 +359,10 @@ public class AdapterAccessTokenServiceTests
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            Messages.Add(formatter(state, exception));
+            lock (_sync)
+            {
+                _messages.Add(formatter(state, exception));
+            }
         }
     }
 }
