@@ -88,8 +88,8 @@ public static class AdapterPoolServiceCollectionExtensions
                 {
                     options.EndpointUri = adapterOptions.Value.CommunicationControllerServicesUri;
                     options.MemberId = poolOptions.Value.EffectiveMemberId;
-                    options.PoolTenantId = poolOptions.Value.PoolTenantId;
-                    options.PoolRtId = poolOptions.Value.PoolRtId;
+                    options.AdapterPoolTenantId = poolOptions.Value.AdapterPoolTenantId;
+                    options.AdapterPoolRtId = poolOptions.Value.AdapterPoolRtId;
                     // 🔴 No TenantId. The management connection is tenant-free by construction — see
                     // AdapterPoolHubClient.BuildServiceUri.
                 });

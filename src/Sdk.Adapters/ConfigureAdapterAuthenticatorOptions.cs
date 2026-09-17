@@ -64,7 +64,7 @@ public sealed class ConfigureAdapterAuthenticatorOptions : IConfigureOptions<Aut
         // a process-wide tenant to read (increment 3).
         var poolMember = _poolMemberOptions.Value;
         options.TenantId = poolMember.IsEnabled
-            ? poolMember.PoolTenantId
+            ? poolMember.AdapterPoolTenantId
             : adapterOptions.DedicatedTenantId;
     }
 }

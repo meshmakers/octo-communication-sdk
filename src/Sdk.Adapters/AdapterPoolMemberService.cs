@@ -77,8 +77,8 @@ public sealed class AdapterPoolMemberService : BackgroundService
         }
 
         _logger.LogInformation(
-            "Starting as member '{MemberId}' of adapter pool {PoolRtId} in lending tenant '{PoolTenantId}'",
-            _options.Value.EffectiveMemberId, _options.Value.PoolRtId, _options.Value.PoolTenantId);
+            "Starting as member '{MemberId}' of adapter pool {AdapterPoolRtId} in lending tenant '{AdapterPoolTenantId}'",
+            _options.Value.EffectiveMemberId, _options.Value.AdapterPoolRtId, _options.Value.AdapterPoolTenantId);
 
         try
         {

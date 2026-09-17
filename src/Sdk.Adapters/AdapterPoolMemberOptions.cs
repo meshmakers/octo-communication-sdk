@@ -19,7 +19,7 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 ///         🔴 <b>That is not the same as having no connection tenant.</b> An earlier version of this
 ///         remark said a member "has none" full stop, and that was wrong: the management connection
 ///         is authorized against the <b>lending</b> tenant (concept §8, Q4), so the member's own
-///         credential needs one. It is derived from <see cref="PoolTenantId" /> by
+///         credential needs one. It is derived from <see cref="AdapterPoolTenantId" /> by
 ///         <c>ConfigureAdapterAuthenticatorOptions</c> rather than configured separately — two
 ///         settings that must agree are two settings that can disagree. Without it the constructor
 ///         default applies, the member registers under the wrong tenant, and staged <c>LogOnly</c>
@@ -36,10 +36,10 @@ public class AdapterPoolMemberOptions
     ///     The tenant that owns the pool — the lender. Authorization of the management connection is
     ///     evaluated against it (concept §8, Q4).
     /// </summary>
-    public string? PoolTenantId { get; set; }
+    public string? AdapterPoolTenantId { get; set; }
 
-    /// <summary>RtId of the <c>AdapterPool</c> entity in <see cref="PoolTenantId" />.</summary>
-    public string? PoolRtId { get; set; }
+    /// <summary>RtId of the <c>AdapterPool</c> entity in <see cref="AdapterPoolTenantId" />.</summary>
+    public string? AdapterPoolRtId { get; set; }
 
     /// <summary>
     ///     Stable identity of this member process across reconnects, recorded on every execution it
@@ -53,7 +53,7 @@ public class AdapterPoolMemberOptions
     ///     a member that knew its pool but not its tenant could not be authorized, and one that knew
     ///     its tenant but not its pool could not be routed a lease.
     /// </summary>
-    public bool IsEnabled => !string.IsNullOrWhiteSpace(PoolTenantId) && !string.IsNullOrWhiteSpace(PoolRtId);
+    public bool IsEnabled => !string.IsNullOrWhiteSpace(AdapterPoolTenantId) && !string.IsNullOrWhiteSpace(AdapterPoolRtId);
 
     /// <summary>The member id to present, falling back to the machine name.</summary>
     public string EffectiveMemberId =>

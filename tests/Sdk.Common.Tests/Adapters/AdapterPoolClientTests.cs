@@ -28,8 +28,8 @@ public class AdapterPoolClientTests
     {
         LeaseId = leaseId,
         TenantId = tenantId,
-        PoolTenantId = "lender",
-        PoolRtId = "665f0000000000000000ee21",
+        AdapterPoolTenantId = "lender",
+        AdapterPoolRtId = "665f0000000000000000ee21",
         AdapterRtId = "665f0000000000000000ee22",
         AdapterCkTypeId = "System.Communication/Adapter",
         ClientId = "octo-pipeline-sa-borrower",
@@ -169,8 +169,8 @@ public class AdapterPoolClientTests
         return new AdapterPoolClient(scope, hubClient, participants, workItem,
             new OptionsWrapper<AdapterPoolMemberOptions>(new AdapterPoolMemberOptions
             {
-                PoolTenantId = "lender",
-                PoolRtId = "665f0000000000000000ee21",
+                AdapterPoolTenantId = "lender",
+                AdapterPoolRtId = "665f0000000000000000ee21",
                 MemberId = "octo-pool-0"
             }),
             NullLogger<AdapterPoolClient>.Instance, nodeSchemaRegistry, pipelineSchemaGenerator);

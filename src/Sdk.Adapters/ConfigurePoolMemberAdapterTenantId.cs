@@ -22,7 +22,7 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 ///     </para>
 ///     <para>
 ///         The member's own connection credential is unaffected: it is derived from
-///         <see cref="AdapterPoolMemberOptions.PoolTenantId" /> by
+///         <see cref="AdapterPoolMemberOptions.AdapterPoolTenantId" /> by
 ///         <c>ConfigureAdapterAuthenticatorOptions</c>, not from this property. Nothing else on a
 ///         member reads it — <c>AdapterHubClient</c> and <c>AdapterExecutionService</c>, the two
 ///         consumers that need a dedicated tenant, are not registered at all in the pool-member
@@ -71,11 +71,11 @@ public sealed class ConfigurePoolMemberAdapterTenantId : IPostConfigureOptions<A
             !string.Equals(configured, AdapterOptions.UnconfiguredTenantDefault, StringComparison.Ordinal))
         {
             _logger.LogWarning(
-                "This process is an adapter pool member of pool '{PoolRtId}' in tenant '{PoolTenantId}', so " +
+                "This process is an adapter pool member of pool '{AdapterPoolRtId}' in tenant '{AdapterPoolTenantId}', so " +
                 "OCTO_ADAPTER__DEDICATEDTENANTID ('{DedicatedTenantId}') has been cleared. A member executes " +
                 "only for the tenant of the lease it currently holds; its own connection tenant is the " +
                 "lender and is derived from the pool configuration. Remove the setting (AB#4924).",
-                poolMember.PoolRtId, poolMember.PoolTenantId, configured);
+                poolMember.AdapterPoolRtId, poolMember.AdapterPoolTenantId, configured);
         }
     }
 }

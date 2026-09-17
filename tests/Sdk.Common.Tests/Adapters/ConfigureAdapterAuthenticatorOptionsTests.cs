@@ -40,8 +40,8 @@ public class ConfigureAdapterAuthenticatorOptionsTests
             },
             new AdapterPoolMemberOptions
             {
-                PoolTenantId = "lender",
-                PoolRtId = "665f0000000000000000ee21"
+                AdapterPoolTenantId = "lender",
+                AdapterPoolRtId = "665f0000000000000000ee21"
             });
 
         Assert.Equal("lender", options.TenantId);
@@ -62,7 +62,7 @@ public class ConfigureAdapterAuthenticatorOptionsTests
                 ClientId = "octo-mesh-adapter",
                 ClientSecret = "secret"
             },
-            new AdapterPoolMemberOptions { PoolTenantId = "lender" });   // PoolRtId missing
+            new AdapterPoolMemberOptions { AdapterPoolTenantId = "lender" });   // AdapterPoolRtId missing
 
         Assert.Equal("acmeTenant", options.TenantId);
     }

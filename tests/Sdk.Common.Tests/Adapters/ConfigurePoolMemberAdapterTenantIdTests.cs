@@ -29,7 +29,7 @@ public class ConfigurePoolMemberAdapterTenantIdTests
     }
 
     private static AdapterPoolMemberOptions ConfiguredPool() =>
-        new() { PoolTenantId = "lender", PoolRtId = "49240000000000000000aa01" };
+        new() { AdapterPoolTenantId = "lender", AdapterPoolRtId = "49240000000000000000aa01" };
 
     /// <summary>
     ///     The configuration the old runbook produced: the key set to the lending tenant. Clearing it
@@ -64,7 +64,7 @@ public class ConfigurePoolMemberAdapterTenantIdTests
     public void AnIncompletePoolConfigurationLeavesTheDedicatedTenantInPlace()
     {
         var options = PostConfigure(new AdapterOptions { DedicatedTenantId = "acmeTenant" },
-            new AdapterPoolMemberOptions { PoolTenantId = "lender" }); // PoolRtId missing
+            new AdapterPoolMemberOptions { AdapterPoolTenantId = "lender" }); // AdapterPoolRtId missing
 
         Assert.Equal("acmeTenant", options.DedicatedTenantId);
     }
@@ -91,8 +91,8 @@ public class ConfigurePoolMemberAdapterTenantIdTests
         services.AddAdapterPoolMember();
         services.Configure<AdapterPoolMemberOptions>(options =>
         {
-            options.PoolTenantId = "lender";
-            options.PoolRtId = "49240000000000000000aa01";
+            options.AdapterPoolTenantId = "lender";
+            options.AdapterPoolRtId = "49240000000000000000aa01";
         });
         services.Configure<AdapterOptions>(options => options.DedicatedTenantId = "lender");
 

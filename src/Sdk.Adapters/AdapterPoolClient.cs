@@ -116,8 +116,8 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
 
         var registration = new PoolMemberRegistrationDto
         {
-            PoolTenantId = _options.PoolTenantId ?? string.Empty,
-            PoolRtId = _options.PoolRtId ?? string.Empty,
+            AdapterPoolTenantId = _options.AdapterPoolTenantId ?? string.Empty,
+            AdapterPoolRtId = _options.AdapterPoolRtId ?? string.Empty,
             MemberId = _options.EffectiveMemberId,
             NodeDescriptors = nodeDescriptors ?? [],
             PipelineSchemaJson = pipelineSchemaJson
@@ -129,17 +129,17 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
             if (result.Accepted)
             {
                 _logger.LogInformation(
-                    "Registered as member '{MemberId}' of adapter pool {PoolRtId} in tenant '{PoolTenantId}' with " +
+                    "Registered as member '{MemberId}' of adapter pool {AdapterPoolRtId} in tenant '{AdapterPoolTenantId}' with " +
                     "{NodeCount} node descriptor(s) and {SchemaState} pipeline schema",
-                    result.MemberId, registration.PoolRtId, registration.PoolTenantId,
+                    result.MemberId, registration.AdapterPoolRtId, registration.AdapterPoolTenantId,
                     registration.NodeDescriptors.Count, pipelineSchemaJson == null ? "no" : "a");
             }
             else
             {
                 _logger.LogWarning(
-                    "The controller refused this pool-member registration for pool {PoolRtId} in tenant " +
-                    "'{PoolTenantId}': {StatusMessage}",
-                    registration.PoolRtId, registration.PoolTenantId, result.StatusMessage);
+                    "The controller refused this pool-member registration for pool {AdapterPoolRtId} in tenant " +
+                    "'{AdapterPoolTenantId}': {StatusMessage}",
+                    registration.AdapterPoolRtId, registration.AdapterPoolTenantId, result.StatusMessage);
             }
 
             return result;
@@ -208,9 +208,9 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
         // overrides ToString for the same reason, but a log statement that reached for the secret
         // explicitly would defeat that.
         _logger.LogInformation(
-            "Taking lease '{LeaseId}' for tenant '{TenantId}' from pool {PoolRtId} of tenant " +
-            "'{PoolTenantId}', expires {ExpiresAtUtc:O}",
-            lease.LeaseId, lease.TenantId, lease.PoolRtId, lease.PoolTenantId, lease.ExpiresAtUtc);
+            "Taking lease '{LeaseId}' for tenant '{TenantId}' from pool {AdapterPoolRtId} of tenant " +
+            "'{AdapterPoolTenantId}', expires {ExpiresAtUtc:O}",
+            lease.LeaseId, lease.TenantId, lease.AdapterPoolRtId, lease.AdapterPoolTenantId, lease.ExpiresAtUtc);
 
         var outcome = LeaseWorkOutcome.Failed("The lease was not entered.");
         var entered = new List<IAdapterLeaseParticipant>(_participants.Count);

@@ -22,8 +22,8 @@ public class AdapterPoolMemberServiceTests
 {
     private static AdapterPoolMemberOptions ConfiguredPool() => new()
     {
-        PoolTenantId = "lender",
-        PoolRtId = "665f0000000000000000ee21",
+        AdapterPoolTenantId = "lender",
+        AdapterPoolRtId = "665f0000000000000000ee21",
         MemberId = "octo-pool-0"
     };
 

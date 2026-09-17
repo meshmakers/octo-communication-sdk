@@ -97,8 +97,8 @@ public class AdapterPoolMemberCompositionTests
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                [$"{AdapterPoolMemberOptions.SectionName}:PoolTenantId"] = "lender",
-                [$"{AdapterPoolMemberOptions.SectionName}:PoolRtId"] = "665f0000000000000000ee21",
+                [$"{AdapterPoolMemberOptions.SectionName}:AdapterPoolTenantId"] = "lender",
+                [$"{AdapterPoolMemberOptions.SectionName}:AdapterPoolRtId"] = "665f0000000000000000ee21",
                 [$"{AdapterPoolMemberOptions.SectionName}:MemberId"] = "octo-pool-0"
             })
             .Build();
@@ -107,8 +107,8 @@ public class AdapterPoolMemberCompositionTests
 
         var options = provider.GetRequiredService<IOptions<AdapterPoolMemberOptions>>().Value;
 
-        Assert.Equal("lender", options.PoolTenantId);
-        Assert.Equal("665f0000000000000000ee21", options.PoolRtId);
+        Assert.Equal("lender", options.AdapterPoolTenantId);
+        Assert.Equal("665f0000000000000000ee21", options.AdapterPoolRtId);
         Assert.Equal("octo-pool-0", options.MemberId);
         Assert.True(options.IsEnabled);
     }
@@ -122,6 +122,6 @@ public class AdapterPoolMemberCompositionTests
         var options = provider.GetRequiredService<IOptions<AdapterPoolMemberOptions>>().Value;
 
         Assert.False(options.IsEnabled);
-        Assert.Null(options.PoolTenantId);
+        Assert.Null(options.AdapterPoolTenantId);
     }
 }
