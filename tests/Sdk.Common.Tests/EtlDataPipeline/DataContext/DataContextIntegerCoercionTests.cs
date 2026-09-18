@@ -49,8 +49,11 @@ public class DataContextIntegerCoercionTests
     {
         using var clean = Clean(json);
         using var lifted = Lifted(json);
-        Assert.ThrowsAny<Exception>(() => read(clean));
-        Assert.ThrowsAny<Exception>(() => read(lifted));
+        // JsonException exactly, not just "some exception": ConvertDataTypeNode and DateTimeNode
+        // catch THIS type, so a regression to OverflowException/FormatException would silently
+        // bypass their error handling.
+        Assert.Throws<JsonException>(() => read(clean));
+        Assert.Throws<JsonException>(() => read(lifted));
     }
 
     [Theory]

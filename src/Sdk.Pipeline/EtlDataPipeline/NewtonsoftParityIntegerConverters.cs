@@ -105,7 +105,11 @@ public sealed class NewtonsoftParityInt32Converter : JsonConverter<int>
     public override int ReadAsPropertyName(ref Utf8JsonReader reader, Type typeToConvert,
         JsonSerializerOptions options)
     {
-        return int.Parse(reader.GetString()!, NumberStyles.Integer, CultureInfo.InvariantCulture);
+        // GetString() is string?; a property-name token is never Null, but keep the converter's
+        // "everything it throws is a JsonException" contract instead of suppressing the warning.
+        var value = reader.GetString()
+                    ?? throw new JsonException("The JSON property name cannot be null.");
+        return int.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
     }
 
     /// <inheritdoc />
@@ -186,7 +190,11 @@ public sealed class NewtonsoftParityInt64Converter : JsonConverter<long>
     public override long ReadAsPropertyName(ref Utf8JsonReader reader, Type typeToConvert,
         JsonSerializerOptions options)
     {
-        return long.Parse(reader.GetString()!, NumberStyles.Integer, CultureInfo.InvariantCulture);
+        // GetString() is string?; a property-name token is never Null, but keep the converter's
+        // "everything it throws is a JsonException" contract instead of suppressing the warning.
+        var value = reader.GetString()
+                    ?? throw new JsonException("The JSON property name cannot be null.");
+        return long.Parse(value, NumberStyles.Integer, CultureInfo.InvariantCulture);
     }
 
     /// <inheritdoc />

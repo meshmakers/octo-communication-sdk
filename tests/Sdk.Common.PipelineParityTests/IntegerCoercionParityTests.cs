@@ -76,7 +76,7 @@ public class IntegerCoercionParityTests
         Assert.True(oracle64.Succeeded, $"Oracle unexpectedly rejected Int64 for {literal}");
 
         using var ctx = new DataContextImpl(JsonDocument.Parse(json));
-        Assert.ThrowsAny<Exception>(() => ctx.Get<int>("$.v"));
+        Assert.Throws<JsonException>(() => ctx.Get<int>("$.v"));
         Assert.Equal(oracle64.Value, ctx.Get<long>("$.v"));
     }
 
@@ -96,8 +96,8 @@ public class IntegerCoercionParityTests
         Assert.False(Oracle<long>(json).Succeeded);
 
         using var ctx = new DataContextImpl(JsonDocument.Parse(json));
-        Assert.ThrowsAny<Exception>(() => ctx.Get<int>("$.v"));
-        Assert.ThrowsAny<Exception>(() => ctx.Get<long>("$.v"));
+        Assert.Throws<JsonException>(() => ctx.Get<int>("$.v"));
+        Assert.Throws<JsonException>(() => ctx.Get<long>("$.v"));
     }
 
     /// <summary>
@@ -134,8 +134,8 @@ public class IntegerCoercionParityTests
         Assert.Equal(1, oracle.Value);
 
         using var ctx = new DataContextImpl(JsonDocument.Parse(json));
-        Assert.ThrowsAny<Exception>(() => ctx.Get<int>("$.v"));
-        Assert.ThrowsAny<Exception>(() => ctx.Get<long>("$.v"));
+        Assert.Throws<JsonException>(() => ctx.Get<int>("$.v"));
+        Assert.Throws<JsonException>(() => ctx.Get<long>("$.v"));
     }
 
     private static (bool Succeeded, T Value) Oracle<T>(string json)
