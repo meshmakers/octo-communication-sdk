@@ -168,4 +168,100 @@ public class ConvertDataTypeNodeTests(ServiceCollectionFixture fixture)
         A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
         Assert.Equal(3.14, dataContext.Get<double>("$.Demo"));
     }
+
+    // ---- AB#5275: a JSON number whose raw text has a fraction -------------------------------
+    // Integral doubles are serialized with a trailing ".0" by design (Newtonsoft parity), so any
+    // value written by Math@1 / LinearScaler@1 / SumAggregation@1 / ExecuteCSharp@1 arrives here
+    // looking like "5.0". STJ's built-in Int32 converter rejected that on its raw text.
+
+    /// <summary>Runs one ConvertDataType node over <paramref name="json" /> and returns the context.</summary>
+    private async Task<DataContextImpl> ConvertAsync(string json, string path,
+        AttributeValueTypesDto valueType, string targetPath = "$.Demo")
+    {
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(json));
+
+        var rootNodeContext = NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = rootNodeContext.RegisterChildNode("ConvertData", 0, new ConvertDataTypeNodeConfiguration
+        {
+            Path = path,
+            TargetPath = targetPath,
+            ValueType = valueType
+        }, dataContext);
+
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ConvertDataTypeNode(fn);
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+        return dataContext;
+    }
+
+    [Fact]
+    public async Task ConvertDataType_IntegralDouble_ToInt_ReturnsInt()
+    {
+        // The reported pipeline, 1:1 — int1 always worked, int2 threw.
+        const string json = "{\"int1\":4,\"int2\":5.0}";
+
+        var fromInt1 = await ConvertAsync(json, "$.int1", AttributeValueTypesDto.Int);
+        var fromInt2 = await ConvertAsync(json, "$.int2", AttributeValueTypesDto.Int);
+
+        Assert.Equal(4, fromInt1.Get<int>("$.Demo"));
+        Assert.Equal(5, fromInt2.Get<int>("$.Demo"));
+    }
+
+    [Theory]
+    [InlineData("5.7", 6)]
+    [InlineData("5.5", 6)]
+    [InlineData("4.5", 4)]  // banker's rounding — NOT 5
+    [InlineData("-5.5", -6)]
+    public async Task ConvertDataType_FractionalDouble_ToInt_RoundsToEven(string literal, int expected)
+    {
+        var ctx = await ConvertAsync($"{{\"v\":{literal}}}", "$.v", AttributeValueTypesDto.Int);
+        Assert.Equal(expected, ctx.Get<int>("$.Demo"));
+    }
+
+    [Fact]
+    public async Task ConvertDataType_IntegralDouble_ToInt64_ReturnsLong()
+    {
+        var ctx = await ConvertAsync("{\"v\":1e10}", "$.v", AttributeValueTypesDto.Int64);
+        Assert.Equal(10000000000L, ctx.Get<long>("$.Demo"));
+    }
+
+    [Fact]
+    public async Task ConvertDataType_OutOfRange_ToInt_ThrowsNamingPathAndType()
+    {
+        var e = await Assert.ThrowsAsync<DataPipelineException>(
+            () => ConvertAsync("{\"v\":1e10}", "$.v", AttributeValueTypesDto.Int));
+
+        Assert.Contains("$.v", e.Message);
+        Assert.Contains("Int", e.Message);
+        Assert.Contains("range of System.Int32", e.Message);
+    }
+
+    [Fact]
+    public async Task ConvertDataType_ChainedAfterDouble_RoundTrips()
+    {
+        // The real pipeline shape: a node writes a double, a later node reads it as Int. The
+        // intermediate value is a CLR-backed JsonValue, not a parsed element.
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse("{\"v\":5}"));
+        var rootNodeContext = NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var fn = A.Fake<NodeDelegate>();
+        var testee = new ConvertDataTypeNode(fn);
+
+        var toDouble = rootNodeContext.RegisterChildNode("ToDouble", 0, new ConvertDataTypeNodeConfiguration
+        {
+            Path = "$.v", TargetPath = "$.asDouble", ValueType = AttributeValueTypesDto.Double
+        }, dataContext);
+        await testee.ProcessObjectAsync(dataContext, toDouble);
+        Assert.Equal(5.0, dataContext.Get<double>("$.asDouble"));
+
+        var backToInt = rootNodeContext.RegisterChildNode("ToInt", 1, new ConvertDataTypeNodeConfiguration
+        {
+            Path = "$.asDouble", TargetPath = "$.asInt", ValueType = AttributeValueTypesDto.Int
+        }, dataContext);
+        await testee.ProcessObjectAsync(dataContext, backToInt);
+        Assert.Equal(5, dataContext.Get<int>("$.asInt"));
+    }
 }

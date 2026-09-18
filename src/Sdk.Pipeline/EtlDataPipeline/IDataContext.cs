@@ -31,6 +31,15 @@ public interface IDataContext : IDisposable
     IEnumerable<string> Keys(string path);
 
     /// <summary>Reads the value at the given path and deserializes it to <typeparamref name="T"/>.</summary>
+    /// <remarks>
+    /// For <see cref="int"/> and <see cref="long"/> (and their nullable forms, arrays and DTO members)
+    /// a JSON number is <b>coerced</b>, not matched on its raw text: <c>5.0</c> reads as 5 and a
+    /// fractional value rounds to even (<c>5.7</c> to 6, <c>4.5</c> to 4), matching what Newtonsoft's
+    /// <c>ToObject&lt;int&gt;</c> did. This is required because integral doubles are serialized with a
+    /// trailing <c>.0</c> by design — see <see cref="NewtonsoftParityInt32Converter"/> (AB#5275).
+    /// <see cref="GetValue(string, bool)"/> is deliberately NOT affected and keeps reals as
+    /// <see cref="double"/>.
+    /// </remarks>
     T? Get<T>(string path);
 
     /// <summary>

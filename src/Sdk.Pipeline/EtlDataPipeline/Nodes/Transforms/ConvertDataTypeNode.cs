@@ -81,13 +81,23 @@ public class ConvertDataTypeNode(NodeDelegate next) : IPipelineNode
             return ConvertNodeToDateTime(node, c);
         }
 
-        return c.ValueType switch
+        // The numeric arms coerce per NewtonsoftParityInt32/Int64Converter (e.g. 5.0 -> 5, 5.7 -> 6);
+        // what is left to fail is an out-of-range value or a JSON kind that cannot be a number. The
+        // serializer's message names only the CLR type, so wrap it to name the data path too.
+        try
         {
-            AttributeValueTypesDto.Int => (object?)dataContext.Get<int>(c.Path),
-            AttributeValueTypesDto.Int64 => (object?)dataContext.Get<long>(c.Path),
-            AttributeValueTypesDto.Double => (object?)dataContext.Get<double>(c.Path),
-            _ => throw DataPipelineException.ValueTypeUnsupported(c.Path, c.ValueType)
-        };
+            return c.ValueType switch
+            {
+                AttributeValueTypesDto.Int => (object?)dataContext.Get<int>(c.Path),
+                AttributeValueTypesDto.Int64 => (object?)dataContext.Get<long>(c.Path),
+                AttributeValueTypesDto.Double => (object?)dataContext.Get<double>(c.Path),
+                _ => throw DataPipelineException.ValueTypeUnsupported(c.Path, c.ValueType)
+            };
+        }
+        catch (JsonException e)
+        {
+            throw DataPipelineException.ValueNotConvertible(c.Path, c.ValueType, e);
+        }
     }
 
     private static string? ConvertNodeToString(JsonNode? node)

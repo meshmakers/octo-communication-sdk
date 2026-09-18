@@ -47,6 +47,20 @@ public class DataPipelineException : Exception
         return new DataPipelineException($"Value type '{valueType}' is not supported for path '{path}'.");
     }
 
+    /// <summary>
+    /// A value exists at <paramref name="path" /> but cannot be represented as
+    /// <paramref name="valueType" /> (out of range, wrong JSON kind). The serializer's own message
+    /// names only the CLR type, so the data path is prepended here — the node path is added later by
+    /// <see cref="NodeExecutionFailed" />.
+    /// </summary>
+    internal static Exception ValueNotConvertible(string path, AttributeValueTypesDto valueType,
+        Exception innerException)
+    {
+        return new DataPipelineException(
+            $"Value at path '{path}' cannot be converted to '{valueType}': {innerException.Message}",
+            innerException);
+    }
+
     internal static Exception UnknownDiscriminator(string discriminatorValue)
     {
         return new DataPipelineException($"Unknown discriminator '{discriminatorValue}'.");
