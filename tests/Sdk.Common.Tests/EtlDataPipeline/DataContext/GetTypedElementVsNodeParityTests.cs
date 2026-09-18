@@ -21,7 +21,8 @@ public class GetTypedElementVsNodeParityTests
         {"i":42,"l":2147483648,"d":3.5,"f":1.25,"dec":0.6511560000001,"b":true,"s":"hi",
          "dt":"2024-01-02T03:04:05Z","dto":"2024-01-02T03:04:05+02:00",
          "g":"a1b2c3d4-0000-1111-2222-333344445555","obj":{"X":7,"Y":"z"},
-         "arr":[1,2,3],"objs":[{"X":1,"Y":"a"},{"X":2,"Y":"b"}],"nul":null}
+         "arr":[1,2,3],"objs":[{"X":1,"Y":"a"},{"X":2,"Y":"b"}],"nul":null,
+         "r":5.0,"rf":5.7,"rarr":[1,2.0,3.7]}
         """;
 
     public sealed record Point(int X, string Y);
@@ -56,6 +57,13 @@ public class GetTypedElementVsNodeParityTests
     [Fact] public void NullableInt_OnNull() => AssertParity("$.nul", c => c.Get<int?>("$.nul"));
     [Fact] public void Record_OnNull() => AssertParity("$.nul", c => c.Get<Point>("$.nul"));
     [Fact] public void Missing() => AssertParity("$.absent", c => c.Get<int?>("$.absent"));
+
+    // AB#5275: the integer coercion (5.0 -> 5, 5.7 -> 6) must be identical on both read paths too.
+    [Fact] public void IntFromIntegralReal() => AssertParity("$.r", c => c.Get<int>("$.r"));
+    [Fact] public void IntFromFractionalReal() => AssertParity("$.rf", c => c.Get<int>("$.rf"));
+    [Fact] public void LongFromIntegralReal() => AssertParity("$.r", c => c.Get<long>("$.r"));
+    [Fact] public void NullableIntFromReal() => AssertParity("$.r", c => c.Get<int?>("$.r"));
+    [Fact] public void IntArrayFromReals() => AssertParity("$.rarr", c => string.Join(",", c.Get<int[]>("$.rarr")!));
 
     // complex T compared by serialized form (record uses value equality, but pin shape too)
     [Fact]
