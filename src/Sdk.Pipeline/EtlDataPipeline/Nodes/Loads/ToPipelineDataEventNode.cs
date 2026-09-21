@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.Common.DistributionEventHub.Services;
+using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Communication.Contracts.MessageObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -51,7 +52,8 @@ public record ToPipelineDataEventNodeConfiguration : SourceTargetPathNodeConfigu
 public class ToPipelineDataEventNode(
     NodeDelegate next,
     IEtlContext adapterEtlContext,
-    IDistributionEventHubService distributionEventHubService) : IPipelineNode
+    IDistributionEventHubService distributionEventHubService,
+    IPipelineDataEventTargetWaker targetWaker) : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -74,6 +76,14 @@ public class ToPipelineDataEventNode(
         }
 
         var serializedValue = JsonSerializer.Serialize(target, SystemTextJsonOptions.Default);
+
+        // AB#5231: the send-path wake gate. The target may run on another workload of this tenant
+        // that is scaled to zero; its event queue is durable, but nothing else would wake it. A
+        // target in this process, an AlwaysOn target and a tenant without scale-to-zero cost nothing
+        // here. Before BOTH paths: the AwaitResult command queue is not durable, so its target has to
+        // be up before the request is sent, exactly like the controller's own execute gate.
+        await targetWaker.EnsureTargetRunningAsync(adapterEtlContext.TenantId,
+            new RtEntityId(adapterEtlContext.PipelineRtEntityId.CkTypeId, c.TargetPipelineRtId));
 
         if (c.AwaitResult)
         {
@@ -126,11 +136,11 @@ public class ToPipelineDataEventNode(
                 ExternalReceivedDateTime = adapterEtlContext.ExternalReceivedDateTime
             };
 
-            var exchangeName =
-                $"octo::com::dataflow-{adapterEtlContext.TenantId.ToLower()}-{adapterEtlContext.DataFlowRtId.ToString()?.ToLower()}";
-
-            await distributionEventHubService.SendToExchangeAsync(exchangeName,
-                c.TargetPipelineRtId.ToString(), message, cts.Token);
+            // AB#5231: straight to the target's durable queue (see FromPipelineDataEventNode), not
+            // to the data flow's exchange - an exchange keeps nothing when no queue is bound to it.
+            await distributionEventHubService.SendAsync(
+                PipelineDataEventAddresses.QueueAddress(adapterEtlContext.TenantId, c.TargetPipelineRtId), message,
+                cts.Token);
         }
 
         await next(dataContext, nodeContext);

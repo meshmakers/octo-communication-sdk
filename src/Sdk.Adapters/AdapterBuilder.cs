@@ -213,6 +213,9 @@ public class AdapterBuilder
                     provider.GetRequiredService<AdapterHubCallbackService>());
                 services.AddSingleton<IAdapterHubClient, AdapterHubClient>();
                 services.AddSingleton<IPipelineExecutionReporter, AdapterPipelineExecutionReporter>();
+                // AB#5231: this process has a controller connection, so a pipeline data event to a
+                // pipeline on another workload can wake that workload before it is published.
+                services.AddSingleton<IPipelineDataEventTargetWaker, HubPipelineDataEventTargetWaker>();
                 services.AddTransient<IPipelineDebugger, AdapterPipelineDebugger>();
 
                 services.AddSingleton<AdapterExecutionService>();

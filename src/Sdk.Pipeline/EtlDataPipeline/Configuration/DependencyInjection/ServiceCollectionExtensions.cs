@@ -117,6 +117,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IBufferScheduler, BufferScheduler>();
 
         services.AddSingleton<IContextCreatorService, DefaultContextCreatorService>();
+        // AB#5231: the send-path wake gate of ToPipelineDataEvent@1. The default asks nobody; an
+        // adapter with a controller connection replaces it with the hub-backed waker.
+        services.TryAddSingleton<IPipelineDataEventTargetWaker, NoPipelineDataEventTargetWaker>();
 
         // EtlContext
         services.AddScoped(typeof(IEtlContextAccessor<>), typeof(EtlContextAccessor<>));

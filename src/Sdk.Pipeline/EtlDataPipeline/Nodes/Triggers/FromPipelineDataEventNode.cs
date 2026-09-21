@@ -39,12 +39,15 @@ internal class FromPipelineDataEventNode(IEventHubControl eventHubControl)
 
     public Task StartAsync(ITriggerContext context)
     {
-        var exchangeName =
-            $"octo::com::dataflow-{context.TenantId.ToLower()}-{context.DataFlowRtId.ToString()?.ToLower()}";
-        var routingKey = context.PipelineRtEntityId.RtId.ToString();
+        // AB#5231: a durable, named queue per target pipeline, consumed through the same overload
+        // the cron trigger uses (Durable=true, AutoDelete=false). The former exchange binding gave
+        // every process a private auto-delete queue with a Guid suffix — which is gone the moment
+        // the workload is scaled to zero, so an event published then reached an exchange with no
+        // bound queue and was discarded without an error. Now it waits on the broker; the sender
+        // wakes the target (IPipelineDataEventTargetWaker) so somebody comes to consume it.
+        var queueName = PipelineDataEventAddresses.QueueName(context.TenantId, context.PipelineRtEntityId.RtId);
 
-        // Pub/sub consumer (existing fire-and-forget behavior)
-        _endpointHandle = eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(exchangeName, routingKey,
+        _endpointHandle = eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(queueName,
             async message =>
             {
                 if (message.Value == null)

@@ -17,13 +17,13 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
     : IClassFixture<ServiceCollectionFixture>
 {
     [Fact]
-    public async Task StartAsync_RegistersEventConsumer_WithCorrectExchangeAndRoutingKey()
+    public async Task StartAsync_RegistersADurableQueueConsumerForThisPipeline()
     {
         var eventHubControl = A.Fake<IEventHubControl>();
         var endpointHandle = A.Fake<EndpointHandle>();
 
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
-            A<string>._, A<string>._, A<Func<PipelineDataReceived, Task>>._)).Returns(endpointHandle);
+            A<string>._, A<Func<PipelineDataReceived, Task>>._)).Returns(endpointHandle);
 
         var triggerContext = CreateTriggerContext();
 
@@ -31,42 +31,39 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
 
         await testee.StartAsync(triggerContext);
 
+        // AB#5231: a durable, named queue per target pipeline - not an exchange binding with a
+        // private auto-delete queue, which vanished with the hibernated workload.
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
-            A<string>.That.Contains("octo::com::dataflow-"),
-            A<string>._,
+            A<string>.That.StartsWith("octo::com::pipeline-data-event-"),
             A<Func<PipelineDataReceived, Task>>._)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
-    public async Task StartAsync_RegistersWithCorrectExchangeNameAndRoutingKey()
+    public async Task StartAsync_TheQueueIsNamedAfterTenantAndTargetPipeline()
     {
         var eventHubControl = A.Fake<IEventHubControl>();
         var endpointHandle = A.Fake<EndpointHandle>();
-        string? capturedExchangeName = null;
-        string? capturedRoutingKey = null;
+        string? capturedQueueName = null;
 
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
-                A<string>._, A<string>._, A<Func<PipelineDataReceived, Task>>._))
-            .Invokes((string exchangeName, string routingKey, Func<PipelineDataReceived, Task> _) =>
-            {
-                capturedExchangeName = exchangeName;
-                capturedRoutingKey = routingKey;
-            })
+                A<string>._, A<Func<PipelineDataReceived, Task>>._))
+            .Invokes((string queueName, Func<PipelineDataReceived, Task> _) => { capturedQueueName = queueName; })
             .Returns(endpointHandle);
 
         var dataFlowRtId = OctoObjectId.GenerateNewId();
-        var pipelineRtEntityId = new RtEntityId(new RtCkId<CkTypeId>("System.Communication/DataFlow"), dataFlowRtId);
-        var triggerContext = CreateTriggerContext("my-tenant", dataFlowRtId, pipelineRtEntityId);
+        var pipelineRtEntityId = new RtEntityId(new RtCkId<CkTypeId>("System.Communication/Pipeline"), OctoObjectId.GenerateNewId());
+        var triggerContext = CreateTriggerContext("My-Tenant", dataFlowRtId, pipelineRtEntityId);
 
         var testee = new FromPipelineDataEventNode(eventHubControl);
 
         await testee.StartAsync(triggerContext);
 
-        Assert.NotNull(capturedExchangeName);
-        Assert.Contains("my-tenant", capturedExchangeName);
-        Assert.Contains(dataFlowRtId.ToString()!.ToLower(), capturedExchangeName);
-        Assert.NotNull(capturedRoutingKey);
-        Assert.Equal(pipelineRtEntityId.RtId.ToString(), capturedRoutingKey);
+        // The sender builds the same name from the same two facts (PipelineDataEventAddresses), so the
+        // name is what makes the two ends meet; the data flow is NOT part of it any more.
+        Assert.Equal(PipelineDataEventAddresses.QueueName("My-Tenant", pipelineRtEntityId.RtId), capturedQueueName);
+        Assert.Contains("my-tenant", capturedQueueName);
+        Assert.Contains(pipelineRtEntityId.RtId.ToString().ToLower(), capturedQueueName);
+        Assert.DoesNotContain(dataFlowRtId.ToString(), capturedQueueName);
     }
 
     [Fact]
@@ -99,7 +96,7 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var commandEndpointHandle = A.Fake<EndpointHandle>();
 
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
-            A<string>._, A<string>._, A<Func<PipelineDataReceived, Task>>._)).Returns(eventEndpointHandle);
+            A<string>._, A<Func<PipelineDataReceived, Task>>._)).Returns(eventEndpointHandle);
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
             A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._)).Returns(commandEndpointHandle);
 
@@ -109,7 +106,7 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         await testee.StartAsync(triggerContext);
 
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
-            A<string>._, A<string>._, A<Func<PipelineDataReceived, Task>>._)).MustHaveHappenedOnceExactly();
+            A<string>._, A<Func<PipelineDataReceived, Task>>._)).MustHaveHappenedOnceExactly();
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
             A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._)).MustHaveHappenedOnceExactly();
     }
@@ -150,7 +147,7 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var commandEndpointHandle = A.Fake<EndpointHandle>();
 
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
-            A<string>._, A<string>._, A<Func<PipelineDataReceived, Task>>._)).Returns(eventEndpointHandle);
+            A<string>._, A<Func<PipelineDataReceived, Task>>._)).Returns(eventEndpointHandle);
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
             A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._)).Returns(commandEndpointHandle);
 
@@ -159,7 +156,7 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         await testee.StartAsync(triggerContext);
 
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
-            A<string>._, A<string>._, A<Func<PipelineDataReceived, Task>>._)).MustHaveHappenedOnceExactly();
+            A<string>._, A<Func<PipelineDataReceived, Task>>._)).MustHaveHappenedOnceExactly();
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
             A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._)).MustHaveHappenedOnceExactly();
         await testee.StopAsync(triggerContext);
@@ -274,8 +271,8 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         Func<PipelineDataReceived, Task>? capturedHandler = null;
 
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
-                A<string>._, A<string>._, A<Func<PipelineDataReceived, Task>>._))
-            .Invokes((string _, string _, Func<PipelineDataReceived, Task> handler) => capturedHandler = handler)
+            A<string>._, A<Func<PipelineDataReceived, Task>>._))
+            .Invokes((string _, Func<PipelineDataReceived, Task> handler) => capturedHandler = handler)
             .Returns(A.Fake<EndpointHandle>());
 
         var triggerContext = CreateTriggerContext();

@@ -32,26 +32,25 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var testData = new { temperature = 42.5, sensor = "T1" };
         var (dataContext, nodeContext) = PrepareTest(config, testData);
         var distributionEventHubService = A.Fake<IDistributionEventHubService>();
-        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
-                A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
+        A.CallTo(() => distributionEventHubService.SendAsync(
+                A<Uri>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
             .Returns(Task.FromResult(Task.CompletedTask));
         var etlContext = CreateEtlContext();
         var fn = A.Fake<NodeDelegate>();
 
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
-            A<string>._,
-            A<string>._,
+        A.CallTo(() => distributionEventHubService.SendAsync(
+            A<Uri>._,
             A<PipelineDataReceived>._,
             A<CancellationToken?>._)).MustHaveHappenedOnceExactly();
         A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_SendsToCorrectExchangeAndRoutingKey()
+    public async Task ProcessObjectAsync_SendsToTheTargetPipelinesDurableQueue()
     {
         var config = new ToPipelineDataEventNodeConfiguration
         {
@@ -59,31 +58,51 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
             TargetPath = "$",
             TargetPipelineRtId = TestTargetPipelineId
         };
-        var (dataContext, nodeContext) = PrepareTest(config, new { value = 1 });
+        var testData = new { value = 1 };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
         var distributionEventHubService = A.Fake<IDistributionEventHubService>();
-        var etlContext = CreateEtlContext();
-        string? capturedExchangeName = null;
-        string? capturedRoutingKey = null;
-
-        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
-                A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
-            .Invokes((string exchangeName, string routingKey, PipelineDataReceived _, CancellationToken? _) =>
-            {
-                capturedExchangeName = exchangeName;
-                capturedRoutingKey = routingKey;
-            })
+        Uri? capturedAddress = null;
+        A.CallTo(() => distributionEventHubService.SendAsync(
+                A<Uri>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
+            .Invokes((Uri address, PipelineDataReceived _, CancellationToken? _) => { capturedAddress = address; })
             .Returns(Task.FromResult(Task.CompletedTask));
-
+        var etlContext = CreateEtlContext();
         var fn = A.Fake<NodeDelegate>();
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
-        Assert.NotNull(capturedExchangeName);
-        Assert.Contains(TestTenantId, capturedExchangeName);
-        Assert.Contains(TestDataFlowRtId.ToString()!.ToLower(), capturedExchangeName);
-        Assert.StartsWith("octo::com::dataflow-", capturedExchangeName);
-        Assert.Equal(TestTargetPipelineId.ToString(), capturedRoutingKey);
+        // AB#5231: the durable queue the FromPipelineDataEvent trigger of the TARGET consumes - same
+        // helper, same two facts - and no exchange, which keeps nothing while nobody is bound.
+        Assert.Equal(PipelineDataEventAddresses.QueueAddress(TestTenantId, TestTargetPipelineId), capturedAddress);
+        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
+            A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._)).MustNotHaveHappened();
+    }
+
+    /// <summary>
+    ///     AB#5231: the send-path wake gate runs BEFORE the publish, for the target pipeline, so a
+    ///     hibernated target workload is up when the event lands on its queue.
+    /// </summary>
+    [Fact]
+    public async Task ProcessObjectAsync_WakesTheTargetsWorkloadBeforePublishing()
+    {
+        var config = new ToPipelineDataEventNodeConfiguration
+            { Path = "$", TargetPath = "$", TargetPipelineRtId = TestTargetPipelineId };
+        var (dataContext, nodeContext) = PrepareTest(config, new { value = 1 });
+        var distributionEventHubService = A.Fake<IDistributionEventHubService>();
+        var waker = A.Fake<IPipelineDataEventTargetWaker>();
+        var order = new List<string>();
+        A.CallTo(() => waker.EnsureTargetRunningAsync(A<string>._, A<RtEntityId>._, A<CancellationToken>._))
+            .Invokes(() => order.Add("wake")).Returns(Task.CompletedTask);
+        A.CallTo(() => distributionEventHubService.SendAsync(A<Uri>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
+            .Invokes(() => order.Add("send")).Returns(Task.FromResult(Task.CompletedTask));
+        var testee = new ToPipelineDataEventNode(A.Fake<NodeDelegate>(), CreateEtlContext(), distributionEventHubService, waker);
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        A.CallTo(() => waker.EnsureTargetRunningAsync(TestTenantId,
+            A<RtEntityId>.That.Matches(id => id.RtId == TestTargetPipelineId), A<CancellationToken>._)).MustHaveHappenedOnceExactly();
+        Assert.Equal(new[] { "wake", "send" }, order);
     }
 
     [Fact]
@@ -100,7 +119,7 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var etlContext = CreateEtlContext();
         var fn = A.Fake<NodeDelegate>();
 
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await Assert.ThrowsAsync<DataPipelineException>(() =>
             testee.ProcessObjectAsync(dataContext, nodeContext));
@@ -120,13 +139,15 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var etlContext = CreateEtlContext();
         PipelineDataReceived? capturedMessage = null;
 
-        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
-                A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
-            .Invokes((string _, string _, PipelineDataReceived msg, CancellationToken? _) => capturedMessage = msg)
+        A.CallTo(() => distributionEventHubService.SendAsync(
+            A<Uri>._,
+            A<PipelineDataReceived>._,
+            A<CancellationToken?>._))
+            .Invokes((Uri _, PipelineDataReceived msg, CancellationToken? _) => capturedMessage = msg)
             .Returns(Task.FromResult(Task.CompletedTask));
 
         var fn = A.Fake<NodeDelegate>();
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -157,13 +178,15 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var etlContext = CreateEtlContext();
         PipelineDataReceived? capturedMessage = null;
 
-        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
-                A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
-            .Invokes((string _, string _, PipelineDataReceived msg, CancellationToken? _) => capturedMessage = msg)
+        A.CallTo(() => distributionEventHubService.SendAsync(
+            A<Uri>._,
+            A<PipelineDataReceived>._,
+            A<CancellationToken?>._))
+            .Invokes((Uri _, PipelineDataReceived msg, CancellationToken? _) => capturedMessage = msg)
             .Returns(Task.FromResult(Task.CompletedTask));
 
         var fn = A.Fake<NodeDelegate>();
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -188,13 +211,15 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var etlContext = CreateEtlContext();
         PipelineDataReceived? capturedMessage = null;
 
-        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
-                A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
-            .Invokes((string _, string _, PipelineDataReceived msg, CancellationToken? _) => capturedMessage = msg)
+        A.CallTo(() => distributionEventHubService.SendAsync(
+            A<Uri>._,
+            A<PipelineDataReceived>._,
+            A<CancellationToken?>._))
+            .Invokes((Uri _, PipelineDataReceived msg, CancellationToken? _) => capturedMessage = msg)
             .Returns(Task.FromResult(Task.CompletedTask));
 
         var fn = A.Fake<NodeDelegate>();
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -220,18 +245,20 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         };
         var (dataContext, nodeContext) = PrepareTest(config, new { value = 1 });
         var distributionEventHubService = A.Fake<IDistributionEventHubService>();
-        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
-                A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
+        A.CallTo(() => distributionEventHubService.SendAsync(
+                A<Uri>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
             .Returns(Task.FromResult(Task.CompletedTask));
         var etlContext = CreateEtlContext();
         var fn = A.Fake<NodeDelegate>();
 
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
-        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
-            A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
+        A.CallTo(() => distributionEventHubService.SendAsync(
+            A<Uri>._,
+            A<PipelineDataReceived>._,
+            A<CancellationToken?>._))
             .MustHaveHappenedOnceExactly();
         A.CallTo(() => distributionEventHubService.GetCommandResponseAsync<PipelineDataCommandRequest, PipelineDataCommandResponse>(
             A<string>._, A<PipelineDataCommandRequest>._, A<CancellationToken>._, A<TimeSpan?>._))
@@ -260,15 +287,17 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
                 A<string>._, A<PipelineDataCommandRequest>._, A<CancellationToken>._, A<TimeSpan?>._))
             .Returns(new PipelineDataCommandResponse { Success = true, Result = expectedResult });
 
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
         A.CallTo(() => distributionEventHubService.GetCommandResponseAsync<PipelineDataCommandRequest, PipelineDataCommandResponse>(
             A<string>._, A<PipelineDataCommandRequest>._, A<CancellationToken>._, A<TimeSpan?>._))
             .MustHaveHappenedOnceExactly();
-        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
-            A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
+        A.CallTo(() => distributionEventHubService.SendAsync(
+            A<Uri>._,
+            A<PipelineDataReceived>._,
+            A<CancellationToken?>._))
             .MustNotHaveHappened();
 
         Assert.Equal(42, dataContext.Get<int>("$.pipelineResult.value"));
@@ -299,7 +328,7 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
             .Returns(new PipelineDataCommandResponse { Success = true });
 
         var fn = A.Fake<NodeDelegate>();
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -329,7 +358,7 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
                 { Success = false, ErrorMessage = "NullReferenceException in target" });
 
         var fn = A.Fake<NodeDelegate>();
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         var ex = await Assert.ThrowsAsync<DataPipelineException>(
             () => testee.ProcessObjectAsync(dataContext, nodeContext));
@@ -361,7 +390,7 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
             .Returns(new PipelineDataCommandResponse { Success = true });
 
         var fn = A.Fake<NodeDelegate>();
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -384,7 +413,7 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var etlContext = CreateEtlContext();
         var fn = A.Fake<NodeDelegate>();
 
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await Assert.ThrowsAsync<DataPipelineException>(() =>
             testee.ProcessObjectAsync(dataContext, nodeContext));
@@ -413,7 +442,7 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
             new VerifiedPrincipal("user-42", TestTenantId, "u@example.com", "U", ["Accounting"]));
         var fn = A.Fake<NodeDelegate>();
 
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -447,7 +476,7 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var etlContext = CreateEtlContext(callerAccessToken: "ey.the.callers.token");
         var fn = A.Fake<NodeDelegate>();
 
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -474,7 +503,7 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var etlContext = CreateEtlContext();
         var fn = A.Fake<NodeDelegate>();
 
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
@@ -500,9 +529,11 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         var (dataContext, nodeContext) = PrepareTest(config, new { value = 1 });
         var distributionEventHubService = A.Fake<IDistributionEventHubService>();
         PipelineDataReceived? capturedMessage = null;
-        A.CallTo(() => distributionEventHubService.SendToExchangeAsync(
-                A<string>._, A<string>._, A<PipelineDataReceived>._, A<CancellationToken?>._))
-            .Invokes((string _, string _, PipelineDataReceived msg, CancellationToken? _) => capturedMessage = msg)
+        A.CallTo(() => distributionEventHubService.SendAsync(
+            A<Uri>._,
+            A<PipelineDataReceived>._,
+            A<CancellationToken?>._))
+            .Invokes((Uri _, PipelineDataReceived msg, CancellationToken? _) => capturedMessage = msg)
             .Returns(Task.FromResult(Task.CompletedTask));
 
         var etlContext = CreateEtlContext(
@@ -510,7 +541,7 @@ public class ToPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
             callerToken);
         var fn = A.Fake<NodeDelegate>();
 
-        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService);
+        var testee = new ToPipelineDataEventNode(fn, etlContext, distributionEventHubService, A.Fake<IPipelineDataEventTargetWaker>());
 
         await testee.ProcessObjectAsync(dataContext, nodeContext);
 
