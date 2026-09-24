@@ -37,6 +37,20 @@ public interface IDataContext : IDisposable
     /// Reads the array at the given path and deserializes each element to <typeparamref name="T"/>.
     /// Serialization uses <see cref="SystemTextJsonOptions.Default"/> (the SDK default, carrying CK/Rt converters).
     /// </summary>
+    /// <remarks>
+    /// Four shapes a pipeline author may write into a node's <c>…Path</c> setting, and what each yields:
+    /// <list type="bullet">
+    /// <item><description>an <b>array</b> (<c>$.ids</c> → <c>["a","b"]</c>): one entry per element;</description></item>
+    /// <item><description>a <b>scalar</b> (<c>$.id</c> → <c>"a"</c>): widened to a single-entry array, so a
+    /// node configured for many values also accepts one;</description></item>
+    /// <item><description>a <b>multi-match path</b> — wildcard, recursive descent or filter
+    /// (<c>$.Items[*].RtId</c>, <c>$..RtId</c>, <c>$.Items[?(@.Kind=='Doc')].RtId</c>): one entry per match,
+    /// in document order (AB#5351);</description></item>
+    /// <item><description>an <b>absent path</b>, an explicit <b>null</b>, an <b>object</b>, or a multi-match
+    /// path with no match: <c>null</c> — not an empty sequence.</description></item>
+    /// </list>
+    /// A null result therefore means "nothing usable at that path"; nodes turn it into their own error.
+    /// </remarks>
     IEnumerable<T?>? GetArray<T>(string path);
 
     /// <summary>

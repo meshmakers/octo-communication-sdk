@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.JsonPath;
 
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 
@@ -230,6 +231,17 @@ public sealed class DataContextImpl : IDataContext, IIterationContextFactory, ID
     /// <inheritdoc />
     public IEnumerable<T?>? GetArray<T>(string path)
     {
+        // Multi-match paths ($.a[*].b, $..b, $.a[?(@.k=='v')].b) address N values, which neither
+        // single-value fast path below can carry: both resolve a path via
+        // JsonPathWalker.Select(...).FirstOrDefault(), so such a read silently truncated to the
+        // FIRST match while the base was clean and returned null once the overlay had lifted — the
+        // same path, two wrong answers. They are collected match by match instead (AB#5351).
+        // Placed BEFORE the fast paths so the answer no longer depends on which representation the
+        // source happens to serve. Single-value paths never reach the parse step inside
+        // IsMultiMatch (allocation-free character pre-filter) and keep the fast paths below
+        // unchanged — the TypedGet / BigDocRead allocation gates pin that.
+        if (JsonPathShape.IsMultiMatch(path)) return GetMatchArray<T>(path);
+
         if (_source.TryGetElement(path, out var element))
         {
             switch (element.ValueKind)
@@ -259,6 +271,27 @@ public sealed class DataContextImpl : IDataContext, IIterationContextFactory, ID
         if (node is JsonArray arr) return arr.Select(item => item is null ? default : item.Deserialize<T>(SystemTextJsonOptions.Default));
         if (node is JsonValue val) return new[] { val.Deserialize<T>(SystemTextJsonOptions.Default) };
         return null;
+    }
+
+    /// <summary>
+    /// Materialises one <typeparamref name="T"/> per match of a multi-match <paramref name="path"/>
+    /// (AB#5351). Reads through <see cref="SelectMatches"/>, whose matches arrive detached and
+    /// un-parented — the right shape for a pure read, and the same walk
+    /// <c>IterateMatchesAsync</c>/<c>UpdateMatchesAsync</c> use, so a <c>GetArray</c> and an
+    /// iteration over the same path see the same values in the same order. Eager, like the element
+    /// branch above: each match is fully deserialized before it is released. Returns <c>null</c>
+    /// when nothing matches, so "no match" reads exactly like an absent single-value path — every
+    /// caller already treats a null result as "nothing to work with".
+    /// </summary>
+    private IEnumerable<T?>? GetMatchArray<T>(string path)
+    {
+        List<T?>? values = null;
+        foreach (var match in SelectMatches(path))
+        {
+            using (match) (values ??= []).Add(match.Get<T>("$"));
+        }
+
+        return values;
     }
 
     /// <inheritdoc />
