@@ -13,7 +13,7 @@ namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 /// <para>
 /// The converter family (CK/Rt id converters + <c>RtAttributesConverter</c>), case-insensitive
 /// property matching, and lenient number handling all come from
-/// <see cref="RtSystemTextJsonSerializer"/>. This bundle changes exactly one thing for the pipeline:
+/// <see cref="RtSystemTextJsonSerializer"/>. This bundle changes two things for the pipeline:
 /// </para>
 /// <para>
 /// <b>Null preservation.</b> <see cref="RtSystemTextJsonSerializer"/> drops null properties (matching
@@ -22,6 +22,16 @@ namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 /// "absent": <c>GetKind("$.x")</c> returns <c>DataKind.Null</c> for the former and
 /// <c>DataKind.Undefined</c> for the latter, and patch / CK-mutation semantics depend on that
 /// distinction end-to-end.
+/// </para>
+/// <para>
+/// <b>Integer coercion.</b> <see cref="NewtonsoftParityInt32Converter"/> and
+/// <see cref="NewtonsoftParityInt64Converter"/> are the read-side twins of the <c>.0</c>-emitting
+/// <c>NewtonsoftParityDouble/Single/DecimalConverter</c> that <see cref="RtSystemTextJsonSerializer"/>
+/// registers. Without them the built-in Int32/Int64 converters reject the literal <c>5.0</c> on its
+/// raw text, so every "a node wrote a double, a later node reads it as Int" pipeline failed
+/// (AB#5275). See <see cref="NewtonsoftParityInt32Converter"/> for the coercion rules; the dynamic
+/// boxing path (<c>JsonScalar.ToClr</c> behind <c>IDataContext.GetValue()</c>) is deliberately
+/// unaffected.
 /// </para>
 /// <para>
 /// <b>Per-call null-strip override.</b> A wire-format consumer that needs nulls dropped can copy and
@@ -73,6 +83,11 @@ public static class SystemTextJsonOptions
         var options = RtSystemTextJsonSerializer.CreateDefault();
         // Pipeline-specific: keep explicit nulls so DataKind.Null and DataKind.Undefined stay distinct.
         options.DefaultIgnoreCondition = JsonIgnoreCondition.Never;
+        // Read-side parity twins of the .0-emitting double/single/decimal converters registered by
+        // RtSystemTextJsonSerializer: a written "5.0" must read back as Int/Int64 the way
+        // Newtonsoft's (int)JToken did. Order is irrelevant — the target types are distinct.
+        options.Converters.Add(new NewtonsoftParityInt32Converter());
+        options.Converters.Add(new NewtonsoftParityInt64Converter());
         return options;
     }
 

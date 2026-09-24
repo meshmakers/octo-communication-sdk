@@ -70,6 +70,33 @@ implementation. `SystemTextJsonOptions.Default` is the single options bundle; it
 `UnsafeRelaxedJsonEscaping` encoder is load-bearing for every consumer that **hashes** serialized
 output.
 
+### Integer coercion on typed reads (AB#5275)
+
+`NewtonsoftParityDoubleConverter` (CK engine) deliberately writes an integral `double` as `5.0`, not
+`5` — otherwise the value round-trips back as `Int64` and lands in MongoDB as a `BsonInt64` where
+Newtonsoft stored a `BsonDouble`. STJ's **built-in** Int32/Int64 converters, however, match on the
+number token's **raw text**, so they rejected that same `5.0`. Every "a node wrote a double, a later
+node reads it as Int" pipeline therefore failed — `ConvertDataType@1`, `If@1`, `Switch@1`, `For@1`,
+`DateTime@1`, `SetPrimitiveValue@1`, `ExecuteCSharp@1` and the adapter's domain nodes alike.
+
+`NewtonsoftParityInt32Converter` / `…Int64Converter` (`EtlDataPipeline/NewtonsoftParityIntegerConverters.cs`)
+are the **read-side twins** registered in `SystemTextJsonOptions.Default`, so one registration fixes
+every `Deserialize<T>` path at once — including `int?`/`long?` via STJ's nullable factory, `int[]`,
+`List<int>` and `int` members of DTOs. Values coerce with **banker's rounding** (`5.0`→5, `5.7`→6,
+`5.5`→6, `4.5`→4); out-of-range throws `JsonException` and **not** `OverflowException`, because
+`DateTimeNode` catches the former to build `InvalidUnixTimestamp`.
+
+🔴 **`JsonScalar.ToClr` stays strict on purpose.** That is the *dynamic* boxing path behind
+`IDataContext.GetValue()` and `RtAttributesConverter`; its contract is "reals stay double", and
+coercing there would bring the BsonInt64 regression straight back. Only explicitly typed reads
+changed. `DataContextIntegerCoercionTests.DynamicBoxingPath_StaysDouble` is the guard.
+
+The rounding semantics are not a design choice but an **empirical** one:
+`Sdk.Common.PipelineParityTests.IntegerCoercionParityTests` consults Newtonsoft as the oracle at
+runtime, so the rule cannot drift. Two divergences are deliberate and pinned there — a quoted real
+(`"5.0"`) coerces here but throws in Newtonsoft, and a JSON boolean throws here but yields `1` in
+Newtonsoft.
+
 ### What a node's `…Path` setting may point at (AB#5351)
 
 Every node setting read through **`GetArray<T>`** (`toPath`, `rtIdsPath`, `opsPath`, `path`, …)
