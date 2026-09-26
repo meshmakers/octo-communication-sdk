@@ -51,4 +51,20 @@ public abstract class TriggerContext(
 
     /// <inheritdoc />
     public abstract Task<object?> EndExecutePipelineAsync(Guid pipelineExecutionId);
+
+    /// <summary>
+    /// <inheritdoc cref="ITriggerContext.ReportStatusAsync" />
+    /// </summary>
+    /// <remarks>
+    /// A no-op here, deliberately virtual rather than abstract: the base is subclassed outside
+    /// this repository (the mesh adapter keeps a hand-maintained copy of the SDK's trigger
+    /// context), and a status line nobody delivers is harmless, whereas an abstract member would
+    /// break every such subclass on the package update. The hosts that own an
+    /// <see cref="IPipelineExecutionReporter" /> override it.
+    /// </remarks>
+    public virtual Task ReportStatusAsync(string message, bool isError = false,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.CompletedTask;
+    }
 }

@@ -44,6 +44,26 @@ public interface IPipelineExecutionReporter
         string? outputData = null);
 
     /// <summary>
+    /// Reports a pipeline's live status line (AB#5385) — one line per poll from a trigger node,
+    /// written by the controller to the pipeline entity's <c>StatusMessage</c>.
+    /// </summary>
+    /// <remarks>
+    /// Never throws and must not block the caller on the controller: delivery is fire-and-forget,
+    /// and a delivery failure (hub not connected, a controller predating the hub method) is logged
+    /// at Debug, rate-limited so a poll loop does not repeat it every interval.
+    /// </remarks>
+    /// <param name="pipelineRtEntityId">The pipeline entity ID</param>
+    /// <param name="message">The status line</param>
+    /// <param name="isError">True when the line reports a failed poll</param>
+    /// <param name="timestampUtc">When the status was produced (UTC)</param>
+    /// <returns>Task representing the async operation</returns>
+    Task ReportPipelineStatusAsync(
+        RtEntityId pipelineRtEntityId,
+        string message,
+        bool isError,
+        DateTime timestampUtc);
+
+    /// <summary>
     /// Gets the list of execution IDs that were marked as interrupted when this adapter disconnected.
     /// Called after reconnection to determine which executions need their final status reported.
     /// </summary>

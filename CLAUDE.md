@@ -186,6 +186,36 @@ execution with neither value, and `ToPipelineDataEventNodeTests` pins that the h
 and that neither the token nor the subject reaches the message. See the AB#5029 matrix in
 `octo-mesh-adapter/CLAUDE.md` for how this row fits the other trigger kinds.
 
+## The trigger → pipeline status line (AB#5385)
+
+`ITriggerContext.ReportStatusAsync(message, isError, ct)` is how a trigger node tells the operator
+what its last poll did. The line travels `AdapterTriggerContext` → `IPipelineExecutionReporter.
+ReportPipelineStatusAsync` → `IAdapterHubClient.ReportPipelineStatusAsync(PipelineStatusReportDto)`
+(octo-sdk, fire-and-forget `SendAsync`) → the controller's `AdapterHub`, which writes **only** the
+pipeline entity's `StatusMessage`. It exists because the one adapter → controller channel that
+wrote `StatusMessage` before, `SendDeploymentUpdateResultAsync`, is adapter-wide and sets the
+`DeploymentState` of every pipeline — a poll outcome cannot go through it.
+
+Three things are load-bearing:
+
+- **Fire-and-forget for the caller.** `ReportStatusAsync` never throws and never blocks a poll on
+  the controller; the reporter swallows every delivery failure and logs it at **Debug**, rate-limited
+  to one line per `AdapterPipelineExecutionReporter.StatusFailureLogInterval` (5 min) with the count
+  of swallowed failures folded into the next line. A poll loop reports every interval, so a
+  per-failure warning against an old or unreachable controller would be a log flood.
+- **A controller predating the method drops the line on ITS side.** The SDK client sends with
+  `SendAsync`, so no error reaches the adapter at all — the pipeline's `StatusMessage` simply stays
+  what it was. What the adapter does see is a connection that is not active
+  (`InvalidOperationException`), hence the rate limit.
+- **`TriggerContext.ReportStatusAsync` is a virtual no-op, not abstract**: the base is subclassed
+  outside this repository (`octo-mesh-adapter`'s `MeshAdapterTriggerContext` is a hand-maintained
+  copy of `AdapterTriggerContext`), and a line nobody delivers is harmless, whereas an abstract
+  member would break such a subclass on the package update. Hosts with a reporter override it.
+
+Senders keep the line short (the controller truncates at 1000 characters) and never put credentials
+or message bodies in it. Tests: `AdapterPipelineExecutionReporterTests` (DTO, never-throw, rate
+limit) and `AdapterTriggerContextTests` (forwarding, no-reporter no-op).
+
 ## Adapter hub authentication (AB#5072)
 
 The adapter acquires its **own** client-credentials access token at startup and presents it on the
