@@ -102,6 +102,17 @@ public class WebAdapterBuilder
             loggingBuilder.AddNLog(new NLogProviderOptions { RemoveLoggerFactoryFilter = false });
         });
 
+        // 🔴 AB#5303 item 2 — this host NEVER honoured IgnoreCertificateValidation at all. Only
+        // AdapterBuilder read it, and there it set ServicePointManager, which SocketsHttpHandler
+        // ignores. The mesh adapter and every other WebAdapterBuilder host therefore had no switch,
+        // while their hub connections bypassed validation unconditionally: the flag said one thing,
+        // two different code paths did two others. One gate now, before anything opens a connection.
+        if (startupOptions.IgnoreCertificateValidation)
+        {
+            ServerCertificateTrust.AllowAnyServerCertificate(
+                new NLogLoggerProvider().CreateLogger(nameof(ServerCertificateTrust)));
+        }
+
         builder.Services.AddDistributionEventHubWithOptions(s =>
         {
             s.InstancePrefix = startupOptions.InstancePrefix;

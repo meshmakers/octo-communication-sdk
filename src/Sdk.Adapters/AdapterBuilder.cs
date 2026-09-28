@@ -1,5 +1,4 @@
-﻿using System.Net;
-using Meshmakers.Octo.Common.DistributionEventHub.Configuration;
+﻿using Meshmakers.Octo.Common.DistributionEventHub.Configuration;
 using Meshmakers.Octo.Communication.Contracts.Hubs;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
@@ -155,12 +154,14 @@ public class AdapterBuilder
                 configureDistributionEventHub?.Invoke(c);
             });
 
+            // AB#5303 item 2. This was ServicePointManager.ServerCertificateValidationCallback,
+            // which SocketsHttpHandler has ignored since .NET Core: the switch was inert, verified on
+            // a running pool member where setting it changed nothing. ServerCertificateTrust reaches
+            // all four HTTP stacks the SDK actually uses, and refuses in Production.
             if (startupOptions.IgnoreCertificateValidation)
             {
-#pragma warning disable SYSLIB0014
-                // needs to be handled by AB#1677
-                ServicePointManager.ServerCertificateValidationCallback += (_, _, _, _) => true;
-#pragma warning restore SYSLIB0014
+                ServerCertificateTrust.AllowAnyServerCertificate(
+                    new NLogLoggerProvider().CreateLogger(nameof(ServerCertificateTrust)));
             }
 
             services.AddOptions<AdapterHubClientOptions>()
