@@ -68,11 +68,13 @@ public sealed class AdapterPoolMemberService : BackgroundService
     {
         if (!_options.Value.IsEnabled)
         {
-            // Defensive: the builder only registers this service when the section is set. Returning
-            // quietly rather than throwing keeps a misconfiguration from taking the host down.
+            // Defensive: the builder only registers this service when the section is set, and
+            // AdapterPoolMemberConfigurationGuard has already refused a section that is set and does
+            // not bind (AB#5303 item 5). Reaching this line means the host composed a member without
+            // configuration at all, so returning quietly rather than throwing is still right.
             _logger.LogWarning(
                 "Adapter pool member service started without a configured pool; set " +
-                "OCTO_ADAPTERPOOL__POOLTENANTID and OCTO_ADAPTERPOOL__POOLRTID. Doing nothing.");
+                "OCTO_ADAPTERPOOL__ADAPTERPOOLTENANTID and OCTO_ADAPTERPOOL__ADAPTERPOOLRTID. Doing nothing.");
             return;
         }
 

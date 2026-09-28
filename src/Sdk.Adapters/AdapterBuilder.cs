@@ -116,8 +116,10 @@ public class AdapterBuilder
             // AB#4924 — see WebAdapterBuilder for the full rationale. A pool member has no
             // AdapterRtId and no DedicatedTenantId, and the dedicated IAdapterTenantScope registered
             // here would silently win over the lease-aware one.
-            var poolMemberOptions = new AdapterPoolMemberOptions();
-            b.Configuration.GetSection(AdapterPoolMemberOptions.SectionName).Bind(poolMemberOptions);
+            // AB#5303 item 5 — bind through the guard, not by hand. A section that is configured and
+            // does not bind must stop the host here; the alternative is a process that composes as an
+            // ordinary adapter and looks healthy while serving no pool.
+            var poolMemberOptions = AdapterPoolMemberConfigurationGuard.BindAndVerify(b.Configuration);
             var isPoolMember = poolMemberOptions.IsEnabled;
 
             services.Configure<EdgeDataBufferConfiguration>(options =>

@@ -86,8 +86,9 @@ public class WebAdapterBuilder
         // registered at all, because a plain AddSingleton here would win over the lease-aware scope
         // that AddAdapterPoolMember() TryAdds from the caller's delegate. That override would fail
         // nowhere: the member would run, and simply never enforce a lease.
-        var poolMemberOptions = new AdapterPoolMemberOptions();
-        builder.Configuration.GetSection(AdapterPoolMemberOptions.SectionName).Bind(poolMemberOptions);
+        // AB#5303 item 5 — see AdapterPoolMemberConfigurationGuard. A configured-but-unbound pool
+        // section stops the host instead of silently producing a dedicated adapter.
+        var poolMemberOptions = AdapterPoolMemberConfigurationGuard.BindAndVerify(builder.Configuration);
         var isPoolMember = poolMemberOptions.IsEnabled;
 
         builder.Services.AddLogging(loggingBuilder =>

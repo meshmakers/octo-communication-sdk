@@ -5,7 +5,9 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 /// </summary>
 /// <remarks>
 ///     <para>
-///         Section <c>AdapterPool</c>, i.e. <c>OCTO_ADAPTERPOOL__POOLTENANTID</c> and friends. The
+///         Section <c>AdapterPool</c>, i.e. <c>OCTO_ADAPTERPOOL__ADAPTERPOOLTENANTID</c> and friends —
+///         the property name repeats the section, and shortening either half binds nothing (AB#5303
+///         item 5; <see cref="AdapterPoolMemberConfigurationGuard" /> now refuses to start on it). The
 ///         values name the <b>lending</b> tenant and its pool; they never name a borrower, because a
 ///         member has no borrower until a lease arrives.
 ///     </para>
