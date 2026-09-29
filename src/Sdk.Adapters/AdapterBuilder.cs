@@ -196,6 +196,11 @@ public class AdapterBuilder
             // notification path. Registered as a hosted service BEFORE every other hosted service so
             // its StartAsync (which acquires the first token) completes before the hub connects -
             // hosted services are started sequentially.
+            // AB#5303 item 4 — FIRST of all hosted services, before even the token service: a
+            // workload pointed at datastores that do not exist should say so and stop, not acquire
+            // credentials and wait for a lease to discover it.
+            services.AddHostedService<DatastoreHostPreflight>();
+
             services.AddSingleton<IConfigureOptions<AuthenticatorOptions>, ConfigureAdapterAuthenticatorOptions>();
             services.AddSingleton<IAuthenticatorClient, AuthenticatorClient>();
             services.AddSingleton<AdapterAccessTokenService>();

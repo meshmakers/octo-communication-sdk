@@ -26,6 +26,20 @@ public class AdapterException : Exception
     }
 
     /// <summary>
+    ///     AB#5303 item 4 — the configured datastore hostnames do not resolve. Naming the
+    ///     configuration KEY alongside the value is the point: the lease-time failure this replaces
+    ///     named neither, and an operator reading it could not tell which setting was wrong.
+    /// </summary>
+    internal static Exception DatastoreHostsDoNotResolve(IReadOnlyCollection<string> unresolved)
+    {
+        return new AdapterException(
+            $"Datastore hostname(s) do not resolve: {string.Join("; ", unresolved)}. Refusing to start. " +
+            "These names are resolved, not connected to - a Kubernetes Service resolves while its pods " +
+            "are down - so this is a configuration error, not an outage. Check the operator's " +
+            "ClusterDependencies against the services actually present in this cluster (AB#5303).");
+    }
+
+    /// <summary>
     ///     AB#5303 item 5 — the deployment configured the <c>AdapterPool</c> section and the process
     ///     is still not a pool member. Naming both sides is the point: the keys that arrived say what
     ///     the deployment emitted, the unbound properties say what the SDK expected, and the

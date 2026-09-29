@@ -161,6 +161,11 @@ public class WebAdapterBuilder
         // notification path. Registered as a hosted service BEFORE every other hosted service so its
         // StartAsync (which acquires the first token) completes before the hub connects - hosted
         // services are started sequentially.
+        // AB#5303 item 4 — FIRST of all hosted services, before even the token service. A pool
+        // member never touches MongoDB during startup (it has no tenant), so a wrong datastore host
+        // stays invisible until the first lease; this makes it a startup failure that names the key.
+        builder.Services.AddHostedService<DatastoreHostPreflight>();
+
         builder.Services
             .AddSingleton<IConfigureOptions<AuthenticatorOptions>, ConfigureAdapterAuthenticatorOptions>();
         builder.Services.AddSingleton<IAuthenticatorClient, AuthenticatorClient>();
