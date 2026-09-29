@@ -24,6 +24,7 @@ public class AdapterExecutionService : IAdapterHubCallbacks
     private readonly INodeSchemaRegistry? _nodeSchemaRegistry;
     private readonly IPipelineSchemaGenerator? _pipelineSchemaGenerator;
     private readonly IPipelineRegistryService _pipelineRegistryService;
+    private readonly IAdapterHubRegistrationState _registrationState;
     private readonly SemaphoreSlim _configurationUpdateLock = new(1, 1);
 
     // Captured once per process. Used on fresh startup to tell the controller which of this
@@ -42,6 +43,11 @@ public class AdapterExecutionService : IAdapterHubCallbacks
     /// <param name="executionReporter"></param>
     /// <param name="nodeSchemaRegistry"></param>
     /// <param name="pipelineSchemaGenerator"></param>
+    /// <param name="registrationState">
+    /// Tracks whether the adapter is registered at the adapter hub (AB#5409). Optional so existing
+    /// callers keep compiling; the DI container supplies the shared singleton the readiness check and
+    /// the recovery watchdog read.
+    /// </param>
     public AdapterExecutionService(IAdapterHubClient adapterHubClient,
         IOptions<AdapterOptions> adapterOptions, IAdapterService adapterService,
         IAdapterHubCallbackService adapterHubCallbackService,
@@ -50,7 +56,8 @@ public class AdapterExecutionService : IAdapterHubCallbacks
         IPipelineRegistryService pipelineRegistryService,
         IPipelineExecutionReporter? executionReporter = null,
         INodeSchemaRegistry? nodeSchemaRegistry = null,
-        IPipelineSchemaGenerator? pipelineSchemaGenerator = null)
+        IPipelineSchemaGenerator? pipelineSchemaGenerator = null,
+        IAdapterHubRegistrationState? registrationState = null)
     {
         _adapterService = adapterService;
         _hubClient = adapterHubClient;
@@ -59,6 +66,7 @@ public class AdapterExecutionService : IAdapterHubCallbacks
         _executionReporter = executionReporter;
         _nodeSchemaRegistry = nodeSchemaRegistry;
         _pipelineSchemaGenerator = pipelineSchemaGenerator;
+        _registrationState = registrationState ?? new AdapterHubRegistrationState();
 
         // AdapterLifetimeManagement is used to stop the adapter from an external source
         // it only needs to be created via DI container and is then accessed from the outside
@@ -173,6 +181,62 @@ public class AdapterExecutionService : IAdapterHubCallbacks
     /// timeout the start loop retries visibly; registration is idempotent on the controller.
     /// </summary>
     internal TimeSpan RegisterInvokeTimeout { get; set; } = TimeSpan.FromSeconds(90);
+
+    /// <summary>
+    /// How often a single (re)connect attempt tries to register at the adapter hub before it hands
+    /// the failure back to the SignalR (re)connect loop (AB#5409). Bounded on purpose: only the loop
+    /// can force-stop and re-establish a dead connection, so retrying here forever would keep the
+    /// adapter on a connection that cannot be repaired from this layer.
+    /// </summary>
+    internal int RegistrationMaxAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// Base back-off between registration attempts; multiplied by the attempt number.
+    /// </summary>
+    internal TimeSpan RegistrationRetryBaseDelay { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// How long a registration attempt waits for the hub client to report a connection before it
+    /// invokes anyway. Invoking on a Disconnected connection can only fail, and failing fast here
+    /// would burn the bounded attempts for nothing.
+    /// </summary>
+    internal TimeSpan HubConnectionWaitTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Poll interval of <see cref="HubConnectionWaitTimeout"/>.
+    /// </summary>
+    internal TimeSpan HubConnectionPollInterval { get; set; } = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// Waits until the hub client reports a connection, bounded by
+    /// <see cref="HubConnectionWaitTimeout"/>. Never throws on timeout — the caller invokes anyway
+    /// and lets the retry (and ultimately the reconnect loop) deal with the failure.
+    /// </summary>
+    private async Task WaitForHubConnectionAsync(CancellationToken cancellationToken)
+    {
+        if (_hubClient.IsAlive)
+        {
+            return;
+        }
+
+        _logger.Info("Waiting up to {Timeout} for the adapter hub connection to become active before registering",
+            HubConnectionWaitTimeout);
+
+        var waited = TimeSpan.Zero;
+        while (waited < HubConnectionWaitTimeout && !cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(HubConnectionPollInterval, cancellationToken);
+            waited += HubConnectionPollInterval;
+
+            if (_hubClient.IsAlive)
+            {
+                return;
+            }
+        }
+
+        _logger.Warn("Adapter hub connection did not become active within {Timeout}, registering anyway",
+            HubConnectionWaitTimeout);
+    }
 
     private readonly object _pendingConfigurationGate = new();
     private (string TenantId, AdapterConfigurationDto Configuration)? _pendingConfigurationUpdate;
@@ -310,10 +374,8 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                 {
                     var rtEntityId = GetAdapterRtEntityId();
 
-                    async Task<AdapterConfigurationDto> RegisterAtHubAsync()
+                    async Task<AdapterConfigurationDto> InvokeRegisterAsync()
                     {
-                        _logger.Info("Registering at adapter hub");
-
                         var nodeDescriptorDtos = GetNodeDescriptorDtos();
                         var pipelineSchemaJson = GetPipelineSchemaJson();
                         Task<AdapterConfigurationDto> registerTask;
@@ -332,9 +394,62 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                             registerTask = _hubClient.RegisterAdapterAsync(rtEntityId);
                         }
 
-                        var registeredConfiguration = await registerTask.WaitAsync(RegisterInvokeTimeout, cancellationToken);
-                        _logger.Info("Registration successfull");
-                        return registeredConfiguration;
+                        return await registerTask.WaitAsync(RegisterInvokeTimeout, cancellationToken);
+                    }
+
+                    // Registration is retried in place, bounded, before the failure is handed back to
+                    // the SignalR (re)connect loop (AB#5409). The observed failure is
+                    // `InvokeCoreAsync cannot be called if the connection is not active`: the register
+                    // invoke races the connection state right after StartAsync returned. On a fresh
+                    // start the loop's next iteration papers over it; after a long controller outage
+                    // one such throw was all it took to leave the adapter connected-but-unregistered —
+                    // the controller then answers every deploy with "has no live SignalR connection",
+                    // while the pod stays 1/1 Running.
+                    //
+                    // The pre-check uses IsAlive, which is `State != Disconnected` and therefore also
+                    // true while the connection is still Connecting — exactly the window that produces
+                    // the exception. A strict `IsConnected` would have to be added to
+                    // ISignalRClient in octo-sdk and shipped as a NuGet, so the actual wait for an
+                    // active connection is the retry: the next attempt runs after a back-off, by which
+                    // time the connection has either finished connecting or is gone for good.
+                    async Task<AdapterConfigurationDto> RegisterAtHubAsync()
+                    {
+                        for (var attempt = 1;; attempt++)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            await WaitForHubConnectionAsync(cancellationToken);
+
+                            _logger.Info("Registering at adapter hub (attempt {Attempt}/{MaxAttempts})",
+                                attempt, RegistrationMaxAttempts);
+                            try
+                            {
+                                var registeredConfiguration = await InvokeRegisterAsync();
+                                _registrationState.MarkRegistered();
+                                _logger.Info("Registration successfull");
+                                return registeredConfiguration;
+                            }
+                            catch (Exception e) when (e is not OperationCanceledException
+                                                      && e is not ObjectDisposedException
+                                                      && attempt < RegistrationMaxAttempts)
+                            {
+                                _registrationState.MarkNotRegistered(e.Message);
+
+                                // Error, not Warn: the adapter log carries WARN-level audit noise by
+                                // the dozen per pipeline run (AB#5409 item 3) and rotates the startup
+                                // log away within the hour. A retried registration has to stay
+                                // findable afterwards.
+                                var delay = TimeSpan.FromTicks(RegistrationRetryBaseDelay.Ticks * attempt);
+                                _logger.Error(e,
+                                    "Registration at adapter hub failed on attempt {Attempt}/{MaxAttempts}, retrying in {DelaySeconds}s",
+                                    attempt, RegistrationMaxAttempts, delay.TotalSeconds);
+                                await Task.Delay(delay, cancellationToken);
+                            }
+                            catch (Exception e)
+                            {
+                                _registrationState.MarkNotRegistered(e.Message);
+                                throw;
+                            }
+                        }
                     }
 
                     List<DeploymentUpdateErrorMessageDto> deploymentErrorMessages = [];
@@ -427,10 +542,12 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                 }
                 catch (ObjectDisposedException)
                 {
+                    _registrationState.MarkNotRegistered("hub connection was disposed during reconnect");
                     _logger.Warn("Hub connection was disposed during reconnect, skipping error report");
                 }
                 catch (Exception e)
                 {
+                    _registrationState.MarkNotRegistered(e.Message);
                     _logger.Error(e, "Error during reconnect of adapter");
 
                     try
@@ -547,6 +664,7 @@ public class AdapterExecutionService : IAdapterHubCallbacks
             }
 
             await _hubClient.StopAsync();
+            _registrationState.MarkNotRegistered("adapter execution service stopped");
         }
         catch (Exception e)
         {

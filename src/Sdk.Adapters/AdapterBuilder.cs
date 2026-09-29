@@ -185,9 +185,14 @@ public class AdapterBuilder
             services.AddSingleton<IPipelineExecutionReporter, AdapterPipelineExecutionReporter>();
             services.AddTransient<IPipelineDebugger, AdapterPipelineDebugger>();
 
+            // Shared registration state: written by AdapterExecutionService on every (re)registration,
+            // read by the recovery watchdog (AB#5409). Non-web adapters have no HTTP probe, so the
+            // readiness check of WebAdapterBuilder has no counterpart here.
+            services.AddSingleton<IAdapterHubRegistrationState, AdapterHubRegistrationState>();
             services.AddSingleton<AdapterExecutionService>();
             services.AddHostedService<AdapterHealthFileService>();
             services.AddHostedService<AdapterMetricsSamplerService>();
+            services.AddHostedService<AdapterHubRecoveryService>();
 
             if (startupOptions.UseHostedService)
             {
