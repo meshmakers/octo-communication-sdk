@@ -55,4 +55,22 @@ public interface ITriggerContext
     /// <param name="pipelineExecutionId">The pipeline execution id that is unique per execution</param>
     /// <returns>The result of the pipeline execution</returns>
     Task<object?> EndExecutePipelineAsync(Guid pipelineExecutionId);
+
+    /// <summary>
+    /// Reports the pipeline's live status line — what this trigger last did — to the communication
+    /// controller, which writes it to the pipeline entity's <c>StatusMessage</c> (AB#5385). Meant to
+    /// be called after every poll and from the poll loop's failure path, so an operator sees the
+    /// last outcome on the pipeline instead of a "Deployed" that has been failing for days.
+    /// </summary>
+    /// <remarks>
+    /// Fire-and-forget for the caller: never throws and never blocks the poll on the controller.
+    /// A failure to deliver (hub down, a controller predating the method) is logged at Debug and
+    /// rate-limited, not surfaced — the next poll replaces the line anyway. Keep the line short
+    /// (the controller truncates at 1000 characters) and never include credentials or message
+    /// bodies in it.
+    /// </remarks>
+    /// <param name="message">One status line, e.g. an ISO-8601 UTC timestamp, the source polled and the counts</param>
+    /// <param name="isError">True when the line reports a failed poll</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    Task ReportStatusAsync(string message, bool isError = false, CancellationToken cancellationToken = default);
 }

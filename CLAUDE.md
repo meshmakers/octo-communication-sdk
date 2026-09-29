@@ -97,6 +97,39 @@ runtime, so the rule cannot drift. Two divergences are deliberate and pinned the
 (`"5.0"`) coerces here but throws in Newtonsoft, and a JSON boolean throws here but yields `1` in
 Newtonsoft.
 
+### What a node's `…Path` setting may point at (AB#5351)
+
+Every node setting read through **`GetArray<T>`** (`toPath`, `rtIdsPath`, `opsPath`, `path`, …)
+accepts four shapes, and a pipeline author picks whichever the upstream data has:
+
+| Shape | Example | Result |
+|---|---|---|
+| array | `$.ids` → `["a","b"]` | one entry per element |
+| scalar | `$.id` → `"a"` | widened to a **single-entry** array |
+| multi-match path | `$.Items[*].RtId`, `$..RtId`, `$.Items[?(@.Kind=='Doc')].RtId` | one entry per match, document order |
+| absent / null / object / no match | `$.nope` | **`null`** — not an empty sequence |
+
+The node turns that `null` into its own error, so a message like *"No RtIds found at path …"* means
+the path matched nothing — not that the path form is unsupported.
+
+🔴 The multi-match row is the one that was missing. A single-value read resolves a path with
+`JsonPathWalker.Select(...).FirstOrDefault()`, so before AB#5351 a wildcard path silently returned
+**only the first match** while the overlay was still clean and `null` once any node had written to
+the document — the same pipeline, two wrong answers, depending on what ran before it. `GetArray<T>`
+therefore classifies the path first (`JsonPathShape.IsMultiMatch`) and collects multi-match paths
+through `SelectMatches`. The classifier's pre-filter is a plain character test, so an ordinary
+property/index path never pays a parse and the single-value fast paths stay allocation-identical —
+which `TypedGetAllocationGate` and `DataContextBigDocReadAllocationGate` pin. **`Get<T>` is
+unchanged and still resolves to the first match**; only `GetArray<T>` is multi-match aware.
+
+⚠️ **Inside `ForEach@1` a multi-match path sees the child's own document only** — its writes
+(`$.key…`) and its aliases (`$.full…`), never the parent-fallback chain, because folding the parent
+in would re-materialise the whole outer document per call (the allocation alias pruning removed,
+AB#4662). So reach the outer document through `$.full[*]…`, not through a bare outer path: the
+single-value read of that bare path resolves through the parent, the multi-match read returns
+`null`. That boundary is older than AB#5351 (it is `SelectMatches`/`UpdateMatchesAsync` semantics)
+and is pinned by `DataContextGetArrayMultiMatchTests`.
+
 ## Execution identity — what this repo owns
 
 The adapter decides which identity a pipeline execution acts as (`PipelineIdentityResolver`, AB#5028,
@@ -152,6 +185,36 @@ forwarded identity would be an assertion the target cannot check.
 execution with neither value, and `ToPipelineDataEventNodeTests` pins that the hand-off is recorded
 and that neither the token nor the subject reaches the message. See the AB#5029 matrix in
 `octo-mesh-adapter/CLAUDE.md` for how this row fits the other trigger kinds.
+
+## The trigger → pipeline status line (AB#5385)
+
+`ITriggerContext.ReportStatusAsync(message, isError, ct)` is how a trigger node tells the operator
+what its last poll did. The line travels `AdapterTriggerContext` → `IPipelineExecutionReporter.
+ReportPipelineStatusAsync` → `IAdapterHubClient.ReportPipelineStatusAsync(PipelineStatusReportDto)`
+(octo-sdk, fire-and-forget `SendAsync`) → the controller's `AdapterHub`, which writes **only** the
+pipeline entity's `StatusMessage`. It exists because the one adapter → controller channel that
+wrote `StatusMessage` before, `SendDeploymentUpdateResultAsync`, is adapter-wide and sets the
+`DeploymentState` of every pipeline — a poll outcome cannot go through it.
+
+Three things are load-bearing:
+
+- **Fire-and-forget for the caller.** `ReportStatusAsync` never throws and never blocks a poll on
+  the controller; the reporter swallows every delivery failure and logs it at **Debug**, rate-limited
+  to one line per `AdapterPipelineExecutionReporter.StatusFailureLogInterval` (5 min) with the count
+  of swallowed failures folded into the next line. A poll loop reports every interval, so a
+  per-failure warning against an old or unreachable controller would be a log flood.
+- **A controller predating the method drops the line on ITS side.** The SDK client sends with
+  `SendAsync`, so no error reaches the adapter at all — the pipeline's `StatusMessage` simply stays
+  what it was. What the adapter does see is a connection that is not active
+  (`InvalidOperationException`), hence the rate limit.
+- **`TriggerContext.ReportStatusAsync` is a virtual no-op, not abstract**: the base is subclassed
+  outside this repository (`octo-mesh-adapter`'s `MeshAdapterTriggerContext` is a hand-maintained
+  copy of `AdapterTriggerContext`), and a line nobody delivers is harmless, whereas an abstract
+  member would break such a subclass on the package update. Hosts with a reporter override it.
+
+Senders keep the line short (the controller truncates at 1000 characters) and never put credentials
+or message bodies in it. Tests: `AdapterPipelineExecutionReporterTests` (DTO, never-throw, rate
+limit) and `AdapterTriggerContextTests` (forwarding, no-reporter no-op).
 
 ## Adapter hub authentication (AB#5072)
 
