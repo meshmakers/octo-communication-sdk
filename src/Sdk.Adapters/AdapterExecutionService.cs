@@ -531,6 +531,16 @@ public class AdapterExecutionService : IAdapterHubCallbacks
                     {
                         await RegisterAtHubAsync();
 
+                        // AB#5415: CkModelChanged is a fire-and-forget broadcast to the connections
+                        // the controller currently holds, so every CK model import that completed
+                        // while this adapter was away is lost for good. Nothing else ever re-reads a
+                        // loaded CK cache, so without this flush the adapter keeps validating against
+                        // the model it held when the connection dropped - the observed failure was a
+                        // CkCacheException on every execution for days after the imported model had
+                        // already repaired the tenant. Unconditional: the adapter cannot know whether
+                        // anything changed while it was disconnected, and the reload is lazy.
+                        await FlushCkModelCacheAfterReconnectAsync();
+
                         // Handle interrupted executions after reconnect
                         await HandleInterruptedExecutionsAsync();
 
@@ -732,6 +742,34 @@ public class AdapterExecutionService : IAdapterHubCallbacks
 
         _logger.Info("Enabling automatic reconnect");
         _hubClient.EnableReconnect(onReconnectFunc);
+    }
+
+    /// <summary>
+    ///     Drops the tenant's in-process CK model cache after the hub connection was re-established
+    ///     (AB#5415), because <see cref="IAdapterHubCallbacks.CkModelChangedAsync" /> is only
+    ///     delivered to adapters that were connected at the moment it was broadcast. Best-effort:
+    ///     the cache reloads lazily on the next execution, so a failure here must not fail the
+    ///     reconnect - it only leaves the adapter where it already was.
+    /// </summary>
+    private async Task FlushCkModelCacheAfterReconnectAsync()
+    {
+        var tenantId = _adapterOptions.Value.TenantId;
+        if (string.IsNullOrWhiteSpace(tenantId))
+        {
+            return;
+        }
+
+        try
+        {
+            _logger.Info(
+                "Invalidating CK model cache for tenant {TenantId} after reconnect, CK model changes announced while disconnected were not delivered",
+                tenantId);
+            await _adapterService.CkModelChangedAsync(tenantId);
+        }
+        catch (Exception e)
+        {
+            _logger.Error(e, "Invalidating the CK model cache after reconnect failed for tenant {TenantId}", tenantId);
+        }
     }
 
     /// <summary>
