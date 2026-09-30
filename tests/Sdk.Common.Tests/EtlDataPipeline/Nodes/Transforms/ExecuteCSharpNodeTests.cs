@@ -1,3 +1,5 @@
+using System.Reflection;
+using Microsoft.CodeAnalysis.Scripting;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using FakeItEasy;
@@ -746,5 +748,48 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var filtered = dataContext.Get<string[]>("$.filtered");
         Assert.NotNull(filtered);
         Assert.Equal(new[] { "apple", "avocado" }, filtered);
+    }
+
+    // Regression guard for AB#5448: the cache must hold the executable DELEGATE, never the
+    // Script<object>. A Script keeps its entire Roslyn Compilation graph alive — syntax
+    // trees, symbol tables and a MetadataReference per referenced assembly — and that state
+    // lives largely in unmanaged/mmapped metadata buffers. Measured: ~61 MB of resident
+    // memory per DISTINCT cached script, so the 43 ExecuteCSharp nodes of the accounting
+    // blueprint pinned ~2.8 GB against a 3Gi container limit and drove node-wide OOMs on
+    // prod-1 (four episodes). Caching the delegate takes the same 43 scripts to ~700 MB,
+    // where it plateaus. The retention is invisible to `dotnet.assembly.count` (a
+    // MetadataReference is an unmanaged metadata reader, not a loaded assembly), so
+    // asserting on the cached TYPE is the only cheap, non-flaky guard available.
+    [Fact]
+    public async Task CompiledScriptCache_CachesDelegate_NotScriptWithCompilationGraph()
+    {
+        ExecuteCSharpNode.ClearCompiledScriptCache();
+
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "1 + 1 /* AB#5448 cache-shape guard */",
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var (dataContext, nodeContext) = PrepareTest(config);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(2, dataContext.Get<int>("$.result"));
+        Assert.True(ExecuteCSharpNode.CompiledScriptCacheCount >= 1);
+
+        // The cache is a static field shared with every other test class in this
+        // assembly, so assert on its declared SHAPE rather than its contents — a
+        // contents assertion would race whatever else is compiling scripts in parallel.
+        var field = typeof(ExecuteCSharpNode).GetField("CompiledScripts",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(field);
+
+        // ConcurrentDictionary<string, Lazy<T>> — T must be the delegate, not Script<object>.
+        var lazyType = field!.FieldType.GetGenericArguments()[1];
+        var cachedType = lazyType.GetGenericArguments()[0];
+        Assert.Equal(typeof(ScriptRunner<object>), cachedType);
+        Assert.NotEqual(typeof(Script<object>), cachedType);
     }
 }

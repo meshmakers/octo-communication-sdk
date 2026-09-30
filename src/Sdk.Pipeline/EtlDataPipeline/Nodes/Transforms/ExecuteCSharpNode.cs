@@ -103,20 +103,27 @@ public record ExecuteCSharpNodeConfiguration : TargetPathNodeConfiguration
 public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
 {
     /// <summary>
-    /// Process-wide compiled-script cache, keyed by the full value-independent template
-    /// text. The template depends only on the node's code, argument signature and usings
-    /// — never on values, and never on machine-specific rtIds (those live in other nodes'
-    /// configuration, not in the script) — so the SAME script used by N simulated
-    /// machines / pipelines / tenants compiles exactly once and is shared. This makes the
-    /// retained footprint scale with the number of DISTINCT scripts, not with the number
-    /// of machines or executions (measured: 5 machines dropped from ~10GB with a
-    /// per-context cache to a fraction of that once the identical scripts are shared).
+    /// Process-wide cache of compiled script <b>delegates</b>, keyed by the full
+    /// value-independent template text. The template depends only on the node's code,
+    /// argument signature and usings — never on values, and never on machine-specific
+    /// rtIds (those live in other nodes' configuration, not in the script) — so the SAME
+    /// script used by N simulated machines / pipelines / tenants compiles exactly once and
+    /// is shared. This makes the retained footprint scale with the number of DISTINCT
+    /// scripts, not with the number of machines or executions (measured: 5 machines
+    /// dropped from ~10GB with a per-context cache to a fraction of that once the
+    /// identical scripts are shared).
+    /// <para>
+    /// The value is a <see cref="ScriptRunner{T}"/>, deliberately <b>not</b> a
+    /// <c>Script&lt;object&gt;</c>: holding the Script would pin its entire Roslyn
+    /// Compilation graph, which cost ~61 MB of resident memory per distinct script and
+    /// caused node-wide OOMs on prod-1 (AB#5448). See <c>GetOrCompileScript</c>.
+    /// </para>
     /// A compiled script holds only code; per-execution values flow in through
     /// <see cref="ExecuteCSharpGlobals"/>, so cross-tenant sharing carries no data.
     /// <see cref="ConcurrentDictionary{TKey,TValue}"/> + <see cref="Lazy{T}"/> give
     /// thread-safe compile-exactly-once without locking the pipeline data path.
     /// </summary>
-    private static readonly ConcurrentDictionary<string, Lazy<Script<object>>> CompiledScripts = new();
+    private static readonly ConcurrentDictionary<string, Lazy<ScriptRunner<object>>> CompiledScripts = new();
 
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -128,15 +135,15 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
             // Value-independent script template (declarations read from Args) — stable
             // across runs so the cache key is stable and compilation happens once.
             var scriptTemplate = BuildScriptTemplate(c);
-            var script = GetOrCompileScript(scriptTemplate, nodeContext);
+            var runner = GetOrCompileScript(scriptTemplate, nodeContext);
 
             // Resolve the actual values for this run and pass them via globals.
             var globals = new ExecuteCSharpGlobals { Args = BuildArgumentValues(dataContext, c, nodeContext) };
 
             using var cts = new CancellationTokenSource(c.TimeoutMs);
-            var result = await script.RunAsync(globals, cancellationToken: cts.Token);
+            var returnValue = await runner(globals, cts.Token);
 
-            var convertedResult = ConvertResult(result.ReturnValue, c.ReturnType, nodeContext);
+            var convertedResult = ConvertResult(returnValue, c.ReturnType, nodeContext);
             dataContext.Set(c.TargetPath, convertedResult, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
         }
         catch (CompilationErrorException ex)
@@ -170,13 +177,13 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext);
     }
 
-    private static Script<object> GetOrCompileScript(string scriptCode, INodeContext nodeContext)
+    private static ScriptRunner<object> GetOrCompileScript(string scriptCode, INodeContext nodeContext)
     {
         // GetOrAdd may build the Lazy more than once under contention, but only the
         // stored one is ever resolved, and Lazy(ExecutionAndPublication) guarantees its
         // factory — the actual compilation — runs exactly once. Keyed by the full
         // template text so identical scripts across machines/pipelines share one compile.
-        var lazy = CompiledScripts.GetOrAdd(scriptCode, code => new Lazy<Script<object>>(() =>
+        var lazy = CompiledScripts.GetOrAdd(scriptCode, code => new Lazy<ScriptRunner<object>>(() =>
         {
             nodeContext.Debug("Compiling C# script");
 
@@ -206,7 +213,20 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
                 throw new CompilationErrorException("Compilation failed", compilation);
             }
 
-            return script;
+            // Cache the DELEGATE, not the Script (AB#5448). A Script<T> keeps its whole
+            // Roslyn Compilation graph alive — syntax trees, symbol tables and a
+            // MetadataReference per referenced assembly — and that state lives largely in
+            // unmanaged/mmapped metadata buffers. Measured cost: ~61 MB of resident memory
+            // per DISTINCT cached script, so the 43 ExecuteCSharp nodes of the accounting
+            // blueprint pinned ~2.8 GB against a 3Gi container limit and drove node-wide
+            // OOMs on prod-1. CreateDelegate() hands back the emitted assembly plus its
+            // entry point; dropping the Script reference here lets the compilation graph be
+            // collected and takes the same 43 scripts down to ~700 MB, where it plateaus.
+            // Cache semantics are unchanged: still keyed by the value-independent template,
+            // still compiled exactly once, same CPU profile. Note that this memory is
+            // invisible to `dotnet.assembly.count` — MetadataReferences are unmanaged
+            // metadata readers, not loaded assemblies — which is why it went unnoticed.
+            return script.CreateDelegate();
         }, LazyThreadSafetyMode.ExecutionAndPublication));
 
         return lazy.Value;
