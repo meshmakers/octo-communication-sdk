@@ -1,3 +1,4 @@
+using System.Globalization;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -151,13 +152,13 @@ public class SwitchNode(NodeDelegate next) : ChildNodeBase
     {
         return valueType switch
         {
-            AttributeValueTypesDto.Boolean => Convert.ToBoolean(value),
-            AttributeValueTypesDto.Int => Convert.ToInt32(value),
-            AttributeValueTypesDto.Int64 => Convert.ToInt64(value),
-            AttributeValueTypesDto.Double => Convert.ToDouble(value),
-            AttributeValueTypesDto.String => value.ToString(),
-            AttributeValueTypesDto.DateTime => Convert.ToDateTime(value),
-            AttributeValueTypesDto.Enum => Convert.ToInt32(value),
+            AttributeValueTypesDto.Boolean => Convert.ToBoolean(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Int => Convert.ToInt32(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Int64 => Convert.ToInt64(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Double => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.String => Convert.ToString(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.DateTime => Convert.ToDateTime(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Enum => Convert.ToInt32(value, CultureInfo.InvariantCulture),
             _ => throw PipelineExecutionException.DefinedValueTypeNotSupported(nodeContext.NodePath, valueType,
                 value)
         };

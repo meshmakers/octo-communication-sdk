@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using FakeItEasy;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
@@ -568,5 +569,51 @@ public class IfNodeTests(NodeFixture fixture)
 
         A.CallTo(() => testCounter.GetNext()).MustNotHaveHappened();
         A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_DoubleThreshold_UnderCommaDecimalCulture_Parses()
+    {
+        // AB#5466: the comparison value of a pipeline definition is machine-readable
+        // configuration, so it must be converted with the invariant culture. Before the fix
+        // this threw FormatException("The input string '0.02' was not in a correct format")
+        // on any host whose culture uses the comma as the decimal separator, which took down
+        // every iteration of the document analysis pipeline on an Austrian developer machine.
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("de-AT");
+        try
+        {
+            IfNodeConfiguration ifNodeConfiguration = new()
+            {
+                Path = "$.DoubleValue",
+                Value = "0.02",
+                ValueType = AttributeValueTypesDto.Double,
+                Operator = CompareOperator.GreaterThan,
+                Transformations = new List<NodeConfiguration>
+                {
+                    new TestNodeConfiguration
+                    {
+                        TargetPath = "$.Result"
+                    }
+                }
+            };
+
+            var testCounter = A.Fake<ITestCounter>();
+            fixture.Services.AddSingleton(testCounter);
+            A.CallTo(() => testCounter.GetNext()).Returns(1);
+
+            var (dataContext, nodeContext) = PrepareTest(ifNodeConfiguration);
+            var fn = A.Fake<NodeDelegate>();
+            var testee = new IfNode(fn);
+
+            await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+            A.CallTo(() => testCounter.GetNext()).MustHaveHappenedOnceExactly();
+            Assert.Equal(1, dataContext.Get<int>("$.Result"));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
     }
 }

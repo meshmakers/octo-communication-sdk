@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using FakeItEasy;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
@@ -499,5 +500,51 @@ public class SwitchNodeTests(NodeFixture fixture)
         A.CallTo(() => fn.Invoke(dataContext, nodeContext)).MustHaveHappenedOnceExactly();
         Assert.Equal(100, dataContext.Get<int>("$.Result1"));
         Assert.Equal(200, dataContext.Get<int>("$.Result2"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_DoubleCase_UnderCommaDecimalCulture_Matches()
+    {
+        // AB#5466: same defect as in IfNode. A case value written as "3.14" must be read
+        // with the invariant culture, otherwise it fails to convert on a comma-decimal host
+        // and the case silently never matches.
+        var previousCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("de-AT");
+        try
+        {
+            var switchNodeConfiguration = new SwitchNodeConfiguration
+            {
+                Path = "$.DoubleValue",
+                ValueType = AttributeValueTypesDto.Double,
+                Cases = new List<SwitchCase>
+                {
+                    new()
+                    {
+                        Value = "3.14",
+                        Transformations = new List<NodeConfiguration>
+                        {
+                            new TestNodeConfiguration { TargetPath = "$.Result1" }
+                        }
+                    }
+                }
+            };
+
+            var testCounter = A.Fake<ITestCounter>();
+            fixture.Services.AddSingleton(testCounter);
+            A.CallTo(() => testCounter.GetNext()).Returns(100);
+
+            var (dataContext, nodeContext) = PrepareTest(switchNodeConfiguration);
+            var fn = A.Fake<NodeDelegate>();
+            var testee = new SwitchNode(fn);
+
+            await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+            A.CallTo(() => testCounter.GetNext()).MustHaveHappenedOnceExactly();
+            Assert.Equal(100, dataContext.Get<int>("$.Result1"));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+        }
     }
 }
