@@ -385,6 +385,31 @@ made version-tolerant (check `arg is JsonElement` and fall back to the typed arr
 adapter images are still deployed. Null/absent arguments still coalesce to the type's default
 (`null` for arrays).
 
+#### A JSON type that does not match the declared `dataType` (AB#5463)
+
+Argument resolution runs **before** the script, so a deserializer throw there is invisible to any
+`try`/`catch` inside the script and — with no `continueOnError` on `ExecuteCSharp@1` or the
+per-item `ForEach@1` — kills the whole iteration. The production case was an LLM emitting
+`documentNumber` as an unquoted JSON number for an argument declared `String`: STJ has no
+number→string coercion, so `Get<string>` threw.
+
+`ResolveTypedFromPath` therefore tries the strict typed read first (fast path unchanged) and only
+on `JsonException`/`FormatException` falls back to `ResolveLeniently`: number→`String` becomes the
+raw token text, `"true"`→`Boolean` parses, numeric strings parse **invariant**, and the array kinds
+convert element-wise. Every fallback conversion logs a **warning** naming the argument and both
+types. A value that genuinely cannot be converted (an object where a `Double` is declared) still
+throws, now as a `PipelineExecutionException` that names argument, path, declared type and found
+kind — a silent null would be worse than the throw.
+
+🔴 Two things are deliberate. The coercion sits in the **node**, not in `SystemTextJsonOptions.
+Default` — that bundle is shared by the whole engine and every adapter, and a string converter
+there would change behaviour far outside this node. And **`DateTime` stays strict**: STJ already
+reads every ISO 8601 string, and whatever it rejects (`"01.02.2026"`, a bare Unix number) is
+ambiguous; `DateTime.Parse` under the invariant culture would guess a month/day order rather than
+fail. Note that numeric strings into `Double`/`Int` already parsed before AB#5463 —
+`SystemTextJsonOptions.Default` inherits `NumberHandling.AllowReadingFromString` from the CK
+engine's `RtSystemTextJsonSerializer.CreateDefault()`, and the parity converters honour it.
+
 ## Development Notes
 
 - Target framework `net10.0` only; `netstandard2.0` was dropped platform-wide in Phase 3.
