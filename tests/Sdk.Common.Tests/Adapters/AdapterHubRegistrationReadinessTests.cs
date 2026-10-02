@@ -201,13 +201,40 @@ public class AdapterHubRegistrationReadinessTests
     }
 
     /// <summary>
-    ///     AB#5473: the check runs on its own timer, so it also samples the hub client while a tenant
-    ///     update has it stopped. A check that fails must not end the service - an exception that
-    ///     escapes a background service stops the host, which restarted the adapter on roughly every
-    ///     sixth tenant update.
+    ///     AB#5473: a connection state that cannot be read counts as "not alive". It starts the
+    ///     outage clock like any other lost registration, restarts the adapter only after the
+    ///     timeout, and is forgotten once the state reads as alive again.
     /// </summary>
     [Fact]
-    public async Task Recovery_WhenTheCheckThrowsWhileTheHubClientIsStopped_KeepsRunning()
+    public void Recovery_WhenTheConnectionStateCannotBeRead_CountsAsOutage()
+    {
+        A.CallTo(() => _hubClient.IsAlive)
+            .Throws(new ObjectDisposedException("HubConnection", "The SignalR client is stopping."));
+        var service = CreateRecoveryService(A.Fake<IHostApplicationLifetime>(),
+            o => o.HubRegistrationRecoveryTimeout = TimeSpan.FromMinutes(15));
+
+        var start = new DateTime(2026, 10, 2, 6, 0, 0, DateTimeKind.Utc);
+        _registrationState.MarkRegistered();
+
+        // The registration is still marked active, only the state read fails.
+        Assert.False(service.Evaluate(start));
+        Assert.Equal(start, service.UnregisteredSinceUtc);
+        Assert.False(service.Evaluate(start.AddMinutes(14)));
+        Assert.True(service.Evaluate(start.AddMinutes(15)));
+
+        A.CallTo(() => _hubClient.IsAlive).Returns(true);
+        Assert.False(service.Evaluate(start.AddMinutes(16)));
+        Assert.Null(service.UnregisteredSinceUtc);
+    }
+
+    /// <summary>
+    ///     AB#5473: the check runs on its own timer, so it also samples the hub client while a tenant
+    ///     update has it stopped. A state read that throws must not end the service - an exception
+    ///     that escapes a background service stops the host, which restarted the adapter on roughly
+    ///     every sixth tenant update.
+    /// </summary>
+    [Fact]
+    public async Task Recovery_WhenTheConnectionStateCannotBeRead_KeepsRunning()
     {
         var lifetime = A.Fake<IHostApplicationLifetime>();
         A.CallTo(() => _hubClient.IsAlive)
@@ -227,9 +254,10 @@ public class AdapterHubRegistrationReadinessTests
                 await Task.Delay(10, TestContext.Current.CancellationToken);
             }
 
-            // Several failing checks later the service is still sampling.
+            // Several failing reads later the service is still sampling, with the outage clock running.
             Assert.True(HubClientIsAliveReads() >= 3);
             Assert.False(service.ExecuteTask!.IsCompleted);
+            Assert.NotNull(service.UnregisteredSinceUtc);
         }
         finally
         {
@@ -240,11 +268,12 @@ public class AdapterHubRegistrationReadinessTests
     }
 
     /// <summary>
-    ///     The other half of AB#5473: surviving a failing check must not disarm the watchdog. An
-    ///     adapter that stays unregistered beyond the timeout is still restarted.
+    ///     The other half of AB#5473: surviving a failing read must not disarm the watchdog. A state
+    ///     that stays unreadable beyond the timeout restarts the adapter, even while the registration
+    ///     is still marked active.
     /// </summary>
     [Fact]
-    public async Task Recovery_WhenTheCheckThrows_StillStopsTheApplicationOnSustainedOutage()
+    public async Task Recovery_WhenTheConnectionStateStaysUnreadable_StopsTheApplicationAfterTimeout()
     {
         var lifetime = A.Fake<IHostApplicationLifetime>();
         A.CallTo(() => _hubClient.IsAlive)
@@ -253,7 +282,6 @@ public class AdapterHubRegistrationReadinessTests
         service.CheckInterval = TimeSpan.FromMilliseconds(10);
 
         _registrationState.MarkRegistered();
-        _registrationState.MarkNotRegistered("adapter execution service stopped");
 
         await service.StartAsync(CancellationToken.None);
         try
