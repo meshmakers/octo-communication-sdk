@@ -329,6 +329,17 @@ recovery service rather than a re-pointed liveness probe.
 enabled or a controller that was never deployed — restarting that in a loop repairs nothing and hides
 the cause. That guard is what makes the automatic restart safe to default to on.
 
+🔴 **`AdapterHubRecoveryService` stops the host by decision only, never by a failing check**
+(AB#5473). An exception that escapes a `BackgroundService` stops the host too, so the service that
+exists to restart an adapter after 15 minutes would restart it on the tick a check throws. Its timer
+is independent of everything else, which means it also samples the hub client while a tenant update
+(`PreUpdateTenantAsync`: stop, wait 5 s, start) has it stopped. `ISignalRClient.IsAlive` used to throw
+`ObjectDisposedException` for that whole window, and roughly every sixth cache clear, CK model import
+or blueprint install ended the adapter process. Two things hold now: `IsAlive` is a state query that
+returns `false` for a stopped client (**octo-sdk**), and a check that throws is logged at Error and
+repeated on the next tick. The outage clock keeps running across a deliberate stop on purpose — a
+restart that never comes back from `PreUpdateTenantAsync` is exactly what the timeout is for.
+
 ### Registration retry on the (re)connect path
 
 `AdapterExecutionService.RegisterAtHubAsync` retries the register invoke `RegistrationMaxAttempts`
@@ -352,7 +363,8 @@ log away within the hour, which is why this was missed twice (AB#5409 item 3, a 
 Tests: `Sdk.Common.Tests/Adapters/AdapterExecutionServiceTests` (a reconnect whose first registration
 throws ends registered; all attempts failing marks not-registered and rethrows) and
 `Sdk.Common.Tests/Adapters/AdapterHubRegistrationReadinessTests` (readiness matrix, recovery timing,
-never-registered guard).
+never-registered guard, and a check that throws while the hub client is stopped: the service keeps
+sampling and still restarts on a sustained outage).
 
 ## Node inventory (`src/Sdk.Pipeline/EtlDataPipeline/Nodes/`)
 

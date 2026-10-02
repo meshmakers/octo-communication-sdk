@@ -82,7 +82,23 @@ public class AdapterHubRecoveryService(
                 break;
             }
 
-            if (Evaluate(DateTime.UtcNow))
+            bool restartRequired;
+            try
+            {
+                restartRequired = Evaluate(DateTime.UtcNow);
+            }
+            catch (Exception e)
+            {
+                // This service stops the host by decision only. An exception escaping
+                // ExecuteAsync stops the host as well, so a check that fails once would restart
+                // the adapter on the spot instead of after the timeout (AB#5473: the hub client
+                // threw while it was stopped for a tenant update). Sample again on the next tick.
+                Logger.Error(e, "Adapter hub registration check failed, checking again in {Interval}",
+                    CheckInterval);
+                continue;
+            }
+
+            if (restartRequired)
             {
                 // Error, not Warn: the adapter log carries WARN-level audit noise by the dozen per
                 // pipeline run (AB#5409 item 3), and this line must still be findable afterwards.

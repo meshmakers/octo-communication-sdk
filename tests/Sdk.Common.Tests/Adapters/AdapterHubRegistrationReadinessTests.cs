@@ -200,6 +200,88 @@ public class AdapterHubRegistrationReadinessTests
         A.CallTo(() => lifetime.StopApplication()).MustHaveHappened();
     }
 
+    /// <summary>
+    ///     AB#5473: the check runs on its own timer, so it also samples the hub client while a tenant
+    ///     update has it stopped. A check that fails must not end the service - an exception that
+    ///     escapes a background service stops the host, which restarted the adapter on roughly every
+    ///     sixth tenant update.
+    /// </summary>
+    [Fact]
+    public async Task Recovery_WhenTheCheckThrowsWhileTheHubClientIsStopped_KeepsRunning()
+    {
+        var lifetime = A.Fake<IHostApplicationLifetime>();
+        A.CallTo(() => _hubClient.IsAlive)
+            .Throws(new ObjectDisposedException("HubConnection", "The SignalR client is stopping."));
+        var service = CreateRecoveryService(lifetime,
+            o => o.HubRegistrationRecoveryTimeout = TimeSpan.FromMinutes(15));
+        service.CheckInterval = TimeSpan.FromMilliseconds(10);
+
+        _registrationState.MarkRegistered();
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline && HubClientIsAliveReads() < 3)
+            {
+                await Task.Delay(10, TestContext.Current.CancellationToken);
+            }
+
+            // Several failing checks later the service is still sampling.
+            Assert.True(HubClientIsAliveReads() >= 3);
+            Assert.False(service.ExecuteTask!.IsCompleted);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+
+        A.CallTo(() => lifetime.StopApplication()).MustNotHaveHappened();
+    }
+
+    /// <summary>
+    ///     The other half of AB#5473: surviving a failing check must not disarm the watchdog. An
+    ///     adapter that stays unregistered beyond the timeout is still restarted.
+    /// </summary>
+    [Fact]
+    public async Task Recovery_WhenTheCheckThrows_StillStopsTheApplicationOnSustainedOutage()
+    {
+        var lifetime = A.Fake<IHostApplicationLifetime>();
+        A.CallTo(() => _hubClient.IsAlive)
+            .Throws(new ObjectDisposedException("HubConnection", "The SignalR client is stopping."));
+        var service = CreateRecoveryService(lifetime, o => o.HubRegistrationRecoveryTimeout = TimeSpan.Zero);
+        service.CheckInterval = TimeSpan.FromMilliseconds(10);
+
+        _registrationState.MarkRegistered();
+        _registrationState.MarkNotRegistered("adapter execution service stopped");
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (Fake.GetCalls(lifetime).Any(c => c.Method.Name == nameof(IHostApplicationLifetime.StopApplication)))
+                {
+                    break;
+                }
+
+                await Task.Delay(10, TestContext.Current.CancellationToken);
+            }
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+
+        A.CallTo(() => lifetime.StopApplication()).MustHaveHappened();
+    }
+
+    private int HubClientIsAliveReads()
+    {
+        return Fake.GetCalls(_hubClient).Count(c => c.Method.Name == "get_IsAlive");
+    }
+
     [Fact]
     public async Task Recovery_WhenDisabledByConfiguration_NeverStopsTheApplication()
     {
