@@ -105,9 +105,10 @@ public class AdapterHubRecoveryService(
     internal bool Evaluate(DateTime utcNow)
     {
         var options = adapterOptions.Value;
+        var isAlive = IsHubClientAlive();
 
         // "Reachable by the controller" needs both: a live connection AND a registration on it.
-        if (registrationState.IsRegistered && adapterHubClient.IsAlive)
+        if (registrationState.IsRegistered && isAlive)
         {
             UnregisteredSinceUtc = null;
             return false;
@@ -126,10 +127,35 @@ public class AdapterHubRecoveryService(
             Logger.Warn(
                 "Adapter lost its registration at the communication hub (connection alive: {IsAlive}). "
                 + "Restarting the adapter if it does not recover within {Timeout}",
-                adapterHubClient.IsAlive, options.HubRegistrationRecoveryTimeout);
+                isAlive, options.HubRegistrationRecoveryTimeout);
             return false;
         }
 
         return utcNow - UnregisteredSinceUtc.Value >= options.HubRegistrationRecoveryTimeout;
+    }
+
+    /// <summary>
+    ///     Reads the connection state without ever throwing: a state that cannot be read counts as
+    ///     "not alive".
+    /// </summary>
+    /// <remarks>
+    ///     This service stops the host by decision only. An exception escaping
+    ///     <see cref="ExecuteAsync" /> stops the host as well, so a read that fails once would
+    ///     restart the adapter on the spot instead of after the timeout (AB#5473: the hub client
+    ///     threw while it was stopped for a tenant update). Counting the sample as an outage keeps
+    ///     the watchdog armed — skipping it would let a read that fails for good hide an
+    ///     unreachable adapter forever.
+    /// </remarks>
+    private bool IsHubClientAlive()
+    {
+        try
+        {
+            return adapterHubClient.IsAlive;
+        }
+        catch (Exception e)
+        {
+            Logger.Error(e, "Reading the adapter hub connection state failed, treating the connection as not alive");
+            return false;
+        }
     }
 }
