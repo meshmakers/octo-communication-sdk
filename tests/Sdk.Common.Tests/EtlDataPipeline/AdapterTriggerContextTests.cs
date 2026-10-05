@@ -3,6 +3,8 @@ using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Loads;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -225,5 +227,98 @@ public class AdapterTriggerContextTests
                 "Pipeline failed",
                 null))
             .MustHaveHappenedOnceExactly();
+
+        // AB#5493 moved the start report ahead of context creation; a run that fails in the
+        // pipeline itself must still produce exactly one start and one end.
+        A.CallTo(() => _executionReporter.ReportExecutionStartAsync(
+                _pipelineRtEntityId, executionId, A<PipelineTriggerType>._, A<DateTime>._, A<string?>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task StartExecutePipelineAsync_WhenContextCreationFails_ReportsStartAndFailedEndThenRethrows()
+    {
+        // AB#5493: on prod-1 the finAPI trigger failed on every tick for four days inside
+        // CreateEtlContext ("System tenant database does not exist") — before the start was
+        // reported, so the controller never recorded an execution and the failure metric stayed
+        // at zero. The failure must now reach the controller as a Failed execution.
+        A.CallTo(() => _contextCreatorService.CreateEtlContext<IEtlContext>(
+                A<PipelineRegistration>._, A<ExecutePipelineOptions>._, A<Guid>._))
+            .ThrowsAsync(new InvalidOperationException("System tenant database does not exist"));
+
+        Guid? startedExecutionId = null;
+        A.CallTo(() => _executionReporter.ReportExecutionStartAsync(
+                A<RtEntityId>._, A<Guid>._, A<PipelineTriggerType>._, A<DateTime>._, A<string?>._))
+            .Invokes((RtEntityId _, Guid id, PipelineTriggerType _, DateTime _, string? _) => startedExecutionId = id)
+            .Returns(Task.CompletedTask);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _sut.StartExecutePipelineAsync(new ExecutePipelineOptions(DateTime.UtcNow)));
+        Assert.Equal("System tenant database does not exist", ex.Message);
+
+        // Start and end are reported exactly once each, under the same execution id, with the
+        // exception message as the error.
+        Assert.NotNull(startedExecutionId);
+        A.CallTo(() => _executionReporter.ReportExecutionStartAsync(
+                _pipelineRtEntityId, startedExecutionId!.Value, A<PipelineTriggerType>._, A<DateTime>._, A<string?>._))
+            .MustHaveHappenedOnceExactly();
+        A.CallTo(() => _executionReporter.ReportExecutionEndAsync(
+                startedExecutionId.Value,
+                PipelineExecutionStatus.Failed,
+                A<DateTime>._,
+                A<int>._,
+                "System tenant database does not exist",
+                null))
+            .MustHaveHappenedOnceExactly();
+
+        // Nothing ran and nothing dangles: no orchestrator call, no execution left registered.
+        A.CallTo(() => _etlDataOrchestrator.ExecutePipelineAsync(
+                A<NodeDefinitionRoot>._, A<IEtlContext>._, A<IPipelineDebugger?>._, A<object?>._,
+                A<IPipelineExecutionMode?>._))
+            .MustNotHaveHappened();
+        Assert.Null(_pipelineRegistration.GetExecutionStartTime(startedExecutionId.Value));
+    }
+
+    [Fact]
+    public async Task StartExecutePipelineAsync_WhenContextCreationFails_WithoutReporter_StillRethrows()
+    {
+        // A host without a reporter has nowhere to report to; the failure still surfaces to the
+        // trigger exactly as before.
+        A.CallTo(() => _contextCreatorService.CreateEtlContext<IEtlContext>(
+                A<PipelineRegistration>._, A<ExecutePipelineOptions>._, A<Guid>._))
+            .ThrowsAsync(new InvalidOperationException("System tenant database does not exist"));
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(_pipelineRegistryService);
+        services.AddSingleton(_etlDataOrchestrator);
+        services.AddSingleton(_contextCreatorService);
+        var sut = new AdapterTriggerContext(services.BuildServiceProvider(), TenantId,
+            OctoObjectId.GenerateNewId(), _pipelineRtEntityId, A.Fake<INodeContext>(), A.Fake<IGlobalConfiguration>());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => sut.StartExecutePipelineAsync(new ExecutePipelineOptions(DateTime.UtcNow)));
+    }
+
+    [Fact]
+    public async Task StartExecutePipelineAsync_ReportsTheStartBeforeTheContextIsCreated()
+    {
+        // AB#5493: the order is the fix — a start reported after context creation is a start
+        // never reported when context creation throws.
+        var etlContext = A.Fake<IEtlContext>();
+        A.CallTo(() => etlContext.Properties).Returns(new Dictionary<string, object?>());
+        A.CallTo(() => _contextCreatorService.CreateEtlContext<IEtlContext>(
+                A<PipelineRegistration>._, A<ExecutePipelineOptions>._, A<Guid>._))
+            .Returns(Task.FromResult(etlContext));
+
+        var executionId = await _sut.StartExecutePipelineAsync(new ExecutePipelineOptions(DateTime.UtcNow));
+        await _sut.EndExecutePipelineAsync(executionId);
+
+        A.CallTo(() => _executionReporter.ReportExecutionStartAsync(
+                _pipelineRtEntityId, executionId, A<PipelineTriggerType>._, A<DateTime>._, A<string?>._))
+            .MustHaveHappenedOnceExactly()
+            .Then(A.CallTo(() => _contextCreatorService.CreateEtlContext<IEtlContext>(
+                    _pipelineRegistration, A<ExecutePipelineOptions>._, executionId))
+                .MustHaveHappenedOnceExactly());
     }
 }

@@ -38,21 +38,14 @@ internal class AdapterTriggerContext(
         var pipelineExecutionId = Guid.NewGuid();
         _logger.LogDebug("[{TenantId}] Running pipeline for pipeline {PipelineRtEntityId} as run with execution id {PipelineExecutionId}", TenantId,
             PipelineRtEntityId, pipelineExecutionId);
-        var etlContext = await _contextCreatorService.CreateEtlContext<IEtlContext>(pipelineRegistration, executePipelineOptions, pipelineExecutionId);
-
-        IPipelineDebugger? debugger = null;
-        if (pipelineRegistration.IsDebuggingEnabled)
-        {
-            _logger.LogWarning("[{TenantId}] Debugging enabled for pipeline {PipelineRtEntityId} with execution id {PipelineExecutionId}", TenantId,
-                PipelineRtEntityId, pipelineExecutionId);
-
-            debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
-            debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
-        }
 
         DateTime startedDateTime = DateTime.UtcNow;
 
-        // Report execution start to communication controller
+        // Report execution start to communication controller — BEFORE the execution context exists
+        // (AB#5493). Everything the start report needs is known here, and a failure in context
+        // creation (a tenant database that is gone, a cache that does not load) used to throw past
+        // the reporter: the controller never saw an execution, PipelineStatistics froze and the
+        // failure metric stayed at zero while the trigger failed on every tick for days.
         if (_executionReporter != null)
         {
             await _executionReporter.ReportExecutionStartAsync(
@@ -63,21 +56,46 @@ internal class AdapterTriggerContext(
                 executePipelineOptions.InputData);
         }
 
-        IPipelineExecutionMode? executionMode = executePipelineOptions.IsDryRun
-            ? new DefaultPipelineExecutionMode { IsDryRun = true }
-            : null;
-
-        if (executePipelineOptions.IsDryRun && debugger == null)
+        IEtlContext etlContext;
+        IPipelineDebugger? debugger = null;
+        IPipelineExecutionMode? executionMode;
+        try
         {
-            // Dry-run intents are written to the debug stream; without a debugger
-            // the agent can't inspect them. Force-enable per-execution so the
-            // operator gets the would-have-written record. Real-effect runs are
-            // unchanged — debugger stays opt-in via IsDebuggingEnabled.
-            debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
-            debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
-            _logger.LogInformation(
-                "[{TenantId}] Pipeline {PipelineRtEntityId} dry-run execution {PipelineExecutionId}: forced debugger on so intent payloads are captured",
-                TenantId, PipelineRtEntityId, pipelineExecutionId);
+            etlContext = await _contextCreatorService.CreateEtlContext<IEtlContext>(pipelineRegistration, executePipelineOptions, pipelineExecutionId);
+
+            if (pipelineRegistration.IsDebuggingEnabled)
+            {
+                _logger.LogWarning("[{TenantId}] Debugging enabled for pipeline {PipelineRtEntityId} with execution id {PipelineExecutionId}", TenantId,
+                    PipelineRtEntityId, pipelineExecutionId);
+
+                debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
+                debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
+            }
+
+            executionMode = executePipelineOptions.IsDryRun
+                ? new DefaultPipelineExecutionMode { IsDryRun = true }
+                : null;
+
+            if (executePipelineOptions.IsDryRun && debugger == null)
+            {
+                // Dry-run intents are written to the debug stream; without a debugger
+                // the agent can't inspect them. Force-enable per-execution so the
+                // operator gets the would-have-written record. Real-effect runs are
+                // unchanged — debugger stays opt-in via IsDebuggingEnabled.
+                debugger = serviceProvider.GetRequiredService<IPipelineDebugger>();
+                debugger.RegisterPipelineRtEntityId(PipelineRtEntityId, pipelineExecutionId);
+                _logger.LogInformation(
+                    "[{TenantId}] Pipeline {PipelineRtEntityId} dry-run execution {PipelineExecutionId}: forced debugger on so intent payloads are captured",
+                    TenantId, PipelineRtEntityId, pipelineExecutionId);
+            }
+        }
+        catch (Exception ex)
+        {
+            // The start is already on record, so this execution has to be closed as Failed here:
+            // no task is registered yet, so EndExecutePipelineAsync never runs for this id and the
+            // end report cannot be doubled. Rethrown so the trigger sees the failure as before.
+            await ReportExecutionFailedBeforeRunAsync(pipelineExecutionId, startedDateTime, ex);
+            throw;
         }
 
         Task<object?> task = Task.Run(async () =>
@@ -92,6 +110,33 @@ internal class AdapterTriggerContext(
         execution.Properties["EtlContext"] = etlContext;
 
         return pipelineExecutionId;
+    }
+
+    /// <summary>
+    /// Closes an execution whose start was reported but which never reached the orchestrator
+    /// (AB#5493): logs the failure and reports it as <see cref="PipelineExecutionStatus.Failed" />
+    /// under the same execution id, so the controller's statistics and the failure metric see it.
+    /// </summary>
+    private async Task ReportExecutionFailedBeforeRunAsync(Guid pipelineExecutionId, DateTime startedDateTime,
+        Exception ex)
+    {
+        _logger.LogError(ex,
+            "[{TenantId}] Pipeline {PipelineRtEntityId} execution {PipelineExecutionId} failed before the pipeline ran: the execution context could not be created",
+            TenantId, PipelineRtEntityId, pipelineExecutionId);
+
+        if (_executionReporter == null)
+        {
+            return;
+        }
+
+        var completedAt = DateTime.UtcNow;
+        var durationMs = (int)(completedAt - startedDateTime).TotalMilliseconds;
+        await _executionReporter.ReportExecutionEndAsync(
+            pipelineExecutionId,
+            PipelineExecutionStatus.Failed,
+            completedAt,
+            durationMs,
+            ex.Message);
     }
 
     /// <inheritdoc />
