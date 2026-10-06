@@ -90,7 +90,7 @@ public static class ConfigurationSecrets
         {
             nodeContext.Warning(
                 "CK type of configuration '{0}' ({1}) could not be resolved; masking the known credential attributes",
-                configurationName, ckTypeId?.ToString() ?? "unknown");
+                configurationName, Describe(ckTypeId));
             names = KnownCredentialAttributeNames;
         }
 
@@ -101,6 +101,19 @@ public static class ConfigurationSecrets
 
         var set = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
         return Walk(nodeContext, set, configuration, depth: 0);
+    }
+
+    private static string Describe(RtCkId<CkTypeId>? ckTypeId)
+    {
+        try
+        {
+            return ckTypeId?.ToString() ?? "unknown";
+        }
+        catch (Exception)
+        {
+            // An id without a model or element (a half-initialised value) - the warning must not fail.
+            return "unknown";
+        }
     }
 
     private static int Walk(INodeContext nodeContext, HashSet<string> names, JsonNode node, int depth)
