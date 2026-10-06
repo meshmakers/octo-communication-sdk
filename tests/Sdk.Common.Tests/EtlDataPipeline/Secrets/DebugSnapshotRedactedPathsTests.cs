@@ -62,6 +62,25 @@ public class DebugSnapshotRedactedPathsTests
     }
 
     [Fact]
+    public void GetDebugInformation_CarriesRedactedPathsOnTheTransportDto()
+    {
+        var (debugger, registry) = NewDebugger();
+        registry.Register(Secret);
+
+        debugger.LogInput("0:a", new NodePath("a"), null, 0,
+            JsonNode.Parse($$$"""{"config":{"clientSecret":"{{{Secret}}}"}}"""));
+        debugger.LogOutput("0:a", new NodePath("a"), null, 0,
+            JsonNode.Parse($$$"""{"smtp":{"password":"{{{Secret}}}"}}"""));
+        debugger.LogOutput("1:b", new NodePath("b"), null, 1, JsonNode.Parse("""{"port":25}"""));
+
+        var debugPoints = debugger.GetDebugInformation().DebugPoints.ToDictionary(p => p.NodeId);
+
+        Assert.Equal(["$.input.config.clientSecret", "$.output.smtp.password"],
+            debugPoints["0:a"].RedactedPaths);
+        Assert.Null(debugPoints["1:b"].RedactedPaths);
+    }
+
+    [Fact]
     public void ArrayItemsAndNonIdentifierKeys_UseBracketNotation()
     {
         var (debugger, registry) = NewDebugger();

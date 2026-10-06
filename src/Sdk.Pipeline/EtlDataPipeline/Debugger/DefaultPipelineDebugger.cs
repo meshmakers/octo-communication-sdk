@@ -441,6 +441,12 @@ public class DefaultPipelineDebugger : IPipelineDebugger
             }
         }
 
+        // Q12 (AB#5544): the transport DTO carries the masked paths to the controller.
+        foreach (var (id, debugPoint) in _debugPoints)
+        {
+            debugPoint.RedactedPaths = GetRedactedPaths(id);
+        }
+
         var debuggers = new DebugInformationRoot
         {
             PipelineRtEntityId = PipelineRtEntityId ?? throw new Exception("PipelineRtEntityId is not set"),
