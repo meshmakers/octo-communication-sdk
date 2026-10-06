@@ -39,4 +39,13 @@ public interface IGlobalConfiguration
     /// <param name="ckTypeId">The semantic versioned full name of the CkTypeId to search for</param>
     /// <returns>Raw JSON string values of all matching configurations</returns>
     IEnumerable<string> GetAllRawJsonByCkTypeId(string ckTypeId);
+
+    /// <summary>
+    /// CK type of the configuration entity named <paramref name="configurationName" />, or <c>null</c>
+    /// when it is not defined or the implementation does not know it (AB#5538: used to find its Secret
+    /// attributes). Default interface member, so custom implementations keep compiling.
+    /// </summary>
+    /// <param name="configurationName">Name of the configuration</param>
+    Meshmakers.Octo.ConstructionKit.Contracts.RtCkId<Meshmakers.Octo.ConstructionKit.Contracts.CkTypeId>?
+        GetConfigurationTypeId(string configurationName) => null;
 }

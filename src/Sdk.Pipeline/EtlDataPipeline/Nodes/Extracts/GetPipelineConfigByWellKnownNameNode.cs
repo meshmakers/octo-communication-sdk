@@ -29,7 +29,10 @@ public record GetPipelineConfigByWellKnownNameNodeConfiguration : TargetPathNode
 /// in the data context at the configured target path.
 /// </summary>
 [NodeConfiguration(typeof(GetPipelineConfigByWellKnownNameNodeConfiguration))]
-public class GetPipelineConfigByWellKnownNameNode(NodeDelegate next, IEtlContext etlContext) : IPipelineNode
+public class GetPipelineConfigByWellKnownNameNode(
+    NodeDelegate next,
+    IEtlContext etlContext,
+    IConfigurationSecretAttributeResolver? secretAttributeResolver = null) : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -47,6 +50,10 @@ public class GetPipelineConfigByWellKnownNameNode(NodeDelegate next, IEtlContext
 
         var rawJson = etlContext.GlobalConfiguration.GetRawJson(wellKnownName);
         var pipelineConfigJson = JsonNode.Parse(rawJson);
+        // AB#5538: the controller ships Secret values revealed; register them before they enter the
+        // data context, so snapshots, logs and persisted results mask them.
+        ConfigurationSecrets.Register(nodeContext, secretAttributeResolver, etlContext.TenantId,
+            etlContext.GlobalConfiguration.GetConfigurationTypeId(wellKnownName), pipelineConfigJson, wellKnownName);
 
         dataContext.Set<JsonNode?>(c.TargetPath, pipelineConfigJson,
             c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);

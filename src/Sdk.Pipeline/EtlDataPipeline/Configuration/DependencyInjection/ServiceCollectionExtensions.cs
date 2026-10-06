@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Meshmakers.Common.Shared.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
@@ -108,6 +109,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IBufferScheduler, BufferScheduler>();
 
         services.AddSingleton<IContextCreatorService, DefaultContextCreatorService>();
+
+        // AB#5538: which configuration attributes are Secret; adapters with a CK model replace it.
+        services.TryAddSingleton<IConfigurationSecretAttributeResolver, NoConfigurationSecretAttributeResolver>();
 
         // EtlContext
         services.AddScoped(typeof(IEtlContextAccessor<>), typeof(EtlContextAccessor<>));

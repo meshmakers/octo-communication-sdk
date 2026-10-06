@@ -34,3 +34,12 @@ things in this repo build on that:
 configuration must call `nodeContext.RegisterSecret(value)`.** `RevealSecret@1` (mesh adapter) is the
 canonical writer. A value written but not registered is visible in the Studio debug panel. Tests:
 `Sdk.Common.Tests/EtlDataPipeline/Secrets/*`.
+- **Configurations copied into the data context** (AB#5538 review): the controller ships configuration
+  entities with Secret values revealed as plain strings. `GetPipelineConfigByWellKnownName@1` (and the
+  mesh adapter's `GetPipelineConfigByCkTypeId@1`) call `ConfigurationSecrets.Register` before writing:
+  the CK type (`IGlobalConfiguration.GetConfigurationTypeId`, default member) is resolved to its Secret
+  attribute names by `IConfigurationSecretAttributeResolver` (default `NoConfigurationSecretAttributeResolver`
+  → `null`; the mesh adapter uses the CK cache), and every string value under such a property name, at
+  any depth, is registered. An unresolvable type falls back to
+  `ConfigurationSecrets.KnownCredentialAttributeNames` (System.Communication 3.40 credential names) and
+  logs a warning without values. Tests: `ConfigurationSecretsTests`.
