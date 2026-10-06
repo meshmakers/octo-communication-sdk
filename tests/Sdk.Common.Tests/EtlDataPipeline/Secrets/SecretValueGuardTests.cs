@@ -42,6 +42,12 @@ public class SecretValueGuardTests(ServiceCollectionFixture fixture) : IClassFix
     [InlineData("""{"isSet":"yes"}""", false)]
     [InlineData("""{"isSet":true,"other":1}""", false)]
     [InlineData("""{"IsSet":true}""", false)]
+    [InlineData("""{"isSet":false,"keyMissing":true}""", true)]
+    [InlineData("""{"isSet":true,"setAt":"2026-10-06T08:00:00Z"}""", true)]
+    [InlineData("""{"isSet":true,"setAt":null}""", true)]
+    [InlineData("""{"isSet":false,"keyMissing":"yes"}""", false)]
+    [InlineData("""{"keyMissing":true}""", false)]
+    [InlineData("""{}""", false)]
     [InlineData("""[true]""", false)]
     [InlineData("\"text\"", false)]
     public void IsSecretMarker_RecognisesOnlyTheMarkerShape(string json, bool expected)

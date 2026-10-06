@@ -1,5 +1,8 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
+using Meshmakers.Octo.Runtime.Contracts.RepositoryEntities;
+using Meshmakers.Octo.Runtime.Contracts.Secrets;
 using Meshmakers.Octo.Runtime.Contracts.Serialization;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -22,27 +25,83 @@ namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 /// <see cref="PipelineExecutionException.SecretNotSupported" />.
 /// </para>
 /// <para>
+/// With a registered read-state classifier (<see cref="SetReadStateClassifier" />, the mesh adapter
+/// registers its key ring) a stored value whose key id is unknown reads as
+/// <c>{"isSet": false, "keyMissing": true}</c>. Echoing any marker back into a write means "unchanged".
+/// </para>
+/// <para>
 /// Reading the marker's <c>isSet</c> property (<c>$.attributes.password.isSet</c> as Boolean) stays
 /// allowed — that is how a pipeline asks whether a secret is configured.
 /// </para>
 /// </remarks>
 public static class PipelineSecretValues
 {
+    private static Func<RtSecretValue, SecretReadInfo>? _readStateClassifier;
+
     /// <summary>
-    /// True when <paramref name="node" /> is a Secret marker: an object whose only property is
-    /// <c>isSet</c> with a boolean value.
+    /// The process-wide classifier the pipeline serialiser uses to write a Secret marker that reflects
+    /// the read state (AB#5538); <c>null</c> when none is registered.
+    /// </summary>
+    public static Func<RtSecretValue, SecretReadInfo>? ReadStateClassifier => Volatile.Read(ref _readStateClassifier);
+
+    /// <summary>
+    /// Registers the classifier the pipeline serialiser (<see cref="SystemTextJsonOptions" />) uses when it
+    /// writes a Secret value into the data context. A host with a key ring (the mesh adapter) passes
+    /// <c>ISecretAttributeProtector.DescribeSecret</c>, so a stored value whose key id is not in the ring is
+    /// written as <c>{"isSet": false, "keyMissing": true}</c> instead of the key-ring-less
+    /// <c>{"isSet": true}</c> of <c>RtSecretValueWireFormat</c>. Without a classifier the engine marker is
+    /// written unchanged.
+    /// </summary>
+    /// <remarks>
+    /// The key ring is per process (the protector is a singleton), hence a process-wide registration:
+    /// the serialiser options are static and shared by every data context.
+    /// </remarks>
+    /// <param name="classifier">The classifier, or <c>null</c> to remove it</param>
+    public static void SetReadStateClassifier(Func<RtSecretValue, SecretReadInfo>? classifier)
+    {
+        Volatile.Write(ref _readStateClassifier, classifier);
+    }
+
+    /// <summary>
+    /// Removes <paramref name="classifier" /> if it is still the registered one (a later registration by
+    /// another host in the same process is kept).
+    /// </summary>
+    /// <param name="classifier">The classifier registered before</param>
+    public static void ResetReadStateClassifier(Func<RtSecretValue, SecretReadInfo> classifier)
+    {
+        ArgumentNullException.ThrowIfNull(classifier);
+        Interlocked.CompareExchange(ref _readStateClassifier, null, classifier);
+    }
+
+    /// <summary>
+    /// True when <paramref name="node" /> is a Secret marker: an object with the boolean property
+    /// <c>isSet</c> and otherwise only the optional properties <c>keyMissing</c> (boolean) and
+    /// <c>setAt</c> (string or null). Property names are matched case-sensitively, as they are written.
     /// </summary>
     public static bool IsSecretMarker(JsonNode? node)
     {
-        if (node is not JsonObject obj || obj.Count != 1)
+        if (node is not JsonObject obj || !obj.ContainsKey(RtSecretValueWireFormat.IsSetPropertyName))
         {
             return false;
         }
 
-        var property = obj.First();
-        return string.Equals(property.Key, RtSecretValueWireFormat.IsSetPropertyName, StringComparison.Ordinal) &&
-               property.Value is JsonValue value &&
-               value.GetValueKind() is System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False;
+        foreach (var (key, value) in obj)
+        {
+            var valid = key switch
+            {
+                RtSecretValueWireFormat.IsSetPropertyName or RtSecretValueWireFormat.KeyMissingPropertyName =>
+                    value is JsonValue v && v.GetValueKind() is JsonValueKind.True or JsonValueKind.False,
+                RtSecretValueWireFormat.SetAtPropertyName =>
+                    value is null || (value is JsonValue d && d.GetValueKind() == JsonValueKind.String),
+                _ => false
+            };
+            if (!valid)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
