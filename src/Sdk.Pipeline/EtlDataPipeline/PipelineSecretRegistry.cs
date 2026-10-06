@@ -163,20 +163,63 @@ public sealed class PipelineSecretRegistry
     /// <returns>The redacted tree</returns>
     public JsonNode? Redact(JsonNode? node)
     {
+        return Redact(node, null, null);
+    }
+
+    /// <summary>
+    /// Same as <see cref="Redact(JsonNode?)" />, and additionally adds the JSONPath of every string that
+    /// was masked to <paramref name="redactedPaths" /> (handover §11, Q12): rooted at
+    /// <paramref name="rootPath" /> (e.g. <c>$.output</c>), properties as <c>.name</c> (or
+    /// <c>['name']</c> when the name is not a plain identifier), array items as <c>[index]</c>. A string
+    /// in which a secret was masked as a substring (<c>Bearer ***</c>) is reported with its own path;
+    /// a bare string root with <paramref name="rootPath" /> itself.
+    /// </summary>
+    /// <param name="node">The JSON tree</param>
+    /// <param name="rootPath">The JSONPath of <paramref name="node" /></param>
+    /// <param name="redactedPaths">Receives the paths of the masked strings; may be null</param>
+    /// <returns>The redacted tree</returns>
+    public JsonNode? Redact(JsonNode? node, string? rootPath, ICollection<string>? redactedPaths)
+    {
         if (node == null || _values.IsEmpty || !NeedsRedaction(node))
         {
             return node;
         }
 
+        var path = redactedPaths == null ? null : rootPath ?? "$";
         var clone = node.DeepClone();
         if (clone is JsonValue)
         {
             // A bare string root cannot be replaced in place - it has no parent.
+            if (path != null)
+            {
+                redactedPaths!.Add(path);
+            }
+
             return JsonValue.Create(Redact(clone.GetValue<string>()));
         }
 
-        RedactInPlace(clone);
+        RedactInPlace(clone, path, redactedPaths);
         return clone;
+    }
+
+    /// <summary>
+    /// Appends a property segment to a JSONPath: <c>.name</c> for plain identifiers, bracket notation
+    /// with single quotes otherwise.
+    /// </summary>
+    /// <param name="path">The parent path</param>
+    /// <param name="propertyName">The property name</param>
+    /// <returns>The child path</returns>
+    internal static string AppendProperty(string path, string propertyName)
+    {
+        var plain = propertyName.Length > 0 && (char.IsAsciiLetter(propertyName[0]) || propertyName[0] == '_');
+        for (var i = 1; plain && i < propertyName.Length; i++)
+        {
+            plain = char.IsAsciiLetterOrDigit(propertyName[i]) || propertyName[i] == '_';
+        }
+
+        return plain
+            ? $"{path}.{propertyName}"
+            : $"{path}['{propertyName.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("'", "\\'", StringComparison.Ordinal)}']";
     }
 
     private bool NeedsRedaction(JsonNode node)
@@ -214,7 +257,8 @@ public sealed class PipelineSecretRegistry
         }
     }
 
-    private void RedactInPlace(JsonNode node)
+    // path is null when the caller does not collect redacted paths (no string building then).
+    private void RedactInPlace(JsonNode node, string? path, ICollection<string>? redactedPaths)
     {
         switch (node)
         {
@@ -230,11 +274,15 @@ public sealed class PipelineSecretRegistry
                         if (!ReferenceEquals(redacted, text))
                         {
                             obj[key] = redacted;
+                            if (path != null)
+                            {
+                                redactedPaths!.Add(AppendProperty(path, key));
+                            }
                         }
                     }
                     else if (child != null)
                     {
-                        RedactInPlace(child);
+                        RedactInPlace(child, path == null ? null : AppendProperty(path, key), redactedPaths);
                     }
                 }
 
@@ -250,11 +298,15 @@ public sealed class PipelineSecretRegistry
                         if (!ReferenceEquals(redacted, text))
                         {
                             array[i] = redacted;
+                            if (path != null)
+                            {
+                                redactedPaths!.Add($"{path}[{i}]");
+                            }
                         }
                     }
                     else if (child != null)
                     {
-                        RedactInPlace(child);
+                        RedactInPlace(child, path == null ? null : $"{path}[{i}]", redactedPaths);
                     }
                 }
 
