@@ -107,12 +107,14 @@ public class InstanceSecretCryptoTests
     }
 
     [Fact]
-    public void Decrypt_UnsupportedSentinel_Throws()
+    public void Decrypt_EncV2Envelope_IsRefused()
     {
+        // enc:v2 values live in Secret attributes and are read through ISecretAttributeProtector;
+        // InstanceSecretCrypto decrypts enc:v1 only (AB#5534 decryption-oracle hardening).
         var crypto = new InstanceSecretCrypto();
         var key = FreshKey();
 
-        Assert.Throws<CryptographicException>(() => crypto.Decrypt(key, "enc:v2:abc"));
+        Assert.Throws<InvalidOperationException>(() => crypto.Decrypt(key, "enc:v2:abc"));
     }
 
     [Fact]
