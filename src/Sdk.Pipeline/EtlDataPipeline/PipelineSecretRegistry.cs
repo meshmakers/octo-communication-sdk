@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
 
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 
@@ -114,6 +115,43 @@ public sealed class PipelineSecretRegistry
             JsonNode node => Redact(node),
             _ => argument
         };
+    }
+
+    /// <summary>
+    /// Returns <paramref name="exception" /> unchanged when no registered value appears in it (its
+    /// messages and those of every inner exception), otherwise a copy whose messages are masked: a
+    /// <see cref="DataPipelineException" /> stays one, anything else becomes a
+    /// <see cref="PipelineExecutionException" />. The copy has no stack trace and does not reference the
+    /// original, so neither the execution log nor the error message persisted on the pipeline execution
+    /// (<c>ReportExecutionEndAsync</c>) can carry the plaintext — e.g. a conversion error that quotes a
+    /// revealed value (AB#5538).
+    /// </summary>
+    /// <param name="exception">The exception</param>
+    /// <returns>The same exception, or a redacted copy</returns>
+    public Exception RedactException(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        if (_values.IsEmpty)
+        {
+            return exception;
+        }
+
+        // ToString covers the whole chain, AggregateException's inner list included; the failure path
+        // is rare enough for the extra string.
+        var text = exception.ToString();
+        return ReferenceEquals(Redact(text), text) ? exception : CopyRedacted(exception);
+    }
+
+    private Exception CopyRedacted(Exception exception)
+    {
+        var inner = exception.InnerException == null ? null : CopyRedacted(exception.InnerException);
+        var message = Redact(exception.Message) ?? string.Empty;
+        if (exception is DataPipelineException)
+        {
+            return DataPipelineException.Redacted(message, inner);
+        }
+
+        return inner == null ? new PipelineExecutionException(message) : new PipelineExecutionException(message, inner);
     }
 
     /// <summary>

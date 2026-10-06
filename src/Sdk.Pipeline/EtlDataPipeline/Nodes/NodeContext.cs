@@ -132,7 +132,8 @@ public class NodeContext : INodeContext
     /// <inheritdoc />
     public void Error(Exception exception, string message, params object[] args)
     {
-        _logger.Error(NodeId, NodePath, exception, RedactMessage(message), RedactArguments(args));
+        _logger.Error(NodeId, NodePath, SecretRegistry.RedactException(exception), RedactMessage(message),
+            RedactArguments(args));
     }
 
     private string RedactMessage(string message)

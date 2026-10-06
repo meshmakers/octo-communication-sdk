@@ -22,6 +22,13 @@ things in this repo build on that:
   `SetPipelineExecutionResult@1` output. Redaction is **by value**, so a copy, a concatenation
   (`Bearer …`) or a loop child is masked too; values shorter than 4 characters only as whole strings.
   The data itself is never changed — downstream nodes still read the plaintext.
+- **Node errors** (AB#5538 review): `PipelineSecretRegistry.RedactException` returns the exception
+  unchanged unless a registered value appears in its chain, otherwise a masked copy without the
+  original (a `DataPipelineException` stays one). `EtlDataOrchestrator` applies it to every node error
+  before wrapping or rethrowing, and `NodeContext.Error(Exception, …)` before logging, so neither the
+  execution log nor the error message `AdapterTriggerContext` reports with
+  `ReportExecutionEndAsync(Failed, ex.Message)` (persisted on the pipeline execution) carries a
+  plaintext quoted by a node — e.g. a conversion error on a revealed password.
 
 🔴 **A node that puts a plaintext secret into the data context or resolves a credential from
 configuration must call `nodeContext.RegisterSecret(value)`.** `RevealSecret@1` (mesh adapter) is the

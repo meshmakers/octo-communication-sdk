@@ -123,14 +123,23 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
                     {
                         await node!.ProcessObjectAsync(ds, nodeContext);
                     }
-                    catch (DataPipelineException)
+                    catch (DataPipelineException e)
                     {
-                        throw;
+                        // AB#5538: the message travels to the execution log and to the error message
+                        // persisted on the pipeline execution - mask values registered as secret.
+                        var redacted = nodeContext.SecretRegistry?.RedactException(e) ?? e;
+                        if (ReferenceEquals(redacted, e))
+                        {
+                            throw;
+                        }
+
+                        throw redacted;
                     }
                     catch (Exception e)
                     {
                         nodeContext.Error(e, "Error executing node");
-                        throw DataPipelineException.NodeExecutionFailed(nodeContext.NodePath, e);
+                        throw DataPipelineException.NodeExecutionFailed(nodeContext.NodePath,
+                            nodeContext.SecretRegistry?.RedactException(e) ?? e);
                     }
 
                     nodeContext.Debug("Reverse completed");
@@ -144,7 +153,13 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
         catch (Exception e)
         {
             rootNodeContext.Error(e, "Error during pipeline execution");
-            throw;
+            var redacted = rootNodeContext.SecretRegistry.RedactException(e);
+            if (ReferenceEquals(redacted, e))
+            {
+                throw;
+            }
+
+            throw redacted;
         }
         finally
         {
