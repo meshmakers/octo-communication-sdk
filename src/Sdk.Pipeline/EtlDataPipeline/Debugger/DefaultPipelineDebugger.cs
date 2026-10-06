@@ -38,6 +38,8 @@ public class DefaultPipelineDebugger : IPipelineDebugger
 
     private readonly DebugPipelineLogger _debugPipelineLogger;
     private readonly ConcurrentDictionary<string, DebugPointDto> _debugPoints = new();
+    private readonly ConcurrentDictionary<PipelineSecretRegistry, byte> _secretRegistries =
+        new(ReferenceEqualityComparer.Instance);
     private long _retainedSnapshotChars;
 
     /// <summary>
@@ -84,6 +86,33 @@ public class DefaultPipelineDebugger : IPipelineDebugger
     }
 
     /// <inheritdoc />
+    public void AddSecretRegistry(PipelineSecretRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        _secretRegistries.TryAdd(registry, 0);
+    }
+
+    /// <summary>
+    /// Masks every value registered as secret in this execution (AB#5538) before a snapshot is
+    /// serialised. Returns the same node when nothing is registered or nothing matches, so the
+    /// snapshot path stays clone-free in the common case.
+    /// </summary>
+    private JsonNode? RedactSecrets(JsonNode? data)
+    {
+        if (data == null || _secretRegistries.IsEmpty)
+        {
+            return data;
+        }
+
+        foreach (var registry in _secretRegistries.Keys)
+        {
+            data = registry.Redact(data);
+        }
+
+        return data;
+    }
+
+    /// <inheritdoc />
     public void BeginPipelineExecution()
     {
         _debugPipelineLogger.Clear();
@@ -105,9 +134,25 @@ public class DefaultPipelineDebugger : IPipelineDebugger
         // string so the replace-discount accounting in LogInput/LogOutput stays symmetric.
         var result = Interlocked.Read(ref _retainedSnapshotChars) >= MaxTotalRetainedSnapshotChars
             ? TotalBudgetPlaceholder
-            : SerializeSnapshotCore(data);
+            : SerializeRedactedSnapshot(data);
         Interlocked.Add(ref _retainedSnapshotChars, result.Length);
         return result;
+    }
+
+    private string SerializeRedactedSnapshot(JsonNode data)
+    {
+        JsonNode redacted;
+        try
+        {
+            redacted = RedactSecrets(data)!;
+        }
+        catch (Exception ex)
+        {
+            // Fail closed: a snapshot that could not be redacted is not shown at all.
+            return $"<debug snapshot unavailable: {ex.GetType().Name}>";
+        }
+
+        return SerializeSnapshotCore(redacted);
     }
 
     /// <summary>

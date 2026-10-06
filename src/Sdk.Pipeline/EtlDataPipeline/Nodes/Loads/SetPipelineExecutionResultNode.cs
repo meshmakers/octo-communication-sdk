@@ -47,6 +47,9 @@ public class SetPipelineExecutionResultNode(NodeDelegate next, IEtlContext etlCo
             return;
         }
 
+        // AB#5538: the result is persisted on the PipelineExecution entity and shown in Studio, so a
+        // value registered as secret in this run (RevealSecret@1, resolved credentials) is masked.
+        value = nodeContext.SecretRegistry?.Redact(value) ?? value;
         var serialized = JsonSerializer.Serialize(value, SystemTextJsonOptions.Default);
 
         if (serialized.Length > config.MaxLength)

@@ -142,6 +142,24 @@ public class PipelineExecutionException : Exception
     }
 
     /// <summary>
+    /// Exception thrown when a node that converts, compares or computes values is asked to operate on
+    /// a Secret (AB#5538): a configured value type <c>Secret</c>, or a Secret marker
+    /// (<c>{"isSet": …}</c>) at the path it reads. The message names the node and the path, never a
+    /// value.
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="path">Data path or setting that carries the Secret, if any</param>
+    /// <returns></returns>
+    public static Exception SecretNotSupported(NodePath nodePath, string? path)
+    {
+        var where = string.IsNullOrEmpty(path) ? string.Empty : $" (at '{path}')";
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Secret not supported{where}. This node cannot convert, compare or compute Secret " +
+            "values; a Secret attribute reads as the marker {\"isSet\": true|false}. Test the marker's " +
+            "'isSet' property, or use RevealSecret@1 to read the plaintext where a node really needs it.");
+    }
+
+    /// <summary>
     /// Exception thrown when a value type is not supported
     /// </summary>
     /// <param name="nodePath">Path to the node</param>

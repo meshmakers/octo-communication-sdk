@@ -29,6 +29,8 @@ public class ConvertDataTypeNode(NodeDelegate next) : IPipelineNode
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var c = nodeContext.GetNodeConfiguration<ConvertDataTypeNodeConfiguration>();
+        // AB#5538: a Secret can neither be the target type nor the source value.
+        PipelineSecretValues.ThrowIfSecretValueType(nodeContext, c.ValueType, "valueType");
 
         if (dataContext.GetKind("$") == DataKind.Undefined || dataContext.GetKind("$") == DataKind.Null)
         {
@@ -37,6 +39,7 @@ public class ConvertDataTypeNode(NodeDelegate next) : IPipelineNode
             return;
         }
 
+        PipelineSecretValues.ThrowIfSecretMarker(nodeContext, dataContext, c.Path);
         var kind = dataContext.GetKind(c.Path);
         if (kind == DataKind.Object || kind == DataKind.Array)
         {

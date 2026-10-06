@@ -124,6 +124,10 @@ public class IfNode(NodeDelegate next) : ChildNodeBase
     public override async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var nodeConfiguration = nodeContext.GetNodeConfiguration<IfNodeConfiguration>();
+        // AB#5538: compare the marker's isSet (Boolean), never the Secret itself.
+        PipelineSecretValues.ThrowIfSecretValueType(nodeContext, nodeConfiguration.ValueType, "valueType");
+        PipelineSecretValues.ThrowIfSecretMarker(nodeContext, dataContext, nodeConfiguration.Path,
+            nodeConfiguration.ValuePath);
 
         // We support equal with null values!
         var comparisonValue = GetComparisonValue(nodeContext, dataContext, nodeConfiguration);

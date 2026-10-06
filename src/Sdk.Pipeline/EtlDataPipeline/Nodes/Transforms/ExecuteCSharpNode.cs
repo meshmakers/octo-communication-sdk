@@ -129,6 +129,7 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var c = nodeContext.GetNodeConfiguration<ExecuteCSharpNodeConfiguration>();
+        EnsureNoSecrets(dataContext, c, nodeContext);
 
         try
         {
@@ -293,6 +294,19 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
     /// handed to the script as globals. Every configured argument is always present (null
     /// when unresolved) so the generated <c>Args["name"]</c> lookups never throw.
     /// </summary>
+    private static void EnsureNoSecrets(IDataContext dataContext, ExecuteCSharpNodeConfiguration c,
+        INodeContext nodeContext)
+    {
+        // AB#5538: a script must not compute with Secrets - neither as a declared type (argument or
+        // return) nor by receiving a Secret marker as an argument value.
+        PipelineSecretValues.ThrowIfSecretValueType(nodeContext, c.ReturnType, "returnType");
+        foreach (var arg in c.Arguments)
+        {
+            PipelineSecretValues.ThrowIfSecretValueType(nodeContext, arg.DataType, $"arguments.{arg.Name}.dataType");
+            PipelineSecretValues.ThrowIfSecretMarker(nodeContext, dataContext, arg.ValuePath);
+        }
+    }
+
     private Dictionary<string, object?> BuildArgumentValues(
         IDataContext dataContext, ExecuteCSharpNodeConfiguration c, INodeContext nodeContext)
     {

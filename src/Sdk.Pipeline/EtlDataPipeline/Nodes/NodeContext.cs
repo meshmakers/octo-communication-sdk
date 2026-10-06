@@ -44,6 +44,14 @@ public class NodeContext : INodeContext
         _logger = pipelineLogger;
         _configurationNode = nodeConfiguration;
 
+        // One registry per execution (AB#5538): a child inherits its parent's, a root creates one and
+        // hands it to the debugger, which masks the registered values in every snapshot it captures.
+        SecretRegistry = parent?.SecretRegistry ?? new PipelineSecretRegistry();
+        if (parent?.SecretRegistry == null)
+        {
+            pipelineDebugger?.AddSecretRegistry(SecretRegistry);
+        }
+
         var name = "[" + sequenceNumber + "]";
         var id = name;
         if (!string.IsNullOrEmpty(nodeQualifiedName))
@@ -74,6 +82,15 @@ public class NodeContext : INodeContext
     public IPipelineScratchSpace? ScratchSpace { get; }
 
     /// <inheritdoc />
+    public PipelineSecretRegistry SecretRegistry { get; }
+
+    /// <inheritdoc />
+    public void RegisterSecret(string? plaintext)
+    {
+        SecretRegistry.Register(plaintext);
+    }
+
+    /// <inheritdoc />
     public INodeContext? Parent { get; }
 
     /// <inheritdoc />
@@ -91,31 +108,52 @@ public class NodeContext : INodeContext
     /// <inheritdoc />
     public void Debug(string message, params object[] args)
     {
-        _logger.Debug(NodeId, NodePath, message, args);
+        _logger.Debug(NodeId, NodePath, RedactMessage(message), RedactArguments(args));
     }
 
     /// <inheritdoc />
     public void Info(string message, params object[] args)
     {
-        _logger.Info(NodeId, NodePath, message, args);
+        _logger.Info(NodeId, NodePath, RedactMessage(message), RedactArguments(args));
     }
 
     /// <inheritdoc />
     public void Warning(string message, params object[] args)
     {
-        _logger.Warning(NodeId, NodePath, message, args);
+        _logger.Warning(NodeId, NodePath, RedactMessage(message), RedactArguments(args));
     }
 
     /// <inheritdoc />
     public void Error(string message, params object[] args)
     {
-        _logger.Error(NodeId, NodePath, message, args);
+        _logger.Error(NodeId, NodePath, RedactMessage(message), RedactArguments(args));
     }
 
     /// <inheritdoc />
     public void Error(Exception exception, string message, params object[] args)
     {
-        _logger.Error(NodeId, NodePath, exception, message, args);
+        _logger.Error(NodeId, NodePath, exception, RedactMessage(message), RedactArguments(args));
+    }
+
+    private string RedactMessage(string message)
+    {
+        return SecretRegistry.HasSecrets ? SecretRegistry.Redact(message) ?? message : message;
+    }
+
+    private object[] RedactArguments(object[] args)
+    {
+        if (!SecretRegistry.HasSecrets || args.Length == 0)
+        {
+            return args;
+        }
+
+        var redacted = new object[args.Length];
+        for (var i = 0; i < args.Length; i++)
+        {
+            redacted[i] = SecretRegistry.RedactArgument(args[i])!;
+        }
+
+        return redacted;
     }
 
     /// <inheritdoc />

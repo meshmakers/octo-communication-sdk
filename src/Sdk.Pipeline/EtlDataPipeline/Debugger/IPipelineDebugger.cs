@@ -70,6 +70,19 @@ public interface IPipelineDebugger
         string nodeTypeName, JsonNode? intentData);
 
     /// <summary>
+    /// Hands the debugger the secret registry of an execution (AB#5538). Every value registered in it
+    /// — now or later in the run — is masked in the snapshots and dry-run intents the debugger captures
+    /// from then on. Called by the root <see cref="Nodes.NodeContext" />; a debugger may receive more
+    /// than one registry (a trigger's root context and the execution's root context) and must mask
+    /// the values of all of them. The default implementation ignores the registry, so a custom
+    /// debugger keeps compiling — but shows revealed secrets until it implements this.
+    /// </summary>
+    /// <param name="registry">The registry of the execution</param>
+    void AddSecretRegistry(PipelineSecretRegistry registry)
+    {
+    }
+
+    /// <summary>
     /// Gets the debug information
     /// </summary>
     /// <returns></returns>

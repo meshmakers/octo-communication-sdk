@@ -40,6 +40,25 @@ public interface INodeContext
     IPipelineScratchSpace? ScratchSpace { get; }
 
     /// <summary>
+    /// The plaintext values this execution must keep out of its diagnostics (AB#5538): debug
+    /// snapshots, dry-run intents, the execution log and the persisted execution result mask them
+    /// with <see cref="PipelineSecretRegistry.Mask" />. One instance per execution, shared by every
+    /// node context of it. <c>null</c> for node contexts that do not provide one (test doubles);
+    /// <see cref="RegisterSecret" /> is then a no-op.
+    /// </summary>
+    PipelineSecretRegistry? SecretRegistry => null;
+
+    /// <summary>
+    /// Marks <paramref name="plaintext" /> as secret for the rest of this execution, so every
+    /// diagnostic output shows <see cref="PipelineSecretRegistry.Mask" /> instead (AB#5538). Nodes call
+    /// it for every plaintext they put into the data context or resolve from configuration:
+    /// <c>RevealSecret@1</c> for the revealed value, credential-consuming nodes for the password, token
+    /// or key they use. The value itself is not changed — downstream nodes still read the plaintext.
+    /// </summary>
+    /// <param name="plaintext">The value; null or blank values are ignored</param>
+    void RegisterSecret(string? plaintext) => SecretRegistry?.Register(plaintext);
+
+    /// <summary>
     /// Parent node context. If it is null, then it is the root node.
     /// </summary>
     INodeContext? Parent { get; }

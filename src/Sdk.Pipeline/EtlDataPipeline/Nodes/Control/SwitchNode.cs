@@ -62,6 +62,9 @@ public class SwitchNode(NodeDelegate next) : ChildNodeBase
     public override async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var c = nodeContext.GetNodeConfiguration<SwitchNodeConfiguration>();
+        // AB#5538: switch on the marker's isSet (Boolean), never on the Secret itself.
+        PipelineSecretValues.ThrowIfSecretValueType(nodeContext, c.ValueType, "valueType");
+        PipelineSecretValues.ThrowIfSecretMarker(nodeContext, dataContext, c.Path);
 
         var value = GetValueFromDataContext(nodeContext, dataContext, c.Path, c.ValueType);
 
