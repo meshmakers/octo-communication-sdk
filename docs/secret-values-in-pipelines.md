@@ -41,5 +41,5 @@ canonical writer. A value written but not registered is visible in the Studio de
   attribute names by `IConfigurationSecretAttributeResolver` (default `NoConfigurationSecretAttributeResolver`
   → `null`; the mesh adapter uses the CK cache), and every string value under such a property name, at
   any depth, is registered. An unresolvable type falls back to
-  `ConfigurationSecrets.KnownCredentialAttributeNames` (System.Communication 3.40 credential names) and
+  `ConfigurationSecrets.KnownCredentialAttributeNames` (System.Communication 3.41 credential names) and
   logs a warning without values. Tests: `ConfigurationSecretsTests`.

@@ -46,7 +46,7 @@ public sealed class NoConfigurationSecretAttributeResolver : IConfigurationSecre
 public static class ConfigurationSecrets
 {
     /// <summary>
-    /// Credential attribute names of System.Communication 3.40, used when the CK type of a configuration
+    /// Credential attribute names of System.Communication 3.41, used when the CK type of a configuration
     /// cannot be resolved.
     /// </summary>
     public static readonly IReadOnlyCollection<string> KnownCredentialAttributeNames =
