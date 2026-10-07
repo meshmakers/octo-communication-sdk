@@ -627,9 +627,21 @@ classes differ only in which connection's `IsAlive` they sample.
 - **Self-heal without restart** (`AdapterPoolMemberService.TickAsync`): connection down → nothing (the
   SignalR client owns reconnecting, its callback registers); registered → heartbeat; up but not
   registered → register again instead of heartbeating into nothing.
-- 🔴 **Reconnect during a lease defers the registration** until the lease is released. The controller
-  already re-queued that lease; registering at once would get the member the next lease immediately,
-  which it must refuse (one lease at a time) — and a refused lease fails that borrower's execution.
+- 🔴 **Reconnect during a lease registers WITH the lease** (AB#5826, `AdapterPoolClient.ResumeAsync` →
+  `ResumePoolMemberAsync`): the controller takes the lease over — after a controller restart it would
+  otherwise not know it, after a dropped connection it holds the work back for a reconnect grace instead
+  of re-queuing it — and the member's release completes the execution. Only against a controller that
+  pre-dates the method (`HubException`/`NotSupportedException`) is the registration **deferred** until
+  the lease is released, as before; that answer is latched per connection (`IsResumptionUnsupported`,
+  reset by `OnNewConnection`). A plain registration would get the busy member the next lease at once,
+  which it must refuse — failing that borrower's execution.
+- 🔴 **A release that could not be reported is kept** (AB#5826, `_pendingReleases`) and re-sent on the
+  next connect **before** the member registers, and on every tick. It used to be dropped ("the
+  controller will expire it on TTL"), which lost the work item's result. The release now names
+  `ExecutionId`, `TenantId` and `MemberId`, so a controller that no longer holds the lease can attribute
+  it. `IsDrainedAndIdle` waits for pending releases. Resumption and release reports share one gate
+  (`_hubReportGate`), and the running lease is read inside it, so a release never overtakes the
+  resumption of the same lease. Tests: `AdapterPoolMemberLeaseResumptionTests`.
 - **CK model cache flush** after a reconnect, per *recently leased* tenant
   (`AdapterPoolClient.RecentlyLeasedTenantIds` = running lease + last entered), via the host's
   `IAdapterService.CkModelChangedAsync`, **before** registering so no new lease warms a cache about to

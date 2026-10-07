@@ -345,13 +345,16 @@ public class AdapterPoolMemberRecoveryTests
     }
 
     /// <summary>
-    ///     🔴 A member that reconnects while its lease still runs must not offer itself as free. The
-    ///     controller already re-queued that lease; registering now would make it hand the member the
-    ///     next lease at once, which the member must refuse — failing that borrower's execution for
-    ///     nothing. The registration waits for the release, and the tick does it.
+    ///     🔴 A member that reconnects while its lease still runs must not offer itself as free. Against
+    ///     a controller that does not support <c>ResumePoolMemberAsync</c> (it pre-dates AB#5826 — this
+    ///     scripted hub inherits the interface default, which answers "not supported" exactly like such
+    ///     a controller), registering now would make it hand the member the next lease at once, which
+    ///     the member must refuse — failing that borrower's execution for nothing. The registration
+    ///     waits for the release, and the tick does it. The resuming controller is covered by
+    ///     <c>AdapterPoolMemberLeaseResumptionTests</c>.
     /// </summary>
     [Fact]
-    public async Task AReconnectDuringALease_DefersTheRegistrationUntilTheLeaseIsReleased()
+    public async Task AReconnectDuringALease_AgainstAControllerWithoutResumption_DefersTheRegistrationUntilTheLeaseIsReleased()
     {
         var workItem = new BlockingWorkItem();
         var member = CreateMember(workItem);

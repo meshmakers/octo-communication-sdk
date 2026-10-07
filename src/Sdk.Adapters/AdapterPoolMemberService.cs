@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -48,11 +49,21 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 ///             tick then registers again rather than sending a heartbeat nobody records.
 ///         </description></item>
 ///         <item><description>
-///             <b>Never offer a busy process as free.</b> A member that reconnects while its lease is
-///             still running defers the registration until the lease is released: the controller has
-///             already interrupted and re-queued that lease (concept §6), and a fresh registration
-///             would make it hand the member the next lease at once — which the member then has to
-///             refuse, failing that borrower's execution for nothing.
+///             <b>Never offer a busy process as free — and never lose its lease (AB#5826).</b> A member
+///             that reconnects while its lease is still running registers through
+///             <c>ResumePoolMemberAsync</c>, naming the lease: the controller takes it over (after a
+///             controller restart it would otherwise not know it at all; after a dropped connection
+///             it holds the work back for a reconnect grace instead of re-queuing it), and the
+///             member's release then completes the execution. Only a controller that pre-dates the
+///             method (or refuses it) gets the old behaviour: the registration is deferred until the
+///             lease is released, because a plain registration would make it hand the busy member
+///             the next lease at once.
+///         </description></item>
+///         <item><description>
+///             <b>Report what could not be reported (AB#5826).</b> A release that failed because the
+///             connection was down is kept and re-sent on the next connect, <i>before</i> the member
+///             registers again — so a controller that holds the work back for this member learns the
+///             outcome before it learns that the member is idle.
 ///         </description></item>
 ///         <item><description>
 ///             🔴 <b>A draining member never registers again</b> (AB#5864). It takes no further
@@ -174,6 +185,9 @@ public sealed class AdapterPoolMemberService : BackgroundService
                 return;
             }
 
+            // AB#5826 — a release that could not be reported while the connection was down.
+            await _poolClient.FlushPendingReleasesAsync();
+
             if (_poolClient.RegistrationState.IsRegistered)
             {
                 await _poolClient.HeartbeatAsync();
@@ -182,6 +196,17 @@ public sealed class AdapterPoolMemberService : BackgroundService
 
             if (_poolClient.CurrentLease is { } lease)
             {
+                if (!_poolClient.IsResumptionUnsupported)
+                {
+                    // AB#5826 — see the class remarks: the controller takes the running lease over.
+                    _logger.LogInformation(
+                        "The controller holds no registration for this pool member while lease '{LeaseId}' is running; " +
+                        "registering with the lease",
+                        lease.LeaseId);
+                    await ResumeAsync();
+                    return;
+                }
+
                 // See the class remarks: never offer a busy process as free.
                 _logger.LogDebug(
                     "Not registering yet: lease '{LeaseId}' is still running on this member", lease.LeaseId);
@@ -228,6 +253,9 @@ public sealed class AdapterPoolMemberService : BackgroundService
     /// </summary>
     internal async Task OnConnectedAsync(bool reconnected)
     {
+        // AB#5826: the controller pod behind this connection may be a different build than the last.
+        _poolClient.OnNewConnection();
+
         if (reconnected)
         {
             // A new connection carries no registration, whatever the state says about the old one.
@@ -236,18 +264,33 @@ public sealed class AdapterPoolMemberService : BackgroundService
             _poolClient.RegistrationState.MarkNotRegistered("re-registering after a reconnect");
 
             await FlushCkModelCacheAfterReconnectAsync();
+        }
 
-            if (_poolClient.CurrentLease is { } lease)
+        // 🔴 AB#5826 — outcomes first, registration second. A controller that holds this member's
+        // work back after the disconnect learns the result before it learns the member is back, and a
+        // restarted controller completes the execution instead of reaping it half an hour later.
+        await _poolClient.FlushPendingReleasesAsync();
+
+        if (_poolClient.CurrentLease is { } lease)
+        {
+            // See the class remarks: register WITH the running lease, so the controller takes it over.
+            // A draining member does too — its release (Drained) marks it draining on the controller
+            // before the lease is freed, and its outcome is worth keeping.
+            _logger.LogWarning(
+                "Connected while lease '{LeaseId}' for tenant '{TenantId}' is still running; asking the controller to " +
+                "take it over",
+                lease.LeaseId, lease.TenantId);
+            var resumed = await _poolClient.ResumeAsync();
+            ApplyHeartbeatInterval(resumed);
+            if (resumed is null)
             {
-                // See the class remarks. The heartbeat tick registers once the lease is released.
-                _poolClient.RegistrationState.MarkNotRegistered(
-                    $"registration deferred until lease '{lease.LeaseId}' is released");
                 _logger.LogWarning(
-                    "Reconnected while lease '{LeaseId}' for tenant '{TenantId}' is still running. The controller has " +
-                    "interrupted and re-queued it; this member registers again once the lease is released",
+                    "Lease '{LeaseId}' for tenant '{TenantId}' is still running and the controller does not take it " +
+                    "over; this member registers again once the lease is released",
                     lease.LeaseId, lease.TenantId);
-                return;
             }
+
+            return;
         }
 
         if (_poolClient.IsDraining)
@@ -273,8 +316,16 @@ public sealed class AdapterPoolMemberService : BackgroundService
 
     private async Task RegisterAsync()
     {
-        var result = await _poolClient.RegisterAsync();
+        ApplyHeartbeatInterval(await _poolClient.RegisterAsync());
+    }
 
+    private async Task ResumeAsync()
+    {
+        ApplyHeartbeatInterval(await _poolClient.ResumeAsync());
+    }
+
+    private void ApplyHeartbeatInterval(PoolMemberRegistrationResultDto? result)
+    {
         if (result is { HeartbeatIntervalSeconds: > 0 })
         {
             _heartbeatInterval = TimeSpan.FromSeconds(result.HeartbeatIntervalSeconds);

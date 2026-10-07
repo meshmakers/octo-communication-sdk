@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Communication.Contracts.Hubs;
@@ -79,6 +80,22 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     private volatile LeaseDto? _currentLease;
     private volatile string? _lastLeaseTenantId;
 
+    // 🔴 AB#5826 — releases the controller could not be told about (the connection was down when the
+    // work item finished). Kept and re-sent after the next connect instead of being dropped: a
+    // dropped release was a lost result, the execution stayed Running and was failed half an hour
+    // later. Bounded by construction — one lease at a time, so at most one entry per outage.
+    private readonly ConcurrentQueue<LeaseResultDto> _pendingReleases = new();
+
+    // Serialises the two hub calls whose ORDER the controller depends on: a resumption must reach it
+    // before the release of the same lease, never after — a release that overtakes it completes the
+    // execution, and the resumption then finds nothing to adopt and records the member busy with a
+    // lease that is already over.
+    private readonly SemaphoreSlim _hubReportGate = new(1, 1);
+
+    // AB#5826 — latched when the controller answers ResumePoolMemberAsync as unsupported (it pre-dates
+    // the method). Reset on every new connection: the next controller pod may be newer.
+    private volatile bool _resumeUnsupported;
+
     /// <summary>
     ///     Constructor.
     /// </summary>
@@ -137,7 +154,8 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     ///     execution and run work again that had already completed. The gate is held until the
     ///     report has been sent.
     /// </remarks>
-    public bool IsDrainedAndIdle => _isDraining && _currentLease is null && _leaseGate.CurrentCount > 0;
+    public bool IsDrainedAndIdle => _isDraining && _currentLease is null && _leaseGate.CurrentCount > 0 &&
+                                    _pendingReleases.IsEmpty;
 
     /// <summary>
     ///     Whether the controller currently holds a registration for this member: written on every
@@ -180,10 +198,24 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     }
 
     /// <summary>
-    ///     Registers this process as a member of its configured pool.
+    ///     Whether the controller is known not to support <c>ResumePoolMemberAsync</c> on the current
+    ///     connection (AB#5826). The member then defers its registration while a lease runs.
     /// </summary>
-    /// <returns>The controller's answer, or <c>null</c> when the controller does not support the hub.</returns>
-    public async Task<PoolMemberRegistrationResultDto?> RegisterAsync()
+    public bool IsResumptionUnsupported => _resumeUnsupported;
+
+    /// <summary>How many releases are waiting to be re-sent to the controller (AB#5826).</summary>
+    public int PendingReleaseCount => _pendingReleases.Count;
+
+    /// <summary>
+    ///     Forgets what the previous connection taught about the controller. Called on every new
+    ///     connection: the controller pod behind it may be a different build.
+    /// </summary>
+    public void OnNewConnection()
+    {
+        _resumeUnsupported = false;
+    }
+
+    private PoolMemberRegistrationDto BuildRegistration(PoolMemberActiveLeaseDto? activeLease)
     {
         // 🔴 AB#4924 — the SAME projection the dedicated path sends on RegisterAdapterWithSchemaAsync.
         // Without it the controller has no node descriptors for a pool member at all, and a BORROWER's
@@ -195,14 +227,184 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
         var pipelineSchemaJson = AdapterNodeDescriptorProjection.TryGenerateSchema(_pipelineSchemaGenerator,
             e => _logger.LogWarning(e, "Failed to generate the pipeline schema; registering this pool member without it"));
 
-        var registration = new PoolMemberRegistrationDto
+        return new PoolMemberRegistrationDto
         {
             AdapterPoolTenantId = _options.AdapterPoolTenantId ?? string.Empty,
             AdapterPoolRtId = _options.AdapterPoolRtId ?? string.Empty,
             MemberId = _options.EffectiveMemberId,
             NodeDescriptors = nodeDescriptors ?? [],
-            PipelineSchemaJson = pipelineSchemaJson
+            PipelineSchemaJson = pipelineSchemaJson,
+            ActiveLease = activeLease
         };
+    }
+
+    /// <summary>
+    ///     Registers this process while it is still running a lease, so the controller takes the lease
+    ///     over instead of losing it (AB#5826) — after a controller restart or a dropped connection.
+    /// </summary>
+    /// <returns>
+    ///     The controller's answer; the plain registration's answer when the lease ended in the
+    ///     meantime; or <c>null</c> when the controller does not support resumption (or refused it) —
+    ///     the caller then defers the registration until the lease is released, as before AB#5826.
+    /// </returns>
+    /// <remarks>
+    ///     🔴 Held under the same gate as the release report, and the running lease is read inside it:
+    ///     either the resumption reaches the controller before the release of that lease, or the lease
+    ///     is already over and the member registers idle. A release overtaking the resumption would let
+    ///     the controller complete the execution and then record the member busy with a lease that
+    ///     ended — a member that takes no work until the TTL reaper drains it.
+    /// </remarks>
+    public async Task<PoolMemberRegistrationResultDto?> ResumeAsync()
+    {
+        await _hubReportGate.WaitAsync();
+        try
+        {
+            var lease = _currentLease;
+            if (lease is not null)
+            {
+                return await InvokeResumeAsync(BuildRegistration(new PoolMemberActiveLeaseDto
+                {
+                    LeaseId = lease.LeaseId,
+                    TenantId = lease.TenantId,
+                    ExecutionId = lease.ExecutionId,
+                    AdapterRtId = lease.AdapterRtId,
+                    AdapterCkTypeId = lease.AdapterCkTypeId,
+                    GrantedAtUtc = lease.GrantedAtUtc,
+                    ExpiresAtUtc = lease.ExpiresAtUtc
+                }), lease);
+            }
+        }
+        finally
+        {
+            _hubReportGate.Release();
+        }
+
+        // The lease ended while the connection was being restored; its release is reported (or
+        // pending) on its own, and the member is idle now.
+        return await RegisterAsync();
+    }
+
+    private async Task<PoolMemberRegistrationResultDto?> InvokeResumeAsync(PoolMemberRegistrationDto registration,
+        LeaseDto lease)
+    {
+        try
+        {
+            var result = await _poolHubClient.ResumePoolMemberAsync(registration);
+            if (!result.Accepted)
+            {
+                RegistrationState.MarkNotRegistered(
+                    $"The controller refused the registration: {result.StatusMessage ?? "no reason given"}");
+                _logger.LogWarning(
+                    "The controller refused this pool member's registration while lease '{LeaseId}' is running: {StatusMessage}",
+                    lease.LeaseId, result.StatusMessage);
+                return result;
+            }
+
+            RegistrationState.MarkRegistered();
+            if (result.ActiveLeaseAdopted)
+            {
+                _logger.LogInformation(
+                    "Registered as member '{MemberId}' again; the controller took over lease '{LeaseId}' for tenant " +
+                    "'{TenantId}', and its outcome will be reported as usual",
+                    result.MemberId, lease.LeaseId, lease.TenantId);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Registered as member '{MemberId}' again, but the controller did not take over lease '{LeaseId}' for " +
+                    "tenant '{TenantId}': {StatusMessage}. The work item is finished regardless; its outcome will not " +
+                    "be applied",
+                    result.MemberId, lease.LeaseId, lease.TenantId, result.StatusMessage);
+            }
+
+            return result;
+        }
+        catch (Exception e) when (e is HubException or NotSupportedException)
+        {
+            // A controller that pre-dates AB#5826 answers "unknown hub method"; one that refuses the
+            // registration (an enforcing tenant binding) answers the same way. Either way the safe
+            // thing is the old behaviour: do not offer a busy process, register once the lease ends.
+            _resumeUnsupported = true;
+            RegistrationState.MarkNotRegistered(
+                $"registration deferred until lease '{lease.LeaseId}' is released: the controller does not accept a " +
+                $"resumption ({e.Message})");
+            _logger.LogWarning(e,
+                "The controller does not take over running lease '{LeaseId}' for tenant '{TenantId}' (it pre-dates " +
+                "AB#5826, or refused the registration). This member registers again once the lease is released; if " +
+                "the controller lost the lease (a controller restart), its outcome is reported but may not be applied",
+                lease.LeaseId, lease.TenantId);
+            return null;
+        }
+        catch (Exception e)
+        {
+            // Transport-level: rethrown so the (re)connect loop keeps its own retry (AB#4805).
+            RegistrationState.MarkNotRegistered($"Registration failed: {e.Message}");
+            throw;
+        }
+    }
+
+    /// <summary>
+    ///     Re-sends releases that could not be reported while the connection was down (AB#5826).
+    /// </summary>
+    /// <returns>How many were delivered.</returns>
+    /// <remarks>
+    ///     Called on every (re)connect <b>before</b> the member registers, and on every heartbeat tick
+    ///     while the connection is up. A transport failure keeps the rest for the next attempt; a
+    ///     controller that refuses the method drops them (it cannot apply them anyway).
+    /// </remarks>
+    public async Task<int> FlushPendingReleasesAsync()
+    {
+        if (_pendingReleases.IsEmpty)
+        {
+            return 0;
+        }
+
+        await _hubReportGate.WaitAsync();
+        try
+        {
+            var delivered = 0;
+            while (_pendingReleases.TryPeek(out var pending))
+            {
+                try
+                {
+                    await _poolHubClient.ReleaseLeaseAsync(pending);
+                }
+                catch (HubException e)
+                {
+                    WarnOnceAboutUnsupportedController(e, nameof(IAdapterPoolHub.ReleaseLeaseAsync));
+                }
+                catch (Exception e)
+                {
+                    _logger.LogWarning(e,
+                        "Could not re-send the release of lease '{LeaseId}' yet; retrying after the next reconnect",
+                        pending.LeaseId);
+                    return delivered;
+                }
+
+                _pendingReleases.TryDequeue(out _);
+                delivered++;
+                _logger.LogInformation(
+                    "Reported the release of lease '{LeaseId}' for execution '{ExecutionId}' of tenant '{TenantId}' " +
+                    "after the connection was restored",
+                    pending.LeaseId, pending.ExecutionId, pending.TenantId);
+            }
+
+            return delivered;
+        }
+        finally
+        {
+            _hubReportGate.Release();
+        }
+    }
+
+    /// <summary>
+    ///     Registers this process as a member of its configured pool.
+    /// </summary>
+    /// <returns>The controller's answer, or <c>null</c> when the controller does not support the hub.</returns>
+    public async Task<PoolMemberRegistrationResultDto?> RegisterAsync()
+    {
+        var registration = BuildRegistration(null);
+        var pipelineSchemaJson = registration.PipelineSchemaJson;
 
         try
         {
@@ -430,23 +632,31 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     private async Task ReportReleaseAsync(LeaseDto lease, LeaseReleaseReasonDto reason, bool success,
         string? statusMessage, string? outputData = null, long? workDurationMs = null)
     {
+        var result = new LeaseResultDto
+        {
+            LeaseId = lease.LeaseId,
+            Reason = reason,
+            Success = success,
+            StatusMessage = statusMessage,
+            // AB#4924 §9.9 / D4: the only route a leased execution's output has back to its
+            // entity. The member has no adapter-hub connection to report an execution end on.
+            OutputData = outputData,
+            // Null on every path where the work item never ran — a lease refused because the
+            // member is draining or already holds one. The controller records no overhead
+            // sample for those rather than a fabricated zero (AB#4924 increment 9).
+            WorkDurationMs = workDurationMs,
+            ReleasedAtUtc = DateTime.UtcNow,
+            // 🔴 AB#5826 — what lets a controller that no longer holds the lease (it restarted, or
+            // this member reconnected) find the execution and prove it belongs to this member.
+            ExecutionId = lease.ExecutionId,
+            TenantId = lease.TenantId,
+            MemberId = _options.EffectiveMemberId
+        };
+
+        await _hubReportGate.WaitAsync();
         try
         {
-            await _poolHubClient.ReleaseLeaseAsync(new LeaseResultDto
-            {
-                LeaseId = lease.LeaseId,
-                Reason = reason,
-                Success = success,
-                StatusMessage = statusMessage,
-                // AB#4924 §9.9 / D4: the only route a leased execution's output has back to its
-                // entity. The member has no adapter-hub connection to report an execution end on.
-                OutputData = outputData,
-                // Null on every path where the work item never ran — a lease refused because the
-                // member is draining or already holds one. The controller records no overhead
-                // sample for those rather than a fabricated zero (AB#4924 increment 9).
-                WorkDurationMs = workDurationMs,
-                ReleasedAtUtc = DateTime.UtcNow
-            });
+            await _poolHubClient.ReleaseLeaseAsync(result);
         }
         catch (HubException e)
         {
@@ -454,11 +664,19 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
         }
         catch (Exception e)
         {
-            // The lease is already released locally; the controller will expire it on TTL. Losing the
-            // report must never leave the member holding the tenant.
+            // The lease is already released locally — losing the report must never leave the member
+            // holding the tenant. 🔴 AB#5826: but the report is no longer thrown away. It is kept and
+            // re-sent after the reconnect, before this member registers again; dropping it lost the
+            // work item's result and left the execution Running until the reaper failed it.
+            _pendingReleases.Enqueue(result);
             _logger.LogWarning(e,
-                "Could not report the release of lease '{LeaseId}'; the controller will expire it on TTL",
-                lease.LeaseId);
+                "Could not report the release of lease '{LeaseId}' for execution '{ExecutionId}' of tenant " +
+                "'{TenantId}'; it is kept and re-sent once the connection to the controller is restored",
+                lease.LeaseId, lease.ExecutionId, lease.TenantId);
+        }
+        finally
+        {
+            _hubReportGate.Release();
         }
     }
 
@@ -517,6 +735,7 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     public ValueTask DisposeAsync()
     {
         _leaseGate.Dispose();
+        _hubReportGate.Dispose();
         return ValueTask.CompletedTask;
     }
 }
