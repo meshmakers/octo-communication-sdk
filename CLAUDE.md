@@ -662,6 +662,22 @@ refused every lease the controller kept granting it, and the pool was dead until
 
 Tests: `Sdk.Common.Tests/Adapters/AdapterPoolMemberDrainTests`.
 
+### A pool member never starts trigger nodes (AB#5863 / AB#5828)
+
+On a member the lease **is** the trigger: the controller turns cron ticks (`LeaseTriggerMessage`,
+AB#5278) and execute calls into queued work, and the member runs it through `IAdapterLeaseWorkItem`.
+`PipelineRegistryService` therefore registers a pipeline **without** calling
+`StartTriggerPipelineNodesAsync` when `IAdapterTenantScope.IsPoolMember` is true (resolved lazily,
+leniently — a composition without a scope keeps the dedicated behaviour). The registration itself
+stays: the work item resolves it to run the pipeline, and `PipelineRegistryLeaseParticipant` drops it
+on leave.
+
+Why: a started `FromPipelineTriggerEvent@1` declared and bound the borrower's durable trigger queue
+on a bus the member never starts and left it behind on release (AB#5828); its stop then waited for
+the never-reached endpoint ready state (AB#4968 pattern) until `TriggerStopTimeout` (30 s), the leave
+failed and the member drained on **every** leased run of the canonical cron form (AB#5863). Tests:
+`PipelineRegistryServiceTests.PoolMember_*` / `DedicatedAdapter_RegisterPipelineAsync_StillStartsTriggerNodes`.
+
 ## Node inventory (`src/Sdk.Pipeline/EtlDataPipeline/Nodes/`)
 
 - **Triggers**: `FromPipelineDataEvent@1`, `FromExecutePipelineCommand@1`, `FromPolling@1`

@@ -55,6 +55,43 @@ public sealed class PipelineRegistryService(
         }
     }
 
+    /// <summary>
+    /// Whether this process is an adapter pool member (AB#4924), in which case a registration never
+    /// starts the pipeline's trigger nodes (AB#5863 / AB#5828).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A member registers a borrower's pipeline only for the length of one lease, and the lease IS the
+    /// trigger: the controller turns the borrower's cron ticks (AB#5278) and execute calls into queued
+    /// work and the member runs it through <c>IAdapterLeaseWorkItem</c>, never through a trigger node.
+    /// The triggers the controller can route that way are cron <c>FromPipelineTriggerEvent@1</c> and
+    /// <c>FromExecutePipelineCommand@1</c>; process-bound triggers, <c>FromHttpRequest</c> and
+    /// <c>FromPipelineDataEvent</c> are refused at deploy time by the leased gate. A trigger started on
+    /// the member could only ever fire outside the lease bookkeeping - for another tenant's lease, or
+    /// for none.
+    /// </para>
+    /// <para>
+    /// Starting them anyway was harmful twice over: a <c>FromPipelineTriggerEvent@1</c> declared and
+    /// bound the borrower's durable trigger queue on a bus the member never starts, consumed nothing
+    /// and left the queue behind on release (AB#5828); and its stop then waited for the never-reached
+    /// ready state of that endpoint (the AB#4968 pattern) until <c>TriggerStopTimeout</c>, so every such
+    /// lease failed to release its tenant state and drained the member (AB#5863).
+    /// </para>
+    /// <para>
+    /// Decided per process, not per call, and read from <see cref="IAdapterTenantScope.IsPoolMember"/>:
+    /// that flag is not configurable, so a dedicated adapter cannot lose its triggers by environment
+    /// variable. Resolved lazily and leniently (<c>as</c>, not a cast) so compositions without a tenant
+    /// scope keep the dedicated behaviour.
+    /// </para>
+    /// </remarks>
+    private bool IsPoolMemberProcess()
+    {
+        return _isPoolMember ??=
+            (serviceProvider.GetService(typeof(IAdapterTenantScope)) as IAdapterTenantScope)?.IsPoolMember == true;
+    }
+
+    private bool? _isPoolMember;
+
     /// <inheritdoc />
     public async Task RegisterPipelineAsync(string tenantId, PipelineConfigurationDto pipelineConfiguration)
     {
@@ -114,8 +151,18 @@ public sealed class PipelineRegistryService(
             pipelineConfiguration.IsDebuggingEnabled, configurationRoot, globalConfiguration,
             new Dictionary<string, object?>());
 
-        // Start trigger nodes
-        await pipelineRegistration.StartTriggerPipelineNodesAsync(serviceProvider);
+        // Start trigger nodes - except on a pool member, where work arrives only through the lease
+        // (AB#5863 / AB#5828). See IsPoolMemberProcess.
+        if (IsPoolMemberProcess())
+        {
+            logger.LogDebug(
+                "Trigger nodes of pipeline {PipelineRtEntityId} (tenant {TenantId}) are not started: this process is an adapter pool member and receives the pipeline's work through its lease only",
+                pipelineConfiguration.PipelineRtEntityId, tenantId);
+        }
+        else
+        {
+            await pipelineRegistration.StartTriggerPipelineNodesAsync(serviceProvider);
+        }
 
         _pipelineRegistrationsById[byIdKey] = pipelineRegistration;
         _pipelineConfigurationsById[byIdKey] = pipelineConfiguration;

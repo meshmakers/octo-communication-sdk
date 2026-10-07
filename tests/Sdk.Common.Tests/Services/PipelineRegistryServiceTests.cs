@@ -559,6 +559,88 @@ public class PipelineRegistryServiceTests
         await hangingUnregister;
     }
 
+    [Fact]
+    public async Task PoolMember_RegisterPipelinesAsync_RegistersWithoutStartingTriggerNodes()
+    {
+        // AB#5863 / AB#5828: on a pool member the lease is the trigger. Starting a borrower's
+        // FromPipelineTriggerEvent@1 declared and bound its durable trigger queue on a bus the
+        // member never starts, and left it behind on release.
+        A.CallTo(() => _serviceProvider.GetService(typeof(IAdapterTenantScope)))
+            .Returns(new AdapterPoolTenantScope());
+        var tenantId = _faker.Random.Guid().ToString();
+        var pipelineConfig = CreateTestPipelineConfiguration();
+        A.CallTo(() => _configurationSerializer.DeserializeAsync(pipelineConfig.NodeConfiguration))
+            .Returns(CreateTestNodeDefinitionRoot());
+        var triggerNode = SetupTriggerNodeMocks();
+        var errors = new List<DeploymentUpdateErrorMessageDto>();
+
+        var result = await _service.RegisterPipelinesAsync(tenantId, [pipelineConfig], errors);
+
+        // Registered - the work item resolves the registration to run it ...
+        Assert.True(result);
+        Assert.Empty(errors);
+        Assert.True(_service.TryGetPipelineRegistration(tenantId, pipelineConfig.PipelineRtEntityId,
+            out var registration));
+        Assert.NotNull(registration);
+        // ... but no trigger node was ever created, let alone started.
+        A.CallTo(() => triggerNode.StartAsync(A<ITriggerContext>._)).MustNotHaveHappened();
+        var nodeLookupService = (INodeLookupService)_serviceProvider.GetService(typeof(INodeLookupService))!;
+        string? ignored;
+        ITriggerPipelineNode? ignoredNode;
+        A.CallTo(() => nodeLookupService.TryCreateInstance(A<IServiceProvider>._, A<string>._, out ignoredNode))
+            .MustNotHaveHappened();
+        A.CallTo(() => nodeLookupService.TryGetNodeConfigurationQualifiedName(A<Type>._, out ignored))
+            .MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task PoolMember_UnregisterAllPipelinesAsync_ReturnsAtOnceEvenIfATriggerStopWouldHang()
+    {
+        // AB#5863: the stop of a FromPipelineTriggerEvent@1 endpoint on the member's unstarted bus
+        // waits for a ready state that never comes (AB#4968 pattern). With the default 30 s
+        // TriggerStopTimeout that failed every lease's release and drained the member. On a member
+        // nothing was started, so the leave has nothing to stop.
+        A.CallTo(() => _serviceProvider.GetService(typeof(IAdapterTenantScope)))
+            .Returns(new AdapterPoolTenantScope());
+        var tenantId = _faker.Random.Guid().ToString();
+        var pipelineConfig = CreateTestPipelineConfiguration();
+        A.CallTo(() => _configurationSerializer.DeserializeAsync(pipelineConfig.NodeConfiguration))
+            .Returns(CreateTestNodeDefinitionRoot());
+        var triggerNode = SetupTriggerNodeMocks();
+        A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._))
+            .ReturnsLazily(_ => new TaskCompletionSource().Task);
+        await _service.RegisterPipelinesAsync(tenantId, [pipelineConfig], []);
+
+        // Deterministic: the unregister has no time-based step left - it either completes
+        // synchronously with the registry or is stuck. The 10 s guard only turns a regression into a
+        // failure instead of a 30 s stall.
+        await _service.UnregisterAllPipelinesAsync(tenantId)
+            .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        Assert.False(_service.IsRegistered(tenantId, pipelineConfig.PipelineRtEntityId));
+        A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task DedicatedAdapter_RegisterPipelineAsync_StillStartsTriggerNodes()
+    {
+        // The other side of AB#5863: a dedicated adapter's triggers are its only source of work.
+        A.CallTo(() => _serviceProvider.GetService(typeof(IAdapterTenantScope)))
+            .Returns(new AdapterTenantScope());
+        var tenantId = _faker.Random.Guid().ToString();
+        var pipelineConfig = CreateTestPipelineConfiguration();
+        A.CallTo(() => _configurationSerializer.DeserializeAsync(pipelineConfig.NodeConfiguration))
+            .Returns(CreateTestNodeDefinitionRoot());
+        var triggerNode = SetupTriggerNodeMocks();
+
+        await _service.RegisterPipelineAsync(tenantId, pipelineConfig);
+
+        A.CallTo(() => triggerNode.StartAsync(A<ITriggerContext>._)).MustHaveHappenedOnceExactly();
+
+        await _service.UnregisterPipelineAsync(tenantId, pipelineConfig.PipelineRtEntityId);
+        A.CallTo(() => triggerNode.StopAsync(A<ITriggerContext>._)).MustHaveHappenedOnceExactly();
+    }
+
     private ITriggerPipelineNode SetupTriggerNodeMocks()
     {
         var triggerNode = A.Fake<ITriggerPipelineNode>();
