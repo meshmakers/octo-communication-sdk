@@ -22,54 +22,140 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 ///         <see cref="AdapterHubRecoveryService" />.
 ///     </para>
 ///     <para>
-///         Two deliberate softeners keep this from becoming a hair trigger:
-///         <list type="bullet">
-///             <item>
-///                 <see cref="AdapterOptions.HubReadinessGracePeriod" /> — a fresh pod is ready while
-///                 it is still working on its first registration (connect, token, controller
-///                 rollout), so it is never taken out of service before it ever had a chance.
-///             </item>
-///             <item>
-///                 <see cref="AdapterOptions.HubReadinessProbeEnabled" /> — an escape hatch for
-///                 deployments that must stay ready without a controller connection.
-///             </item>
-///         </list>
-///         A brief reconnect is additionally absorbed by the probe's own
-///         <c>failureThreshold</c> in the chart.
+///         The decision and its two softeners are shared with the pool member's counterpart,
+///         <see cref="AdapterPoolHubReadinessHealthCheck" />; see
+///         <see cref="HubRegistrationReadinessHealthCheck" />.
 ///     </para>
 /// </remarks>
 public sealed class AdapterHubReadinessHealthCheck(
     IAdapterHubClient adapterHubClient,
     IAdapterHubRegistrationState registrationState,
-    IOptions<AdapterOptions> adapterOptions) : IHealthCheck
+    IOptions<AdapterOptions> adapterOptions)
+    : HubRegistrationReadinessHealthCheck(registrationState, adapterOptions, "Adapter", "communication hub")
 {
+    /// <inheritdoc />
+    protected override bool IsConnectionAlive => adapterHubClient.IsAlive;
+}
+
+/// <summary>
+///     Readiness check of an adapter pool member (AB#4924 AP-I5): a member the communication
+///     controller has no registration for is never leased, so it is not ready.
+/// </summary>
+/// <remarks>
+///     <para>
+///         🔴 <b>Readiness follows the registration at the pool hub, never a lease.</b> An idle member
+///         holds no tenant and is exactly as ready as a busy one — a check that waited for a lease
+///         would keep every member of an idle pool <c>0/1</c> for ever. The same reasoning is why
+///         the dedicated adapter's <see cref="AdapterHubReadinessHealthCheck" /> must never be
+///         registered on a member: a member has no adapter hub connection, so it would never pass.
+///     </para>
+///     <para>
+///         A member receives no traffic through its Service — work arrives on the management
+///         connection — so a failing probe here changes no routing. What it buys is visibility
+///         (<c>0/1</c> instead of a green pod that is never leased) and a rollout that does not report
+///         success for members that cannot register.
+///     </para>
+/// </remarks>
+public sealed class AdapterPoolHubReadinessHealthCheck(
+    IAdapterPoolHubClient adapterPoolHubClient,
+    IAdapterHubRegistrationState registrationState,
+    IOptions<AdapterOptions> adapterOptions)
+    : HubRegistrationReadinessHealthCheck(registrationState, adapterOptions, "Adapter pool member",
+        "adapter pool hub")
+{
+    /// <inheritdoc />
+    protected override bool IsConnectionAlive => adapterPoolHubClient.IsAlive;
+}
+
+/// <summary>
+///     The readiness decision shared by dedicated adapters and adapter pool members: ready while
+///     registered on a live connection, and during a startup grace period before the first
+///     registration.
+/// </summary>
+/// <remarks>
+///     Two deliberate softeners keep this from becoming a hair trigger:
+///     <list type="bullet">
+///         <item>
+///             <see cref="AdapterOptions.HubReadinessGracePeriod" /> — a fresh pod is ready while it
+///             is still working on its first registration (connect, token, controller rollout), so it
+///             is never taken out of service before it ever had a chance.
+///         </item>
+///         <item>
+///             <see cref="AdapterOptions.HubReadinessProbeEnabled" /> — an escape hatch for
+///             deployments that must stay ready without a controller connection.
+///         </item>
+///     </list>
+///     A brief reconnect is additionally absorbed by the probe's own <c>failureThreshold</c> in the
+///     chart.
+/// </remarks>
+public abstract class HubRegistrationReadinessHealthCheck : IHealthCheck
+{
+    private readonly IOptions<AdapterOptions> _adapterOptions;
+    private readonly string _hubName;
+    private readonly IAdapterHubRegistrationState _registrationState;
+    private readonly string _subject;
+
+    /// <summary>
+    ///     Constructor.
+    /// </summary>
+    /// <param name="registrationState">The registration state the process writes on every (re)registration.</param>
+    /// <param name="adapterOptions">Probe switch and grace period.</param>
+    /// <param name="subject">What is reported on, e.g. "Adapter".</param>
+    /// <param name="hubName">The hub's name in the health check output.</param>
+    protected HubRegistrationReadinessHealthCheck(IAdapterHubRegistrationState registrationState,
+        IOptions<AdapterOptions> adapterOptions, string subject, string hubName)
+    {
+        _registrationState = registrationState;
+        _adapterOptions = adapterOptions;
+        _subject = subject;
+        _hubName = hubName;
+    }
+
+    /// <summary>
+    ///     Whether the connection to the hub is currently up. May throw; a throw counts as "not alive".
+    /// </summary>
+    protected abstract bool IsConnectionAlive { get; }
+
     /// <inheritdoc />
     public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context,
         CancellationToken cancellationToken = default)
     {
-        var options = adapterOptions.Value;
+        var options = _adapterOptions.Value;
         if (!options.HubReadinessProbeEnabled)
         {
             return Task.FromResult(HealthCheckResult.Healthy(
-                "Adapter hub readiness gating is disabled by configuration (Adapter:HubReadinessProbeEnabled)."));
+                $"{_subject} readiness gating on the {_hubName} is disabled by configuration (Adapter:HubReadinessProbeEnabled)."));
         }
 
-        if (registrationState.IsRegistered && adapterHubClient.IsAlive)
+        var isAlive = ReadIsConnectionAlive();
+        if (_registrationState.IsRegistered && isAlive)
         {
             return Task.FromResult(HealthCheckResult.Healthy(
-                $"Adapter is registered at the communication hub since {registrationState.LastRegisteredUtc:O}."));
+                $"{_subject} is registered at the {_hubName} since {_registrationState.LastRegisteredUtc:O}."));
         }
 
-        var sinceStart = DateTime.UtcNow - registrationState.ProcessStartUtc;
-        if (!registrationState.HasEverRegistered && sinceStart < options.HubReadinessGracePeriod)
+        var sinceStart = DateTime.UtcNow - _registrationState.ProcessStartUtc;
+        if (!_registrationState.HasEverRegistered && sinceStart < options.HubReadinessGracePeriod)
         {
             return Task.FromResult(HealthCheckResult.Healthy(
-                $"Adapter has not registered at the communication hub yet, still within the startup grace period of {options.HubReadinessGracePeriod}."));
+                $"{_subject} has not registered at the {_hubName} yet, still within the startup grace period of {options.HubReadinessGracePeriod}."));
         }
 
-        var reason = registrationState.LastFailureMessage ?? "no registration at the adapter hub";
+        var reason = _registrationState.LastFailureMessage ?? $"no registration at the {_hubName}";
         return Task.FromResult(HealthCheckResult.Unhealthy(
-            $"Adapter is not registered at the communication hub (connection alive: {adapterHubClient.IsAlive}, "
-            + $"last registration: {registrationState.LastRegisteredUtc?.ToString("O") ?? "never"}). Reason: {reason}"));
+            $"{_subject} is not registered at the {_hubName} (connection alive: {isAlive}, "
+            + $"last registration: {_registrationState.LastRegisteredUtc?.ToString("O") ?? "never"}). Reason: {reason}"));
+    }
+
+    private bool ReadIsConnectionAlive()
+    {
+        try
+        {
+            return IsConnectionAlive;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 }

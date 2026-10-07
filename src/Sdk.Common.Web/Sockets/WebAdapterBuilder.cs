@@ -8,6 +8,7 @@ using Meshmakers.Octo.Sdk.ServiceClient;
 using Meshmakers.Octo.Sdk.ServiceClient.AssetRepositoryServices.Tenants;
 using Meshmakers.Octo.Sdk.ServiceClient.Authentication;
 using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using NLog;
@@ -179,6 +180,21 @@ public class WebAdapterBuilder
             // The management connection, the registration on every (re)connect, and the heartbeat.
             // Without this the member connects to nothing and is never leased (AB#4924).
             builder.Services.AddHostedService<AdapterPoolMemberService>();
+
+            // AB#4924 AP-I5 — member recovery, the pool-hub counterpart of the dedicated branch below.
+            // The registration state is the one AdapterPoolClient writes (TryAdd: AddAdapterPoolMember()
+            // registers the same type, and whichever runs first wins — both are the same singleton).
+            // The readiness check is tagged "ready" and follows the POOL HUB registration, never a
+            // lease: an idle member is exactly as ready as a busy one. The dedicated
+            // AdapterHubRegistration check must never be registered here — a member has no adapter
+            // hub connection and would never become ready.
+            builder.Services.TryAddSingleton<IAdapterHubRegistrationState, AdapterHubRegistrationState>();
+            builder.Services.AddHostedService<AdapterPoolHubRecoveryService>();
+            builder.Services.AddHealthChecks()
+                .AddCheck<AdapterPoolHubReadinessHealthCheck>(
+                    "AdapterPoolHubRegistration",
+                    HealthStatus.Unhealthy,
+                    tags: ["ready"]);
         }
         else
         {
@@ -194,9 +210,8 @@ public class WebAdapterBuilder
             builder.Services.AddSingleton<IPipelineDataEventTargetWaker, HubPipelineDataEventTargetWaker>();
             builder.Services.AddTransient<IPipelineDebugger, AdapterPipelineDebugger>();
             // Shared registration state: written by AdapterExecutionService on every (re)registration,
-            // read by the readiness check and the recovery watchdog (AB#5409). Dedicated adapters only:
-            // a pool member has no hub registration state, so gating its readiness on it would keep
-            // every member un-ready forever (member recovery is AP-I5).
+            // read by the readiness check and the recovery watchdog (AB#5409). The pool member's
+            // counterpart is wired in the branch above (AP-I5).
             builder.Services.AddSingleton<IAdapterHubRegistrationState, AdapterHubRegistrationState>();
             builder.Services.AddSingleton<AdapterExecutionService>();
             builder.Services.AddHostedService<AdapterHealthFileService>();

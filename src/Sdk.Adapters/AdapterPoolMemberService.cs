@@ -33,6 +33,37 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 ///         <see cref="FallbackHeartbeatInterval" /> covers only the window before the first answer
 ///         arrives, and the case where an older controller answers with nothing.
 ///     </para>
+///     <para>
+///         <b>Member recovery (AB#4924 AP-I5), the pool member's counterpart of AB#5409/AB#5415.</b>
+///         Registration — not the connection — is the signal, recorded in
+///         <see cref="AdapterPoolClient.RegistrationState" /> and read by
+///         <see cref="AdapterPoolHubReadinessHealthCheck" /> and <see cref="AdapterPoolHubRecoveryService" />.
+///         This service adds the parts that only the member itself can do:
+///     </para>
+///     <list type="bullet">
+///         <item><description>
+///             <b>Re-register instead of heartbeating into nothing.</b> A registration the controller
+///             refused (a controller pod that is shutting down, an enforcing tenant binding) or a
+///             heartbeat it rejected leaves the connection up and the member unleasable. The heartbeat
+///             tick then registers again rather than sending a heartbeat nobody records.
+///         </description></item>
+///         <item><description>
+///             <b>Never offer a busy process as free.</b> A member that reconnects while its lease is
+///             still running defers the registration until the lease is released: the controller has
+///             already interrupted and re-queued that lease (concept §6), and a fresh registration
+///             would make it hand the member the next lease at once — which the member then has to
+///             refuse, failing that borrower's execution for nothing.
+///         </description></item>
+///         <item><description>
+///             <b>Flush the CK model cache of the recently leased tenants after a reconnect</b>
+///             (AB#5415). <c>CkModelChanged</c> never reaches a member at all — it has no adapter-hub
+///             connection — so per-lease load/unload (the host's lease participants) is what keeps a
+///             member current between leases. What a reconnect can leave stale is the tenant of the
+///             lease running across it and, for a host without such a participant, the last tenant
+///             entered. Flushed before the registration, so no new lease can warm a cache that is
+///             about to be dropped.
+///         </description></item>
+///     </list>
 /// </remarks>
 public sealed class AdapterPoolMemberService : BackgroundService
 {
@@ -43,6 +74,7 @@ public sealed class AdapterPoolMemberService : BackgroundService
     /// </summary>
     internal static readonly TimeSpan FallbackHeartbeatInterval = TimeSpan.FromSeconds(30);
 
+    private readonly IAdapterService? _adapterService;
     private readonly IAdapterPoolHubClient _hubClient;
     private readonly ILogger<AdapterPoolMemberService> _logger;
     private readonly IOptions<AdapterPoolMemberOptions> _options;
@@ -51,13 +83,23 @@ public sealed class AdapterPoolMemberService : BackgroundService
     private TimeSpan _heartbeatInterval = FallbackHeartbeatInterval;
 
     /// <summary>Creates the pool-member service.</summary>
+    /// <param name="poolClient">The member's half of the lease protocol.</param>
+    /// <param name="hubClient">The management connection.</param>
+    /// <param name="options">The pool this member belongs to.</param>
+    /// <param name="logger">Logger.</param>
+    /// <param name="adapterService">
+    ///     The host's adapter service, whose <see cref="IAdapterService.CkModelChangedAsync" /> drops a
+    ///     tenant's CK model cache. Optional: a host without one has no cache to flush.
+    /// </param>
     public AdapterPoolMemberService(AdapterPoolClient poolClient, IAdapterPoolHubClient hubClient,
-        IOptions<AdapterPoolMemberOptions> options, ILogger<AdapterPoolMemberService> logger)
+        IOptions<AdapterPoolMemberOptions> options, ILogger<AdapterPoolMemberService> logger,
+        IAdapterService? adapterService = null)
     {
         _poolClient = poolClient;
         _hubClient = hubClient;
         _options = options;
         _logger = logger;
+        _adapterService = adapterService;
     }
 
     /// <summary>The cadence currently in force; the controller's answer once one has arrived.</summary>
@@ -106,15 +148,48 @@ public sealed class AdapterPoolMemberService : BackgroundService
                 break;
             }
 
-            try
+            await TickAsync();
+        }
+    }
+
+    /// <summary>
+    ///     One heartbeat tick: a heartbeat while registered, a registration attempt while the
+    ///     connection is up but the controller holds no registration, nothing while the connection is
+    ///     down (the SignalR client owns the reconnect, and its connect callback registers).
+    ///     Internal so the decision can be tested without the timer.
+    /// </summary>
+    internal async Task TickAsync()
+    {
+        try
+        {
+            if (!_hubClient.IsAlive)
+            {
+                return;
+            }
+
+            if (_poolClient.RegistrationState.IsRegistered)
             {
                 await _poolClient.HeartbeatAsync();
+                return;
             }
-            catch (Exception e)
+
+            if (_poolClient.CurrentLease is { } lease)
             {
-                // Same reasoning as above: a missed heartbeat is a reconnect, not a reason to exit.
-                _logger.LogWarning(e, "Adapter pool heartbeat failed; will retry on the next interval");
+                // See the class remarks: never offer a busy process as free.
+                _logger.LogDebug(
+                    "Not registering yet: lease '{LeaseId}' is still running on this member", lease.LeaseId);
+                return;
             }
+
+            _logger.LogInformation(
+                "The controller holds no registration for this pool member ({Reason}); registering again",
+                _poolClient.RegistrationState.LastFailureMessage ?? "never registered");
+            await RegisterAsync();
+        }
+        catch (Exception e)
+        {
+            // Same reasoning as above: a missed heartbeat is a reconnect, not a reason to exit.
+            _logger.LogWarning(e, "Adapter pool heartbeat failed; will retry on the next interval");
         }
     }
 
@@ -135,9 +210,41 @@ public sealed class AdapterPoolMemberService : BackgroundService
 
     /// <summary>
     ///     Runs on every connect and every reconnect. See the remark on the class for why registering
-    ///     once would be wrong.
+    ///     once would be wrong. Internal for the tests.
     /// </summary>
-    private async Task OnConnectedAsync(bool reconnected)
+    internal async Task OnConnectedAsync(bool reconnected)
+    {
+        if (reconnected)
+        {
+            // A new connection carries no registration, whatever the state says about the old one.
+            // Cleared first, so neither the heartbeat tick nor the readiness probe acts on a
+            // registration that died with the previous connection.
+            _poolClient.RegistrationState.MarkNotRegistered("re-registering after a reconnect");
+
+            await FlushCkModelCacheAfterReconnectAsync();
+
+            if (_poolClient.CurrentLease is { } lease)
+            {
+                // See the class remarks. The heartbeat tick registers once the lease is released.
+                _poolClient.RegistrationState.MarkNotRegistered(
+                    $"registration deferred until lease '{lease.LeaseId}' is released");
+                _logger.LogWarning(
+                    "Reconnected while lease '{LeaseId}' for tenant '{TenantId}' is still running. The controller has " +
+                    "interrupted and re-queued it; this member registers again once the lease is released",
+                    lease.LeaseId, lease.TenantId);
+                return;
+            }
+        }
+
+        await RegisterAsync();
+
+        if (reconnected && _poolClient.RegistrationState.IsRegistered)
+        {
+            _logger.LogInformation("Re-registered as pool member after a reconnect");
+        }
+    }
+
+    private async Task RegisterAsync()
     {
         var result = await _poolClient.RegisterAsync();
 
@@ -145,10 +252,36 @@ public sealed class AdapterPoolMemberService : BackgroundService
         {
             _heartbeatInterval = TimeSpan.FromSeconds(result.HeartbeatIntervalSeconds);
         }
+    }
 
-        if (reconnected)
+    /// <summary>
+    ///     Drops the CK model cache of the tenants this member leased most recently (AB#5415 for pool
+    ///     members). Best-effort: the cache reloads lazily on the next lease, so a failure here must
+    ///     not fail the reconnect — it only leaves the member where it already was.
+    /// </summary>
+    private async Task FlushCkModelCacheAfterReconnectAsync()
+    {
+        if (_adapterService is null)
         {
-            _logger.LogInformation("Re-registered as pool member after a reconnect");
+            return;
+        }
+
+        foreach (var tenantId in _poolClient.RecentlyLeasedTenantIds)
+        {
+            try
+            {
+                _logger.LogInformation(
+                    "Invalidating the CK model cache of recently leased tenant '{TenantId}' after a reconnect; CK model " +
+                    "changes announced while disconnected were not delivered",
+                    tenantId);
+                await _adapterService.CkModelChangedAsync(tenantId);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e,
+                    "Invalidating the CK model cache after a reconnect failed for recently leased tenant '{TenantId}'",
+                    tenantId);
+            }
         }
     }
 }

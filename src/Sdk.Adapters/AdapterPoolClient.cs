@@ -68,6 +68,13 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
 
     private volatile bool _isDraining;
 
+    // AB#4924 AP-I5 — the lease this member is running right now, and the tenant of the last one it
+    // entered. Read by the member service after a reconnect: the CK model cache of exactly these
+    // tenants may have missed a CkModelChanged while the connection was gone, and a member that
+    // still runs a lease must not offer itself to the controller as free.
+    private volatile LeaseDto? _currentLease;
+    private volatile string? _lastLeaseTenantId;
+
     /// <summary>
     ///     Constructor.
     /// </summary>
@@ -79,12 +86,19 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     /// <param name="logger">Logger.</param>
     /// <param name="nodeSchemaRegistry">The nodes this member can execute; null when the host composed no data pipeline.</param>
     /// <param name="pipelineSchemaGenerator">The composite pipeline schema generator; null when the host composed no data pipeline.</param>
+    /// <param name="registrationState">
+    ///     Where this member records whether the controller holds a registration for it (AB#4924
+    ///     AP-I5). Read by the readiness check and the recovery watchdog; a private instance when the
+    ///     host registered none.
+    /// </param>
     public AdapterPoolClient(IAdapterLeaseScope leaseScope, IAdapterPoolHubClient poolHubClient,
         IEnumerable<IAdapterLeaseParticipant> participants, IAdapterLeaseWorkItem workItem,
         IOptions<AdapterPoolMemberOptions> options, ILogger<AdapterPoolClient> logger,
         INodeSchemaRegistry? nodeSchemaRegistry = null,
-        IPipelineSchemaGenerator? pipelineSchemaGenerator = null)
+        IPipelineSchemaGenerator? pipelineSchemaGenerator = null,
+        IAdapterHubRegistrationState? registrationState = null)
     {
+        RegistrationState = registrationState ?? new AdapterHubRegistrationState();
         _leaseScope = leaseScope;
         _poolHubClient = poolHubClient;
         _participants = participants.ToList();
@@ -97,6 +111,46 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
 
     /// <summary>Whether this member was asked to drain and takes no further lease.</summary>
     public bool IsDraining => _isDraining;
+
+    /// <summary>
+    ///     Whether the controller currently holds a registration for this member: written on every
+    ///     registration attempt and on every heartbeat the controller rejects (AB#4924 AP-I5).
+    /// </summary>
+    public IAdapterHubRegistrationState RegistrationState { get; }
+
+    /// <summary>The lease this member is running right now, or <c>null</c> while it is idle.</summary>
+    /// <remarks>
+    ///     Internal on purpose: the lease carries the borrower's client secret, and nothing outside
+    ///     the member's own composition has a reason to hold a reference to it.
+    /// </remarks>
+    internal LeaseDto? CurrentLease => _currentLease;
+
+    /// <summary>
+    ///     The tenants whose in-process state may be stale after the management connection was lost:
+    ///     the tenant of the lease running right now and the tenant of the last lease entered, without
+    ///     duplicates. Empty for a member that never held a lease.
+    /// </summary>
+    public IReadOnlyList<string> RecentlyLeasedTenantIds
+    {
+        get
+        {
+            var tenants = new List<string>(2);
+            var current = _currentLease?.TenantId;
+            if (!string.IsNullOrWhiteSpace(current))
+            {
+                tenants.Add(current);
+            }
+
+            var last = _lastLeaseTenantId;
+            if (!string.IsNullOrWhiteSpace(last) &&
+                !tenants.Contains(last, StringComparer.OrdinalIgnoreCase))
+            {
+                tenants.Add(last);
+            }
+
+            return tenants;
+        }
+    }
 
     /// <summary>
     ///     Registers this process as a member of its configured pool.
@@ -128,6 +182,7 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
             var result = await _poolHubClient.RegisterPoolMemberAsync(registration);
             if (result.Accepted)
             {
+                RegistrationState.MarkRegistered();
                 _logger.LogInformation(
                     "Registered as member '{MemberId}' of adapter pool {AdapterPoolRtId} in tenant '{AdapterPoolTenantId}' with " +
                     "{NodeCount} node descriptor(s) and {SchemaState} pipeline schema",
@@ -136,6 +191,8 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
             }
             else
             {
+                RegistrationState.MarkNotRegistered(
+                    $"The controller refused the registration: {result.StatusMessage ?? "no reason given"}");
                 _logger.LogWarning(
                     "The controller refused this pool-member registration for pool {AdapterPoolRtId} in tenant " +
                     "'{AdapterPoolTenantId}': {StatusMessage}",
@@ -146,8 +203,17 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
         }
         catch (HubException e)
         {
+            RegistrationState.MarkNotRegistered($"The controller rejected the registration: {e.Message}");
             WarnOnceAboutUnsupportedController(e, nameof(IAdapterPoolHub.RegisterPoolMemberAsync));
             return null;
+        }
+        catch (Exception e)
+        {
+            // Transport-level: the connection is not (or no longer) active. Rethrown so the SignalR
+            // (re)connect loop keeps its own retry (AB#4805) — swallowing it would let the loop take
+            // a failed registration for a successful connect.
+            RegistrationState.MarkNotRegistered($"Registration failed: {e.Message}");
+            throw;
         }
     }
 
@@ -225,6 +291,9 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
         // controller derives it by subtraction.
         long? workDurationMs = null;
 
+        _currentLease = lease;
+        _lastLeaseTenantId = lease.TenantId;
+
         try
         {
             leaseScope = _leaseScope.BeginLease(lease.TenantId);
@@ -284,6 +353,7 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
             }
 
             leaseScope?.Dispose();
+            _currentLease = null;
         }
 
         var reason = _isDraining
@@ -336,6 +406,13 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     /// <summary>
     ///     Sends one heartbeat, naming the lease this member believes it holds.
     /// </summary>
+    /// <remarks>
+    ///     🔴 AB#4924 AP-I5 — a heartbeat the controller rejects means the controller holds no
+    ///     registration for this connection (a newer controller says so explicitly, an older one
+    ///     does not know the method). Either way the member is not leasable, so the registration
+    ///     state is cleared and <see cref="AdapterPoolMemberService" /> registers again on its next
+    ///     tick instead of heartbeating into a registration that does not exist.
+    /// </remarks>
     public async Task HeartbeatAsync()
     {
         try
@@ -343,13 +420,21 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
             await _poolHubClient.HeartbeatAsync(new PoolMemberHeartbeatDto
             {
                 MemberId = _options.EffectiveMemberId,
-                ActiveLeaseId = _leaseScope.LeaseTenantId is null ? null : _leaseScope.LeaseTenantId,
+                // The lease id, not the tenant: before AP-I5 this sent the leased TENANT under the
+                // name ActiveLeaseId, which no reader could have matched against a lease.
+                ActiveLeaseId = _currentLease?.LeaseId,
                 SampledAtUtc = DateTime.UtcNow
             });
         }
         catch (HubException e)
         {
-            WarnOnceAboutUnsupportedController(e, nameof(IAdapterPoolHub.HeartbeatAsync));
+            RegistrationState.MarkNotRegistered($"The controller rejected a heartbeat: {e.Message}");
+            // Not the warn-once skew message: the member service heartbeats only while it believes
+            // it is registered and re-registers instead otherwise, so this fires at most once per
+            // lost registration — and it is the one line that says why the member went quiet.
+            _logger.LogWarning(e,
+                "The controller rejected this pool member's heartbeat; it holds no registration for this " +
+                "connection. Registering again on the next heartbeat tick.");
         }
     }
 

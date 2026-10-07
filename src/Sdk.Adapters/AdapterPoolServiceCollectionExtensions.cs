@@ -94,6 +94,11 @@ public static class AdapterPoolServiceCollectionExtensions
                     // AdapterPoolHubClient.BuildServiceUri.
                 });
 
+        // AB#4924 AP-I5 — whether the controller holds a registration for this member. Written by
+        // AdapterPoolClient, read by the readiness check and the recovery watchdog the builders add.
+        // TryAdd: the builders register the same type, and both sides must see one instance.
+        services.TryAddSingleton<IAdapterHubRegistrationState, AdapterHubRegistrationState>();
+
         services.TryAddSingleton<AdapterPoolClient>();
         // 🔴 A deferred forwarder, NOT `p => p.GetRequiredService<AdapterPoolClient>()`. That factory
         // closed a cycle — client → hub client → callbacks → client — which Microsoft DI cannot see

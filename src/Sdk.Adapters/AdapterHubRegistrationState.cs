@@ -14,6 +14,12 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 ///     both health endpoints answered 200).
 ///     Registration is therefore the only signal that means "the controller can reach me", and it is
 ///     what the readiness probe and the recovery watchdog are built on.
+///     <para>
+///         An adapter pool member uses the same state for its registration at the tenant-free
+///         adapter pool hub (AB#4924 AP-I5), written by <see cref="AdapterPoolClient" /> and read by
+///         <see cref="AdapterPoolHubReadinessHealthCheck" /> and <see cref="AdapterPoolHubRecoveryService" />.
+///         A process is either one or the other, so one singleton serves both.
+///     </para>
 /// </remarks>
 public interface IAdapterHubRegistrationState
 {

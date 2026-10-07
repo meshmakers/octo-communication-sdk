@@ -10,6 +10,7 @@ using Meshmakers.Octo.Sdk.ServiceClient.Authentication;
 using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -211,6 +212,11 @@ public class AdapterBuilder
                 // The management connection, the registration on every (re)connect, and the
                 // heartbeat. Without this the member connects to nothing and is never leased.
                 services.AddHostedService<AdapterPoolMemberService>();
+
+                // AB#4924 AP-I5 — member recovery, see WebAdapterBuilder. No readiness check here:
+                // a non-web host has no HTTP probe, exactly as on the dedicated branch.
+                services.TryAddSingleton<IAdapterHubRegistrationState, AdapterHubRegistrationState>();
+                services.AddHostedService<AdapterPoolHubRecoveryService>();
             }
             else
             {
@@ -228,9 +234,8 @@ public class AdapterBuilder
 
                 // Shared registration state: written by AdapterExecutionService on every (re)registration,
                 // read by the recovery watchdog (AB#5409). Non-web adapters have no HTTP probe, so the
-                // readiness check of WebAdapterBuilder has no counterpart here. Dedicated adapters only:
-                // a pool member registers on the pool hub via AdapterPoolMemberService, which has no
-                // registration state yet (member recovery is AP-I5).
+                // readiness check of WebAdapterBuilder has no counterpart here. The pool member's
+                // counterpart is wired in the branch above (AP-I5).
                 services.AddSingleton<IAdapterHubRegistrationState, AdapterHubRegistrationState>();
                 services.AddSingleton<AdapterExecutionService>();
                 services.AddHostedService<AdapterHealthFileService>();

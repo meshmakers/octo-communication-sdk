@@ -510,11 +510,11 @@ not a marker.
 
 ## Adapter hub registration is the only "reachable" signal (AB#5409)
 
-> **Dedicated adapters only (0.2 lane).** `IAdapterHubRegistrationState`, `AdapterHubRecoveryService`
-> and the `ready`-tagged `AdapterHubReadinessHealthCheck` are wired in the `else` branch of the
-> pool-member switch in `AdapterBuilder`/`WebAdapterBuilder`. A pool member registers on the pool hub
-> via `AdapterPoolMemberService` and has no registration state; gating its readiness on this check
-> would keep every member un-ready. Member recovery is a separate work package (AP-I5).
+> **0.2 lane: two branches, one policy.** `AdapterHubRecoveryService` and the `ready`-tagged
+> `AdapterHubReadinessHealthCheck` are wired in the `else` (dedicated) branch of the pool-member switch
+> in `AdapterBuilder`/`WebAdapterBuilder`; a pool member gets their pool-hub counterparts instead (see
+> "Pool member recovery" below). 🔴 Never register `AdapterHubRegistration` on a member — it has no
+> adapter-hub connection, so the check would keep every member un-ready.
 
 A live SignalR connection is **not** the same as a usable adapter. Registration at the controller's
 `adapterHub` is a hub invoke of its own, and it can fail while the connection is up. When it does,
@@ -588,6 +588,44 @@ throws ends registered; all attempts failing marks not-registered and rethrows) 
 `Sdk.Common.Tests/Adapters/AdapterHubRegistrationReadinessTests` (readiness matrix, recovery timing,
 never-registered guard, and a connection state that cannot be read: it counts as an outage, the
 service keeps sampling and restarts only after the timeout).
+
+## Pool member recovery (AB#4924 AP-I5)
+
+The pool member's counterpart of AB#5409/AB#5415. Same policy, same configuration keys
+(`Adapter:HubReadinessProbeEnabled`, `HubReadinessGracePeriod`, `HubRegistrationRecoveryEnabled`,
+`HubRegistrationRecoveryTimeout`), different hub. The decision logic lives once in the abstract
+`HubRegistrationRecoveryService` / `HubRegistrationReadinessHealthCheck`; the dedicated and the member
+classes differ only in which connection's `IsAlive` they sample.
+
+- **Deaf member** = the controller holds no registration for this member's *current* connection: the
+  pool hub is down, the registration was refused (`Accepted=false` from a controller pod that is
+  shutting down, or a `HubException` from an enforcing tenant binding), or the controller rejected a
+  heartbeat (it does so for a connection it has no registration for). A deaf member is quieter than a
+  deaf dedicated adapter: it has no pipelines of its own between leases, so it simply never gets work.
+- **State**: `AdapterPoolClient.RegistrationState` (the shared `IAdapterHubRegistrationState`
+  singleton, `TryAdd` in `AddAdapterPoolMember()` *and* the builders' member branch — both sides must
+  see one instance). Written on every registration attempt and on a rejected heartbeat.
+- **Readiness**: `AdapterPoolHubReadinessHealthCheck`, check name `AdapterPoolHubRegistration`, tag
+  `ready` (WebAdapterBuilder only). 🔴 It follows the registration, **never a lease** — an idle member
+  is exactly as ready as a busy one.
+- **Recovery**: `AdapterPoolHubRecoveryService` stops the host after the timeout, armed only after the
+  first registration in the process. A lease still running then is lost with the process; the
+  controller interrupted and re-queued it when the connection went away (concept §6).
+- **Self-heal without restart** (`AdapterPoolMemberService.TickAsync`): connection down → nothing (the
+  SignalR client owns reconnecting, its callback registers); registered → heartbeat; up but not
+  registered → register again instead of heartbeating into nothing.
+- 🔴 **Reconnect during a lease defers the registration** until the lease is released. The controller
+  already re-queued that lease; registering at once would get the member the next lease immediately,
+  which it must refuse (one lease at a time) — and a refused lease fails that borrower's execution.
+- **CK model cache flush** after a reconnect, per *recently leased* tenant
+  (`AdapterPoolClient.RecentlyLeasedTenantIds` = running lease + last entered), via the host's
+  `IAdapterService.CkModelChangedAsync`, **before** registering so no new lease warms a cache about to
+  be dropped. `CkModelChanged` never reaches a member at all (no adapter-hub connection); the mesh
+  adapter's `CkModelCacheLeaseParticipant` loads/unloads per lease, so between leases there is nothing
+  stale — the flush covers the lease running across the reconnect and hosts without such a participant.
+- The heartbeat now sends the held lease **id** as `ActiveLeaseId` (it used to send the tenant id).
+
+Tests: `Sdk.Common.Tests/Adapters/AdapterPoolMemberRecoveryTests`.
 
 ## Node inventory (`src/Sdk.Pipeline/EtlDataPipeline/Nodes/`)
 
