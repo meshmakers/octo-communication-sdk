@@ -589,6 +589,19 @@ throws ends registered; all attempts failing marks not-registered and rethrows) 
 never-registered guard, and a connection state that cannot be read: it counts as an outage, the
 service keeps sampling and restarts only after the timeout).
 
+### Registered, connected — and still deaf (AB#5827)
+
+A registration can succeed and still be lost on the controller: a tenant pre/post-update racing it
+left the adapter in an orphaned cache instance (fixed controller-side). The adapter cannot detect
+that on its own — `ReportAdapterMetricsAsync` is a `SendAsync`, so a server-side rejection never
+arrives. The controller therefore detects it from the metrics samples and sends
+`PreUpdateTenantAsync` to that connection — the existing "restart and register again" callback, so
+nothing changes in this repo's contract. The one change here: `PreUpdateTenantAsync` marks the
+registration state **not registered immediately**, not at the end of `StopAsync` (the shutdown may
+take up to `AdapterShutdownTimeout`), so readiness and the watchdog never report "registered" for a
+process the controller has already written off. Test:
+`AdapterExecutionServiceTests.PreUpdateTenantAsync_MarksNotRegisteredBeforeTheShutdownCompletes`.
+
 ## Pool member recovery (AB#4924 AP-I5)
 
 The pool member's counterpart of AB#5409/AB#5415. Same policy, same configuration keys

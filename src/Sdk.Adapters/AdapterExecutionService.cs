@@ -84,6 +84,15 @@ public class AdapterExecutionService : IAdapterHubCallbacks
     {
         _logger.Info("PreUpdateTenantAsync for tenant {TenantId}", tenantId);
 
+        // AB#5827: from this moment the controller has flushed this adapter's registration (a
+        // tenant update) or found it lost (an orphaned registration it detected from the metrics
+        // samples) — either way nothing the controller pushes reaches this process until it has
+        // registered again. Say so now rather than at the end of StopAsync: the shutdown below can
+        // take up to AdapterShutdownTimeout, and readiness / the recovery watchdog must not report
+        // "registered" for that long. The restart's own registration marks it registered again.
+        _registrationState.MarkNotRegistered(
+            "the communication controller asked this adapter to restart and register again (tenant update or lost registration)");
+
         // Run on a background thread to avoid deadlocks on the SignalR callback thread.
         _ = Task.Run(async () =>
         {

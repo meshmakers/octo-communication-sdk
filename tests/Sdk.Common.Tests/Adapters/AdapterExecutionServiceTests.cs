@@ -631,6 +631,51 @@ public class AdapterExecutionServiceTests
             .MustHaveHappened();
     }
 
+    /// <summary>
+    /// AB#5827: PreUpdateTenant is how the controller says "your registration is gone, restart and
+    /// register again" — for a tenant update and, since AB#5827, for a registration it found
+    /// orphaned. The adapter must stop reporting itself registered at once, not only at the end of
+    /// a shutdown that may take minutes; readiness and the recovery watchdog read this state.
+    /// </summary>
+    [Fact]
+    public async Task PreUpdateTenantAsync_MarksNotRegisteredBeforeTheShutdownCompletes()
+    {
+        // Arrange: a registered adapter whose shutdown hangs until released
+        Func<bool, Task>? capturedReconnectFunc = null;
+        A.CallTo(() => _hubClient.StartAsync(A<Func<bool, Task>>._, A<CancellationToken>._))
+            .Invokes((Func<bool, Task> func, CancellationToken _) => capturedReconnectFunc = func)
+            .Returns(Task.CompletedTask);
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .Returns(CreateTestAdapterConfiguration());
+        A.CallTo(() => _adapterService.StartupAsync(A<AdapterStartup>._,
+                A<List<DeploymentUpdateErrorMessageDto>>._, A<CancellationToken>._))
+            .Returns(true);
+
+        await _service.StartAsync(CancellationToken.None);
+        await capturedReconnectFunc!(false);
+        Assert.True(_registrationState.IsRegistered);
+
+        var shutdownEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseShutdown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        A.CallTo(() => _adapterService.ShutdownAsync(A<AdapterShutdown>._, A<CancellationToken>._))
+            .ReturnsLazily(async () =>
+            {
+                shutdownEntered.TrySetResult();
+                await releaseShutdown.Task;
+            });
+
+        // Act
+        await _service.PreUpdateTenantAsync("testTenant");
+        await shutdownEntered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        // Assert: not registered while the shutdown is still running, with a reason for the health output
+        Assert.False(_registrationState.IsRegistered);
+        Assert.True(_registrationState.HasEverRegistered);
+        Assert.Contains("register again", _registrationState.LastFailureMessage);
+
+        releaseShutdown.SetResult();
+    }
+
     private System.Threading.SemaphoreSlim GetConfigurationUpdateLock()
     {
         var field = typeof(AdapterExecutionService).GetField("_configurationUpdateLock",
