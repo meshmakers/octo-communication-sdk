@@ -217,6 +217,9 @@ public class AdapterBuilder
                 // a non-web host has no HTTP probe, exactly as on the dedicated branch.
                 services.TryAddSingleton<IAdapterHubRegistrationState, AdapterHubRegistrationState>();
                 services.AddHostedService<AdapterPoolHubRecoveryService>();
+
+                // AB#5864 — a draining member exits once idle, so the pool replaces it.
+                services.AddHostedService<AdapterPoolMemberDrainExitService>();
             }
             else
             {

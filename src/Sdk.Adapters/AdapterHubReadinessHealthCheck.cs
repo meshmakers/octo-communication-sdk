@@ -55,16 +55,29 @@ public sealed class AdapterHubReadinessHealthCheck(
 ///         (<c>0/1</c> instead of a green pod that is never leased) and a rollout that does not report
 ///         success for members that cannot register.
 ///     </para>
+///     <para>
+///         🔴 <b>A draining member is not ready</b> (AB#5864), whatever its registration says: it takes
+///         no further lease, so a green probe would show a pod that is never leased again as healthy
+///         — exactly the test-2-dev picture of a pool that was dead behind a <c>1/1</c> pod.
+///         <see cref="AdapterPoolMemberDrainExitService" /> stops the process once it is idle.
+///     </para>
 /// </remarks>
 public sealed class AdapterPoolHubReadinessHealthCheck(
     IAdapterPoolHubClient adapterPoolHubClient,
     IAdapterHubRegistrationState registrationState,
-    IOptions<AdapterOptions> adapterOptions)
+    IOptions<AdapterOptions> adapterOptions,
+    AdapterPoolClient? poolClient = null)
     : HubRegistrationReadinessHealthCheck(registrationState, adapterOptions, "Adapter pool member",
         "adapter pool hub")
 {
     /// <inheritdoc />
     protected override bool IsConnectionAlive => adapterPoolHubClient.IsAlive;
+
+    /// <inheritdoc />
+    protected override string? NotReadyReason => poolClient is { IsDraining: true }
+        ? $"Adapter pool member is draining and takes no further lease ({poolClient.DrainReason ?? "no reason recorded"}); " +
+          "it exits once idle and the pool restarts it."
+        : null;
 }
 
 /// <summary>
@@ -116,6 +129,12 @@ public abstract class HubRegistrationReadinessHealthCheck : IHealthCheck
     /// </summary>
     protected abstract bool IsConnectionAlive { get; }
 
+    /// <summary>
+    ///     A reason this process is not ready regardless of its registration, or <c>null</c>. Checked
+    ///     after the probe switch and before the registration (AB#5864: a draining pool member).
+    /// </summary>
+    protected virtual string? NotReadyReason => null;
+
     /// <inheritdoc />
     public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context,
         CancellationToken cancellationToken = default)
@@ -125,6 +144,11 @@ public abstract class HubRegistrationReadinessHealthCheck : IHealthCheck
         {
             return Task.FromResult(HealthCheckResult.Healthy(
                 $"{_subject} readiness gating on the {_hubName} is disabled by configuration (Adapter:HubReadinessProbeEnabled)."));
+        }
+
+        if (NotReadyReason is { } notReadyReason)
+        {
+            return Task.FromResult(HealthCheckResult.Unhealthy(notReadyReason));
         }
 
         var isAlive = ReadIsConnectionAlive();

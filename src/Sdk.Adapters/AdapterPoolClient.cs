@@ -68,6 +68,10 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
 
     private volatile bool _isDraining;
 
+    // AB#5864 — why this member drains, for the readiness check and the exit log. Written once with
+    // the first drain; a later reason never overwrites the one that started it.
+    private volatile string? _drainReason;
+
     // AB#4924 AP-I5 — the lease this member is running right now, and the tenant of the last one it
     // entered. Read by the member service after a reconnect: the CK model cache of exactly these
     // tenants may have missed a CkModelChanged while the connection was gone, and a member that
@@ -111,6 +115,29 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
 
     /// <summary>Whether this member was asked to drain and takes no further lease.</summary>
     public bool IsDraining => _isDraining;
+
+    /// <summary>
+    ///     Why this member drains — the controller's drain request or a lease it could not leave
+    ///     cleanly — or <c>null</c> while it is not draining (AB#5864).
+    /// </summary>
+    public string? DrainReason => _drainReason;
+
+    /// <summary>
+    ///     Whether this member is draining <b>and</b> has nothing left to finish: no lease is running
+    ///     and no release is still being reported (AB#5864). From this moment the process serves no
+    ///     purpose — it takes no lease and holds no tenant — so
+    ///     <see cref="AdapterPoolMemberDrainExitService" /> stops it and the pool workload restarts
+    ///     it as a fresh, clean process.
+    /// </summary>
+    /// <remarks>
+    ///     🔴 The lease gate, not <see cref="CurrentLease" />, is the "nothing left" test.
+    ///     <see cref="CurrentLease" /> is cleared <i>before</i> the release is reported (the tenant
+    ///     has to be gone first), so a process stopped on it could die between the two — and the
+    ///     controller would then see a disconnect while it still holds the lease, interrupt the
+    ///     execution and run work again that had already completed. The gate is held until the
+    ///     report has been sent.
+    /// </remarks>
+    public bool IsDrainedAndIdle => _isDraining && _currentLease is null && _leaseGate.CurrentCount > 0;
 
     /// <summary>
     ///     Whether the controller currently holds a registration for this member: written on every
@@ -256,7 +283,7 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     public async Task DrainAsync(string reason)
     {
         _logger.LogInformation("This pool member was asked to drain: {Reason}", reason);
-        _isDraining = true;
+        MarkDraining($"the controller asked this member to drain: {reason}");
 
         // Waits for an in-flight lease to finish rather than interrupting it. A drain that yanked the
         // tenant out from under a running work item would produce exactly the half-released state
@@ -280,6 +307,7 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
 
         var outcome = LeaseWorkOutcome.Failed("The lease was not entered.");
         var entered = new List<IAdapterLeaseParticipant>(_participants.Count);
+        List<string>? leaveFailures = null;
         IDisposable? leaseScope = null;
 
         // 🔴 AB#4924 increment 9. The member is the ONLY party that can measure this. The controller
@@ -346,14 +374,31 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
                     // Concept §6: post-lease cleanliness is unproven, so the member drains rather
                     // than being re-used. Not a best-effort shrug — the whole invariant is that a
                     // member that cannot prove it is clean never serves a second tenant.
-                    _isDraining = true;
-                    outcome = LeaseWorkOutcome.Failed(
-                        $"A lease participant failed to release tenant state: {e.Message}");
+                    MarkDraining(
+                        $"lease participant {entered[i].GetType().Name} failed to leave lease '{lease.LeaseId}': {e.Message}");
+                    (leaveFailures ??= []).Add($"{entered[i].GetType().Name}: {e.Message}");
                 }
             }
 
             leaseScope?.Dispose();
             _currentLease = null;
+        }
+
+        if (leaveFailures is not null)
+        {
+            // 🔴 AB#5864 — a failed leave is a fact about THIS PROCESS, not about the work item. The
+            // work item's own outcome — success, output — is kept and the drain travels as the
+            // release reason (LeaseResultDto: "a Drained release can still carry a completed work
+            // item"). Overwriting it with Failed is what turned a pipeline that had completed into
+            // a FAILED execution on test-2-dev, which invites the borrower to run it a second time.
+            var drainNote =
+                $"This member drains: a lease participant failed to release tenant state ({string.Join("; ", leaveFailures)}).";
+            outcome = outcome with
+            {
+                StatusMessage = string.IsNullOrWhiteSpace(outcome.StatusMessage)
+                    ? drainNote
+                    : $"{outcome.StatusMessage} {drainNote}"
+            };
         }
 
         var reason = _isDraining
@@ -366,6 +411,20 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
         // member another one.
         await ReportReleaseAsync(lease, reason, outcome.Success, outcome.StatusMessage, outcome.OutputData,
             workDurationMs);
+    }
+
+    /// <summary>
+    ///     Latches the drain flag and remembers the first reason (AB#5864). The flag never resets: a
+    ///     member that cannot prove it is clean, or that the controller gave up, ends as a process.
+    /// </summary>
+    private void MarkDraining(string reason)
+    {
+        if (!_isDraining)
+        {
+            _drainReason = reason;
+        }
+
+        _isDraining = true;
     }
 
     private async Task ReportReleaseAsync(LeaseDto lease, LeaseReleaseReasonDto reason, bool success,

@@ -55,6 +55,13 @@ namespace Meshmakers.Octo.Sdk.Common.Adapters;
 ///             refuse, failing that borrower's execution for nothing.
 ///         </description></item>
 ///         <item><description>
+///             🔴 <b>A draining member never registers again</b> (AB#5864). It takes no further
+///             lease, and the controller only knows that for the connection the drain was reported
+///             on — a registration on a new connection starts as available, the next grant lands on
+///             a process that refuses it, and before AB#5864 that refusal failed the borrower's
+///             execution. The member exits instead (<see cref="AdapterPoolMemberDrainExitService" />).
+///         </description></item>
+///         <item><description>
 ///             <b>Flush the CK model cache of the recently leased tenants after a reconnect</b>
 ///             (AB#5415). <c>CkModelChanged</c> never reaches a member at all — it has no adapter-hub
 ///             connection — so per-lease load/unload (the host's lease participants) is what keeps a
@@ -181,6 +188,13 @@ public sealed class AdapterPoolMemberService : BackgroundService
                 return;
             }
 
+            if (_poolClient.IsDraining)
+            {
+                // AB#5864 — see the class remarks: a draining member never offers itself again.
+                _logger.LogDebug("Not registering: this member is draining ({Reason})", _poolClient.DrainReason);
+                return;
+            }
+
             _logger.LogInformation(
                 "The controller holds no registration for this pool member ({Reason}); registering again",
                 _poolClient.RegistrationState.LastFailureMessage ?? "never registered");
@@ -234,6 +248,19 @@ public sealed class AdapterPoolMemberService : BackgroundService
                     lease.LeaseId, lease.TenantId);
                 return;
             }
+        }
+
+        if (_poolClient.IsDraining)
+        {
+            // AB#5864 — see the class remarks. A fresh registration on a new connection starts with
+            // IsDraining=false in the controller's registry, so registering here would put a
+            // process that refuses every lease straight back into the rotation.
+            _poolClient.RegistrationState.MarkNotRegistered(
+                $"not registering: this member is draining ({_poolClient.DrainReason})");
+            _logger.LogWarning(
+                "Reconnected while draining ({Reason}); not registering again — this member exits once idle",
+                _poolClient.DrainReason);
+            return;
         }
 
         await RegisterAsync();

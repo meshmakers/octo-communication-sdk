@@ -640,6 +640,28 @@ classes differ only in which connection's `IsAlive` they sample.
 
 Tests: `Sdk.Common.Tests/Adapters/AdapterPoolMemberRecoveryTests`.
 
+### A draining member ends as a process (AB#5864)
+
+The drain contract always said "finish what you hold, take nothing new, **exit**", and no member ever
+exited: on test-2-dev a failed leave drained the only member of a pool, which then stayed `1/1 Ready`,
+refused every lease the controller kept granting it, and the pool was dead until the pod was deleted.
+
+- **A failed leave keeps the work item's outcome.** It is a fact about the process, not the pipeline:
+  the release carries `Reason=Drained` with the work item's own `Success`/`OutputData`, and the status
+  message names the participant. Overwriting it with `Failed` turned completed work into a FAILED
+  execution the borrower would run again.
+- **No re-registration while draining** (tick and reconnect). The controller only knows about the drain
+  for the connection it was reported on; a registration on a new connection starts as available.
+- **Readiness is red** while draining (`AdapterPoolHubReadinessHealthCheck`, optional `AdapterPoolClient`
+  ctor parameter; the probe switch still wins).
+- **`AdapterPoolMemberDrainExitService`** (both builders, member branch) stops the host once
+  `AdapterPoolClient.IsDrainedAndIdle` — draining, no lease, **and the lease gate free**, i.e. the
+  release has been reported. 🔴 Not `CurrentLease == null`: that is cleared before the report, and an
+  exit in between would make the controller interrupt and re-run completed work. Off switch:
+  `AdapterPool:ExitWhenDrained=false` (`OCTO_ADAPTERPOOL__EXITWHENDRAINED`), default `true`.
+
+Tests: `Sdk.Common.Tests/Adapters/AdapterPoolMemberDrainTests`.
+
 ## Node inventory (`src/Sdk.Pipeline/EtlDataPipeline/Nodes/`)
 
 - **Triggers**: `FromPipelineDataEvent@1`, `FromExecutePipelineCommand@1`, `FromPolling@1`

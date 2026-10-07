@@ -190,6 +190,9 @@ public class WebAdapterBuilder
             // hub connection and would never become ready.
             builder.Services.TryAddSingleton<IAdapterHubRegistrationState, AdapterHubRegistrationState>();
             builder.Services.AddHostedService<AdapterPoolHubRecoveryService>();
+            // AB#5864 — a draining member exits once idle, so the pool replaces it. The readiness
+            // check below turns red as soon as it drains.
+            builder.Services.AddHostedService<AdapterPoolMemberDrainExitService>();
             builder.Services.AddHealthChecks()
                 .AddCheck<AdapterPoolHubReadinessHealthCheck>(
                     "AdapterPoolHubRegistration",

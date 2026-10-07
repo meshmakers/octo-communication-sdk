@@ -51,6 +51,15 @@ public class AdapterPoolMemberOptions
     public string? MemberId { get; set; }
 
     /// <summary>
+    ///     Whether a draining member stops its process once it holds no lease, so the pool workload
+    ///     restarts it as a fresh, clean member (AB#5864). Default <c>true</c>: the drain contract is
+    ///     "finish what you hold, take nothing new, exit". Set <c>false</c>
+    ///     (<c>OCTO_ADAPTERPOOL__EXITWHENDRAINED=false</c>) only to keep a drained member alive for
+    ///     diagnosis — it then takes no lease and only drops out of readiness.
+    /// </summary>
+    public bool ExitWhenDrained { get; set; } = true;
+
+    /// <summary>
     ///     Whether this process is configured as a pool member at all. Both identifiers are required:
     ///     a member that knew its pool but not its tenant could not be authorized, and one that knew
     ///     its tenant but not its pool could not be routed a lease.

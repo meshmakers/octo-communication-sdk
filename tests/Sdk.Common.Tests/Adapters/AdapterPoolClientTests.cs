@@ -355,7 +355,10 @@ public class AdapterPoolClientTests
 
         Assert.True(client.IsDraining);
         Assert.Equal(LeaseReleaseReasonDto.Drained, hubClient.Releases[0].Reason);
-        Assert.False(hubClient.Releases[0].Success);
+        // AB#5864: the failed leave drains the PROCESS; the work item had already succeeded and its
+        // own outcome travels with the Drained reason instead of being overwritten with Failed.
+        Assert.True(hubClient.Releases[0].Success);
+        Assert.Contains("ckCache refused to leave", hubClient.Releases[0].StatusMessage);
         // The lease scope itself is still released: the member holds no tenant even though one of its
         // participants could not prove it dropped its own state.
         Assert.False(scope.HasLease);
