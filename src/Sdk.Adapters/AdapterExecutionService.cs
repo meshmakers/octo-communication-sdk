@@ -755,7 +755,9 @@ public class AdapterExecutionService : IAdapterHubCallbacks
     /// </summary>
     private async Task FlushCkModelCacheAfterReconnectAsync()
     {
-        var tenantId = _adapterOptions.Value.TenantId;
+        // Only a dedicated adapter flushes here: it owns exactly one tenant. A pool member has no
+        // DedicatedTenantId and caches per leased tenant (member-side flush is AP-I5).
+        var tenantId = _adapterOptions.Value.DedicatedTenantId;
         if (string.IsNullOrWhiteSpace(tenantId))
         {
             return;
