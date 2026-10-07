@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Meshmakers.Common.Shared.Services;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -120,6 +121,9 @@ public static class ServiceCollectionExtensions
         // AB#5231: the send-path wake gate of ToPipelineDataEvent@1. The default asks nobody; an
         // adapter with a controller connection replaces it with the hub-backed waker.
         services.TryAddSingleton<IPipelineDataEventTargetWaker, NoPipelineDataEventTargetWaker>();
+
+        // AB#5538: which configuration attributes are Secret; adapters with a CK model replace it.
+        services.TryAddSingleton<IConfigurationSecretAttributeResolver, NoConfigurationSecretAttributeResolver>();
 
         // EtlContext
         services.AddScoped(typeof(IEtlContextAccessor<>), typeof(EtlContextAccessor<>));

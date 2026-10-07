@@ -1,3 +1,4 @@
+using System.Globalization;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -61,6 +62,9 @@ public class SwitchNode(NodeDelegate next) : ChildNodeBase
     public override async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var c = nodeContext.GetNodeConfiguration<SwitchNodeConfiguration>();
+        // AB#5538: switch on the marker's isSet (Boolean), never on the Secret itself.
+        PipelineSecretValues.ThrowIfSecretValueType(nodeContext, c.ValueType, "valueType");
+        PipelineSecretValues.ThrowIfSecretMarker(nodeContext, dataContext, c.Path);
 
         var value = GetValueFromDataContext(nodeContext, dataContext, c.Path, c.ValueType);
 
@@ -151,13 +155,13 @@ public class SwitchNode(NodeDelegate next) : ChildNodeBase
     {
         return valueType switch
         {
-            AttributeValueTypesDto.Boolean => Convert.ToBoolean(value),
-            AttributeValueTypesDto.Int => Convert.ToInt32(value),
-            AttributeValueTypesDto.Int64 => Convert.ToInt64(value),
-            AttributeValueTypesDto.Double => Convert.ToDouble(value),
-            AttributeValueTypesDto.String => value.ToString(),
-            AttributeValueTypesDto.DateTime => Convert.ToDateTime(value),
-            AttributeValueTypesDto.Enum => Convert.ToInt32(value),
+            AttributeValueTypesDto.Boolean => Convert.ToBoolean(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Int => Convert.ToInt32(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Int64 => Convert.ToInt64(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Double => Convert.ToDouble(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.String => Convert.ToString(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.DateTime => Convert.ToDateTime(value, CultureInfo.InvariantCulture),
+            AttributeValueTypesDto.Enum => Convert.ToInt32(value, CultureInfo.InvariantCulture),
             _ => throw PipelineExecutionException.DefinedValueTypeNotSupported(nodeContext.NodePath, valueType,
                 value)
         };

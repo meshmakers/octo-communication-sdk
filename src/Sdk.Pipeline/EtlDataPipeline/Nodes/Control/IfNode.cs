@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -123,6 +124,10 @@ public class IfNode(NodeDelegate next) : ChildNodeBase
     public override async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var nodeConfiguration = nodeContext.GetNodeConfiguration<IfNodeConfiguration>();
+        // AB#5538: compare the marker's isSet (Boolean), never the Secret itself.
+        PipelineSecretValues.ThrowIfSecretValueType(nodeContext, nodeConfiguration.ValueType, "valueType");
+        PipelineSecretValues.ThrowIfSecretMarker(nodeContext, dataContext, nodeConfiguration.Path,
+            nodeConfiguration.ValuePath);
 
         // We support equal with null values!
         var comparisonValue = GetComparisonValue(nodeContext, dataContext, nodeConfiguration);
@@ -242,13 +247,13 @@ public class IfNode(NodeDelegate next) : ChildNodeBase
         {
             return nodeConfiguration.ValueType switch
             {
-                AttributeValueTypesDto.Boolean => Convert.ToBoolean(nodeConfiguration.Value),
-                AttributeValueTypesDto.Int => Convert.ToInt32(nodeConfiguration.Value),
-                AttributeValueTypesDto.Int64 => Convert.ToInt64(nodeConfiguration.Value),
-                AttributeValueTypesDto.Double => Convert.ToDouble(nodeConfiguration.Value),
+                AttributeValueTypesDto.Boolean => Convert.ToBoolean(nodeConfiguration.Value, CultureInfo.InvariantCulture),
+                AttributeValueTypesDto.Int => Convert.ToInt32(nodeConfiguration.Value, CultureInfo.InvariantCulture),
+                AttributeValueTypesDto.Int64 => Convert.ToInt64(nodeConfiguration.Value, CultureInfo.InvariantCulture),
+                AttributeValueTypesDto.Double => Convert.ToDouble(nodeConfiguration.Value, CultureInfo.InvariantCulture),
                 AttributeValueTypesDto.String => (string)nodeConfiguration.Value,
-                AttributeValueTypesDto.DateTime => Convert.ToDateTime(nodeConfiguration.Value),
-                AttributeValueTypesDto.Enum => Convert.ToInt32(nodeConfiguration.Value),
+                AttributeValueTypesDto.DateTime => Convert.ToDateTime(nodeConfiguration.Value, CultureInfo.InvariantCulture),
+                AttributeValueTypesDto.Enum => Convert.ToInt32(nodeConfiguration.Value, CultureInfo.InvariantCulture),
                 _ => throw PipelineExecutionException.DefinedValueTypeNotSupported(nodeContext.NodePath, nodeConfiguration.ValueType, nodeConfiguration.Value)
             };
         }

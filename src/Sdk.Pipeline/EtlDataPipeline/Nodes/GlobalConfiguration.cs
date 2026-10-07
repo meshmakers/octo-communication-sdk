@@ -29,6 +29,14 @@ internal class GlobalConfiguration(IEnumerable<ConfigurationDto> configurationDt
         throw PipelineExecutionException.GlobalConfigurationParameterNotFound(configurationName);
     }
 
+    public Meshmakers.Octo.ConstructionKit.Contracts.RtCkId<Meshmakers.Octo.ConstructionKit.Contracts.CkTypeId>?
+        GetConfigurationTypeId(string configurationName)
+    {
+        return _configurationDictionary.TryGetValue(configurationName.ToLower(), out var configurationDto)
+            ? configurationDto.ConfigurationTypeId
+            : null;
+    }
+
     public string GetRawJson(string configurationName)
     {
         if (_configurationDictionary.TryGetValue(configurationName.ToLower(), out var configurationDto))

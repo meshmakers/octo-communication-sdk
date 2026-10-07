@@ -241,4 +241,36 @@ public class AdapterOptions
     ///     at least 1 second; very large values reduce sparkline resolution. Defaults to 10.
     /// </summary>
     public int MetricsSamplingIntervalSeconds { get; set; } = 10;
+
+    /// <summary>
+    ///     Makes <c>/healthz/ready</c> report the adapter hub registration (AB#5409). An adapter the
+    ///     communication controller cannot reach is not ready: configuration updates, data flow
+    ///     deploys and HTTP-activator calls all go nowhere. Defaults to true; set to false only where
+    ///     an adapter must keep answering ready without a controller connection.
+    /// </summary>
+    public bool HubReadinessProbeEnabled { get; set; } = true;
+
+    /// <summary>
+    ///     How long after process start an adapter that has not registered at the adapter hub yet
+    ///     still reports ready. Covers the first connect, the token acquisition and a controller that
+    ///     is itself still rolling out, so a fresh pod is never taken out of service before it had a
+    ///     chance to register. Defaults to 5 minutes.
+    /// </summary>
+    public TimeSpan HubReadinessGracePeriod { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    ///     Enables <see cref="AdapterHubRecoveryService" />: an adapter that lost its hub
+    ///     registration and does not get it back within
+    ///     <see cref="HubRegistrationRecoveryTimeout" /> stops itself so the container restarts
+    ///     (AB#5409 — a restart repaired every deaf adapter on prod-1, with no configuration change).
+    ///     Only ever arms after a first successful registration in the same process. Defaults to true.
+    /// </summary>
+    public bool HubRegistrationRecoveryEnabled { get; set; } = true;
+
+    /// <summary>
+    ///     How long an adapter that <i>was</i> registered may stay unregistered before it restarts
+    ///     itself. Deliberately generous — far longer than any reconnect the SignalR client performs
+    ///     on its own — so a short controller rollout never costs a restart. Defaults to 15 minutes.
+    /// </summary>
+    public TimeSpan HubRegistrationRecoveryTimeout { get; set; } = TimeSpan.FromMinutes(15);
 }

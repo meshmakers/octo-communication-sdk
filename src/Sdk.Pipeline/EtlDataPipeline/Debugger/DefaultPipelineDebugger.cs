@@ -38,6 +38,9 @@ public class DefaultPipelineDebugger : IPipelineDebugger
 
     private readonly DebugPipelineLogger _debugPipelineLogger;
     private readonly ConcurrentDictionary<string, DebugPointDto> _debugPoints = new();
+    private readonly ConcurrentDictionary<PipelineSecretRegistry, byte> _secretRegistries =
+        new(ReferenceEqualityComparer.Instance);
+    private readonly ConcurrentDictionary<string, RedactedPathSlots> _redactedPaths = new();
     private long _retainedSnapshotChars;
 
     /// <summary>
@@ -84,6 +87,42 @@ public class DefaultPipelineDebugger : IPipelineDebugger
     }
 
     /// <inheritdoc />
+    public void AddSecretRegistry(PipelineSecretRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        _secretRegistries.TryAdd(registry, 0);
+    }
+
+    /// <summary>
+    /// Masks every value registered as secret in this execution (AB#5538) before a snapshot is
+    /// serialised. Returns the same node when nothing is registered or nothing matches, so the
+    /// snapshot path stays clone-free in the common case.
+    /// </summary>
+    private JsonNode? RedactSecrets(JsonNode? data, string rootPath, out IReadOnlyList<string>? redactedPaths)
+    {
+        redactedPaths = null;
+        if (data == null || _secretRegistries.IsEmpty)
+        {
+            return data;
+        }
+
+        // Several registries (trigger + execution root) may mask the same string: a set keeps each
+        // path once (ordinal order).
+        var paths = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var registry in _secretRegistries.Keys)
+        {
+            data = registry.Redact(data, rootPath, paths);
+        }
+
+        if (paths.Count > 0)
+        {
+            redactedPaths = paths.ToArray();
+        }
+
+        return data;
+    }
+
+    /// <inheritdoc />
     public void BeginPipelineExecution()
     {
         _debugPipelineLogger.Clear();
@@ -95,8 +134,9 @@ public class DefaultPipelineDebugger : IPipelineDebugger
         return Task.CompletedTask;
     }
 
-    private string? SerializeSnapshot(JsonNode? data)
+    private string? SerializeSnapshot(JsonNode? data, string rootPath, out IReadOnlyList<string>? redactedPaths)
     {
+        redactedPaths = null;
         if (data == null) return null;
 
         // Total-budget gate BEFORE serialising: once exhausted, later captures skip the whole
@@ -105,9 +145,33 @@ public class DefaultPipelineDebugger : IPipelineDebugger
         // string so the replace-discount accounting in LogInput/LogOutput stays symmetric.
         var result = Interlocked.Read(ref _retainedSnapshotChars) >= MaxTotalRetainedSnapshotChars
             ? TotalBudgetPlaceholder
-            : SerializeSnapshotCore(data);
+            : SerializeRedactedSnapshot(data, rootPath, out redactedPaths);
         Interlocked.Add(ref _retainedSnapshotChars, result.Length);
         return result;
+    }
+
+    private string SerializeRedactedSnapshot(JsonNode data, string rootPath, out IReadOnlyList<string>? redactedPaths)
+    {
+        JsonNode redacted;
+        try
+        {
+            redacted = RedactSecrets(data, rootPath, out redactedPaths)!;
+        }
+        catch (Exception ex)
+        {
+            // Fail closed: a snapshot that could not be redacted is not shown at all.
+            redactedPaths = null;
+            return $"<debug snapshot unavailable: {ex.GetType().Name}>";
+        }
+
+        var serialized = SerializeSnapshotCore(redacted);
+        if (redactedPaths != null && serialized.StartsWith('<'))
+        {
+            // The snapshot was replaced by an "omitted" text: no path inside it exists any more.
+            redactedPaths = null;
+        }
+
+        return serialized;
     }
 
     /// <summary>
@@ -244,36 +308,40 @@ public class DefaultPipelineDebugger : IPipelineDebugger
     /// <inheritdoc />
     public void LogInput(string id, NodePath path, string? description, uint sequenceNumber, JsonNode? inputData)
     {
+        var serialized = SerializeSnapshot(inputData, InputRootPath, out var redactedPaths);
         _debugPoints.AddOrUpdate(id, _ => new DebugPointDto(id, path, description, sequenceNumber)
         {
-            Input = SerializeSnapshot(inputData)
+            Input = serialized
         }, (key, value) =>
         {
             DiscountRetained(value.Input);
-            value.Input = SerializeSnapshot(inputData);
+            value.Input = serialized;
             return value;
         });
+        SetRedactedPaths(id, RedactedPathSlot.Input, redactedPaths);
     }
 
     /// <inheritdoc />
     public void LogOutput(string id, NodePath path, string? description, uint sequenceNumber, JsonNode? outputData)
     {
+        var serialized = SerializeSnapshot(outputData, OutputRootPath, out var redactedPaths);
         _debugPoints.AddOrUpdate(id, _ => new DebugPointDto(id, path, description, sequenceNumber)
         {
-            Output = SerializeSnapshot(outputData)
+            Output = serialized
         }, (key, value) =>
         {
             DiscountRetained(value.Output);
-            value.Output = SerializeSnapshot(outputData);
+            value.Output = serialized;
             return value;
         });
+        SetRedactedPaths(id, RedactedPathSlot.Output, redactedPaths);
     }
 
     /// <inheritdoc />
     public void RecordDryRunIntent(string id, NodePath path, string? description, uint sequenceNumber,
         string nodeTypeName, JsonNode? intentData)
     {
-        var serialised = SerializeSnapshot(intentData);
+        var serialised = SerializeSnapshot(intentData, DryRunIntentRootPath, out var redactedPaths);
         _debugPoints.AddOrUpdate(id, _ => new DebugPointDto(id, path, description, sequenceNumber)
         {
             DryRunIntent = serialised,
@@ -285,6 +353,81 @@ public class DefaultPipelineDebugger : IPipelineDebugger
             value.DryRunNodeTypeName = nodeTypeName;
             return value;
         });
+        SetRedactedPaths(id, RedactedPathSlot.DryRunIntent, redactedPaths);
+    }
+
+    /// <summary>
+    /// JSONPath root of the input snapshot in the debug point delivered to Studio (handover §11).
+    /// </summary>
+    public const string InputRootPath = "$.input";
+
+    /// <summary>
+    /// JSONPath root of the output snapshot in the debug point delivered to Studio (handover §11).
+    /// </summary>
+    public const string OutputRootPath = "$.output";
+
+    /// <summary>
+    /// JSONPath root of the dry-run intent of a debug point.
+    /// </summary>
+    public const string DryRunIntentRootPath = "$.dryRunIntent";
+
+    /// <summary>
+    /// Returns the JSONPaths of the values that were masked as <c>***</c> in the snapshots of debug
+    /// point <paramref name="nodeId" /> (AB#5538, handover §11, Q12): rooted at the snapshot object
+    /// (<see cref="InputRootPath" />, <see cref="OutputRootPath" />, <see cref="DryRunIntentRootPath" />),
+    /// a string with a secret masked inside it listed with its own path. <c>null</c> when nothing was
+    /// masked.
+    /// </summary>
+    /// <param name="nodeId">The debug point (node) id</param>
+    /// <returns>The paths, ordinal-sorted, or null</returns>
+    public IReadOnlyList<string>? GetRedactedPaths(string nodeId)
+    {
+        return _redactedPaths.TryGetValue(nodeId, out var slots) ? slots.ToList() : null;
+    }
+
+    private void SetRedactedPaths(string id, RedactedPathSlot slot, IReadOnlyList<string>? paths)
+    {
+        if (paths == null)
+        {
+            // A re-capture without secrets replaces the earlier paths of the same slot.
+            if (_redactedPaths.TryGetValue(id, out var existing))
+            {
+                existing.Set(slot, null);
+            }
+
+            return;
+        }
+
+        _redactedPaths.GetOrAdd(id, _ => new RedactedPathSlots()).Set(slot, paths);
+    }
+
+    private enum RedactedPathSlot
+    {
+        Input = 0,
+        Output = 1,
+        DryRunIntent = 2
+    }
+
+    private sealed class RedactedPathSlots
+    {
+        private readonly IReadOnlyList<string>?[] _slots = new IReadOnlyList<string>?[3];
+
+        public void Set(RedactedPathSlot slot, IReadOnlyList<string>? paths)
+        {
+            lock (_slots)
+            {
+                _slots[(int)slot] = paths;
+            }
+        }
+
+        public IReadOnlyList<string>? ToList()
+        {
+            lock (_slots)
+            {
+                var all = _slots.Where(s => s != null).SelectMany(s => s!).ToArray();
+                return all.Length == 0 ? null : all;
+            }
+        }
     }
 
     /// <inheritdoc />
@@ -298,11 +441,21 @@ public class DefaultPipelineDebugger : IPipelineDebugger
             }
         }
 
+        // Q12 (AB#5544): the transport DTO carries the masked paths to the controller.
+        foreach (var (id, debugPoint) in _debugPoints)
+        {
+            debugPoint.RedactedPaths = GetRedactedPaths(id);
+        }
+
         var debuggers = new DebugInformationRoot
         {
             PipelineRtEntityId = PipelineRtEntityId ?? throw new Exception("PipelineRtEntityId is not set"),
             PipelineExecutionId = PipelineExecutionId ?? throw new Exception("PipelineExecutionId is not set"),
-            DebugPoints = _debugPoints.Values.ToList()
+            DebugPoints = _debugPoints.Values.ToList(),
+            RedactedPaths = _debugPoints.Keys
+                .Select(id => (Id: id, Paths: GetRedactedPaths(id)))
+                .Where(x => x.Paths != null)
+                .ToDictionary(x => x.Id, x => x.Paths!, StringComparer.Ordinal)
         };
         return debuggers;
     }

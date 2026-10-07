@@ -269,6 +269,10 @@ public class SetPrimitiveValueNode(NodeDelegate next) : IPipelineNode
     public Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var c = nodeContext.GetNodeConfiguration<SetPrimitiveValueNodeConfiguration>();
+        // AB#5538: a fixed secret in a pipeline definition is exactly what the Secret type replaces,
+        // and a Secret marker read from an entity has no primitive value to copy.
+        PipelineSecretValues.ThrowIfSecretValueType(nodeContext, c.ValueType, "valueType");
+        PipelineSecretValues.ThrowIfSecretMarker(nodeContext, dataContext, c.ValuePath);
 
         object? converted;
         if (!string.IsNullOrWhiteSpace(c.ValuePath))

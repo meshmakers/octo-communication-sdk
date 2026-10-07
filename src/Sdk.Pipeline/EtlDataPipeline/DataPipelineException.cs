@@ -151,6 +151,16 @@ public class DataPipelineException : Exception
         return new DataPipelineException($"Target pipeline failed: {errorMessage}");
     }
 
+    /// <summary>
+    /// A copy of a <see cref="DataPipelineException" /> whose message had a registered secret masked
+    /// (AB#5538, <see cref="PipelineSecretRegistry.RedactException" />). Keeps the type, so the
+    /// orchestrator still recognises it as already wrapped.
+    /// </summary>
+    internal static DataPipelineException Redacted(string message, Exception? inner)
+    {
+        return inner == null ? new DataPipelineException(message) : new DataPipelineException(message, inner);
+    }
+
     internal static Exception NodeExecutionFailed(string nodePath, Exception innerException)
     {
         return new DataPipelineException($"Error in node '{nodePath}': {innerException.Message}", innerException);

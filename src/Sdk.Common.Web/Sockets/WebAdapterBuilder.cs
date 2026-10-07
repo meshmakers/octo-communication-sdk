@@ -193,18 +193,35 @@ public class WebAdapterBuilder
             // pipeline on another workload can wake that workload before it is published.
             builder.Services.AddSingleton<IPipelineDataEventTargetWaker, HubPipelineDataEventTargetWaker>();
             builder.Services.AddTransient<IPipelineDebugger, AdapterPipelineDebugger>();
+            // Shared registration state: written by AdapterExecutionService on every (re)registration,
+            // read by the readiness check and the recovery watchdog (AB#5409). Dedicated adapters only:
+            // a pool member has no hub registration state, so gating its readiness on it would keep
+            // every member un-ready forever (member recovery is AP-I5).
+            builder.Services.AddSingleton<IAdapterHubRegistrationState, AdapterHubRegistrationState>();
             builder.Services.AddSingleton<AdapterExecutionService>();
             builder.Services.AddHostedService<AdapterHealthFileService>();
             builder.Services.AddHostedService<AdapterMetricsSamplerService>();
+            builder.Services.AddHostedService<AdapterHubRecoveryService>();
 
             // AdapterConnection reports the SignalR connection state for observability
-            // (visible at /health) but is NOT tagged "ready" — kubelet's readiness probe
-            // must not depend on runtime data state (e.g. tenant enabled in OctoMesh),
-            // otherwise a not-yet-enabled tenant blocks deployment indefinitely.
+            // (visible at /health) but is NOT tagged "ready" — it is satisfied by any connection
+            // that is merely not Disconnected, which is not the same as being reachable.
+            //
+            // AdapterHubRegistration IS tagged "ready" (AB#5409): an adapter the communication
+            // controller has no registration for cannot be configured, deployed to or called, so it
+            // must not answer 200 on /healthz/ready. The old rationale for leaving readiness ungated
+            // was that a probe must not depend on runtime data state (e.g. a tenant that is not
+            // enabled yet) — that still holds, and is why the check reports healthy during
+            // Adapter:HubReadinessGracePeriod and only ever turns unhealthy for an adapter that had
+            // registered before or has long outlived its grace period.
             builder.Services.AddHealthChecks()
                 .AddCheck<AdapterConnectionHealthCheck>(
                     "AdapterConnection",
-                    HealthStatus.Unhealthy);
+                    HealthStatus.Unhealthy)
+                .AddCheck<AdapterHubReadinessHealthCheck>(
+                    "AdapterHubRegistration",
+                    HealthStatus.Unhealthy,
+                    tags: ["ready"]);
 
             if (startupOptions.UseHostedService)
             {

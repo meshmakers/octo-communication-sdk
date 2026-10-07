@@ -88,6 +88,9 @@ public static class SystemTextJsonOptions
         // Newtonsoft's (int)JToken did. Order is irrelevant — the target types are distinct.
         options.Converters.Add(new NewtonsoftParityInt32Converter());
         options.Converters.Add(new NewtonsoftParityInt64Converter());
+        // AB#5538: Secret markers reflect the read state of the host's key ring (keyMissing) instead
+        // of the key-ring-less engine marker; options converters win over the type-level attribute.
+        options.Converters.Add(new PipelineSecretMarkerJsonConverter());
         return options;
     }
 

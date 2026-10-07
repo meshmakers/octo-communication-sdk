@@ -19,6 +19,7 @@ public class AdapterExecutionServiceTests
     private readonly IPipelineRegistryService _pipelineRegistryService;
     private readonly IPipelineExecutionReporter _executionReporter;
     private readonly IOptions<AdapterOptions> _adapterOptions;
+    private readonly AdapterHubRegistrationState _registrationState;
     private readonly AdapterExecutionService _service;
 
     public AdapterExecutionServiceTests()
@@ -28,6 +29,11 @@ public class AdapterExecutionServiceTests
         _callbackService = A.Fake<IAdapterHubCallbackService>();
         _pipelineRegistryService = A.Fake<IPipelineRegistryService>();
         _executionReporter = A.Fake<IPipelineExecutionReporter>();
+        _registrationState = new AdapterHubRegistrationState();
+
+        // The hub client fake reports no connection by default, which would make the pre-register
+        // connection wait burn its full timeout in every test.
+        A.CallTo(() => _hubClient.IsAlive).Returns(true);
 
         var adapterRtId = OctoObjectId.GenerateNewId().ToString();
         _adapterOptions = Options.Create(new AdapterOptions
@@ -48,7 +54,13 @@ public class AdapterExecutionServiceTests
             _callbackService,
             lifetimeManagement,
             _pipelineRegistryService,
-            _executionReporter);
+            _executionReporter,
+            registrationState: _registrationState);
+
+        // Keep the AB#5409 registration retry from putting real seconds into every test.
+        _service.RegistrationRetryBaseDelay = TimeSpan.FromMilliseconds(1);
+        _service.HubConnectionWaitTimeout = TimeSpan.FromMilliseconds(50);
+        _service.HubConnectionPollInterval = TimeSpan.FromMilliseconds(5);
     }
 
     private AdapterConfigurationDto CreateTestAdapterConfiguration()
@@ -122,6 +134,110 @@ public class AdapterExecutionServiceTests
 
         Assert.IsType<InvalidOperationException>(exception);
         Assert.Equal("Registration failed", exception.Message);
+    }
+
+    /// <summary>
+    /// AB#5409: on a reconnect after a long controller outage the register invoke races the
+    /// connection state and throws "InvokeCoreAsync cannot be called if the connection is not
+    /// active". Before the fix that single throw ended the registration - the adapter stayed
+    /// connected-but-unregistered and every controller push (configuration, DeployDataFlow,
+    /// HTTP activator) silently went nowhere until the pod was restarted. The attempt must be
+    /// retried in place and end in a registered adapter.
+    /// </summary>
+    [Fact]
+    public async Task StartAsync_Reconnect_WhenFirstRegistrationAttemptThrows_RetriesAndEndsRegistered()
+    {
+        // Arrange: get through the initial startup and capture the (re)connect function
+        Func<bool, Task>? capturedReconnectFunc = null;
+        A.CallTo(() => _hubClient.StartAsync(A<Func<bool, Task>>._, A<CancellationToken>._))
+            .Invokes((Func<bool, Task> func, CancellationToken _) => capturedReconnectFunc = func)
+            .Returns(Task.CompletedTask);
+
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .Returns(CreateTestAdapterConfiguration());
+        A.CallTo(() => _adapterService.StartupAsync(A<AdapterStartup>._,
+                A<List<DeploymentUpdateErrorMessageDto>>._, A<CancellationToken>._))
+            .Returns(true);
+
+        await _service.StartAsync(CancellationToken.None);
+        Assert.NotNull(capturedReconnectFunc);
+
+        A.CallTo(() => _executionReporter.GetInterruptedExecutionIdsAsync())
+            .Returns(Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>()));
+
+        // The first reconnect registration hits the race, the second one succeeds.
+        var attempts = 0;
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .ReturnsLazily(() =>
+            {
+                attempts++;
+                if (attempts == 1)
+                {
+                    throw new InvalidOperationException(
+                        "The 'InvokeCoreAsync' method cannot be called if the connection is not active");
+                }
+
+                return Task.FromResult(CreateTestAdapterConfiguration());
+            });
+
+        // Act
+        await capturedReconnectFunc(true);
+
+        // Assert
+        Assert.Equal(2, attempts);
+        Assert.True(_registrationState.IsRegistered);
+        A.CallTo(() => _hubClient.SendDeploymentUpdateResultAsync(
+                A<RtEntityId>._,
+                A<DeploymentResult>.That.Matches(r => r.IsSuccess)))
+            .MustHaveHappenedOnceOrMore();
+    }
+
+    /// <summary>
+    /// AB#5409: when every bounded attempt fails, the adapter must be marked NOT registered (so the
+    /// readiness probe and the recovery watchdog can see it) and the failure must still propagate -
+    /// only the SignalR reconnect loop can force-stop and re-establish the connection (AB#4805).
+    /// </summary>
+    [Fact]
+    public async Task StartAsync_Reconnect_WhenAllRegistrationAttemptsFail_MarksNotRegisteredAndRethrows()
+    {
+        // Arrange
+        Func<bool, Task>? capturedReconnectFunc = null;
+        A.CallTo(() => _hubClient.StartAsync(A<Func<bool, Task>>._, A<CancellationToken>._))
+            .Invokes((Func<bool, Task> func, CancellationToken _) => capturedReconnectFunc = func)
+            .Returns(Task.CompletedTask);
+
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .Returns(CreateTestAdapterConfiguration());
+        A.CallTo(() => _adapterService.StartupAsync(A<AdapterStartup>._,
+                A<List<DeploymentUpdateErrorMessageDto>>._, A<CancellationToken>._))
+            .Returns(true);
+
+        await _service.StartAsync(CancellationToken.None);
+        Assert.NotNull(capturedReconnectFunc);
+
+        // The fake hub client never invokes the captured function, so run the initial-start path
+        // once to get a first successful registration on the record.
+        await capturedReconnectFunc(false);
+        Assert.True(_registrationState.IsRegistered);
+
+        var attempts = 0;
+        A.CallTo(() => _hubClient.RegisterAdapterAsync(A<RtEntityId>._))
+            .ReturnsLazily<Task<AdapterConfigurationDto>>(() =>
+            {
+                attempts++;
+                throw new InvalidOperationException(
+                    "The 'InvokeCoreAsync' method cannot be called if the connection is not active");
+            });
+
+        // Act
+        var exception = await Record.ExceptionAsync(() => capturedReconnectFunc(true));
+
+        // Assert: bounded retry, no silent success, state reflects reality
+        Assert.Equal(_service.RegistrationMaxAttempts, attempts);
+        Assert.IsType<InvalidOperationException>(exception);
+        Assert.False(_registrationState.IsRegistered);
+        Assert.True(_registrationState.HasEverRegistered);
+        Assert.NotNull(_registrationState.LastFailureMessage);
     }
 
     [Fact]

@@ -216,6 +216,23 @@ Senders keep the line short (the controller truncates at 1000 characters) and ne
 or message bodies in it. Tests: `AdapterPipelineExecutionReporterTests` (DTO, never-throw, rate
 limit) and `AdapterTriggerContextTests` (forwarding, no-reporter no-op).
 
+### The start is reported before the context exists (AB#5493)
+
+`AdapterTriggerContext.StartExecutePipelineAsync` generates the execution id, captures the start
+time and calls `IPipelineExecutionReporter.ReportExecutionStartAsync` **before**
+`IContextCreatorService.CreateEtlContext`. Context creation (and the debugger setup behind it) is
+wrapped in a try/catch that logs at Error with the tenant id, reports
+`ReportExecutionEndAsync(Failed, ex.Message)` under the same id and rethrows. It used to be the
+other way round, and a context creation that throws (prod-1: the mesh adapter's
+`FindTenantRepositoryAsync` failing with "System tenant database does not exist" on every cron
+tick for four days) never reached the reporter — no execution on the controller, frozen
+`PipelineStatistics`, `octo.pipeline.execution.failures` at zero, no alert. No double report:
+`RegisterExecution` runs only after the try, so `EndExecutePipelineAsync` is never called for a
+failed id, and a pipeline that fails *after* the start still ends exactly once through the
+existing end path. The mesh adapter's hand-maintained copy carries the same order — keep them in
+step. Tests: `AdapterTriggerContextTests` (`StartExecutePipelineAsync_WhenContextCreationFails_*`,
+`StartExecutePipelineAsync_ReportsTheStartBeforeTheContextIsCreated`).
+
 ## Adapter hub authentication (AB#5072)
 
 The adapter acquires its **own** client-credentials access token at startup and presents it on the
@@ -491,6 +508,87 @@ not a marker.
 - The schema extension `x-executionClass` is emitted for **every trigger**, including the default — unlike `x-requiresRunningProcess`, which is emitted only when true. An editor showing the class only for nodes that opted in could not distinguish "classified Batch" from "not classified", which is the question the extension exists to answer. Non-triggers get nothing.
 - Currently `Interactive`: `FromHttpRequest@1`, `FromHttpRequest@2` (both in `octo-mesh-adapter`), `FromExecutePipelineCommand@1`. Everything else relies on the default.
 
+## Adapter hub registration is the only "reachable" signal (AB#5409)
+
+> **Dedicated adapters only (0.2 lane).** `IAdapterHubRegistrationState`, `AdapterHubRecoveryService`
+> and the `ready`-tagged `AdapterHubReadinessHealthCheck` are wired in the `else` branch of the
+> pool-member switch in `AdapterBuilder`/`WebAdapterBuilder`. A pool member registers on the pool hub
+> via `AdapterPoolMemberService` and has no registration state; gating its readiness on this check
+> would keep every member un-ready. Member recovery is a separate work package (AP-I5).
+
+A live SignalR connection is **not** the same as a usable adapter. Registration at the controller's
+`adapterHub` is a hub invoke of its own, and it can fail while the connection is up. When it does,
+the adapter is *deaf*: RabbitMQ data events and in-process triggers keep running, so pipelines it
+already knows about still execute, but everything the controller has to **push** — configuration
+updates, `DeployDataFlow`, HTTP-activator calls — goes nowhere. On prod-1 five of seven tenant
+adapters sat like that for eleven hours behind `1/1 Running`, `/healthz/live` 200, `/healthz/ready`
+200 and an adapter entity reading `DEPLOYED / RUNNING`. The only thing that said so out loud was a
+deploy answering `has no live SignalR connection`.
+
+`IAdapterHubRegistrationState` (`src/Sdk.Adapters/AdapterHubRegistrationState.cs`) is that missing
+signal — a singleton written by `AdapterExecutionService` on every (re)registration and read by:
+
+- **`AdapterHubReadinessHealthCheck`** — tagged `ready`, so it governs `/healthz/ready`. Healthy only
+  while `IsRegistered && IAdapterHubClient.IsAlive`. Two softeners keep it off a hair trigger:
+  `Adapter:HubReadinessGracePeriod` (5 min) keeps a pod that has **never** registered ready, so a
+  controller that is still rolling out or a tenant that is not enabled yet never costs readiness; and
+  `Adapter:HubReadinessProbeEnabled` turns the gating off entirely. The adapter chart pairs it with a
+  generous `failureThreshold: 12` (2 min).
+- **`AdapterHubRecoveryService`** — stops the host after `Adapter:HubRegistrationRecoveryTimeout`
+  (15 min) without a registration, so the container restarts and re-registers. On prod-1 a restart
+  repaired every deaf adapter with no configuration change; this automates exactly that.
+
+🔴 **The readiness probe cannot do the restart.** Kubernetes restarts a container for **liveness**
+only — readiness just removes it from the Service endpoints and shows `0/1`. And liveness must stay
+independent of the hub (`/healthz/live` deliberately evaluates no check at all): gating it on the
+controller would turn one controller outage into a fleet-wide restart storm. Hence the separate
+recovery service rather than a re-pointed liveness probe.
+
+🔴 **`AdapterHubRecoveryService` only arms after the first successful registration in the process**
+(`HasEverRegistered`). An adapter that never registered may be waiting for a tenant that is not
+enabled or a controller that was never deployed — restarting that in a loop repairs nothing and hides
+the cause. That guard is what makes the automatic restart safe to default to on.
+
+🔴 **`AdapterHubRecoveryService` stops the host by decision only, never by a failing check**
+(AB#5473). An exception that escapes a `BackgroundService` stops the host too, so the service that
+exists to restart an adapter after 15 minutes would restart it on the tick a check throws. Its timer
+is independent of everything else, which means it also samples the hub client while a tenant update
+(`PreUpdateTenantAsync`: stop, wait 5 s, start) has it stopped. `ISignalRClient.IsAlive` used to throw
+`ObjectDisposedException` for that whole window, and roughly every sixth cache clear, CK model import
+or blueprint install ended the adapter process. Two things hold now: `IsAlive` is a state query that
+returns `false` for a stopped client (**octo-sdk**), and a connection state that cannot be read
+counts as "not alive" — logged at Error, the outage clock runs, and the adapter restarts only after
+the timeout. It is counted rather than skipped on purpose: skipping would let a read that fails for
+good hide an unreachable adapter forever. The outage clock also keeps running across a deliberate
+stop — a restart that never comes back from `PreUpdateTenantAsync` is exactly what the timeout is
+for.
+
+### Registration retry on the (re)connect path
+
+`AdapterExecutionService.RegisterAtHubAsync` retries the register invoke `RegistrationMaxAttempts`
+(3) times with a linear back-off (`RegistrationRetryBaseDelay`, 2 s × attempt), then rethrows so the
+SignalR (re)connect loop keeps its own retry (AB#4805 — swallowing it made the loop treat a failed
+registration as success and exit). The observed failure is
+`InvokeCoreAsync cannot be called if the connection is not active`: the register invoke races the
+connection state right after `HubConnection.StartAsync` returned. On a fresh start the start loop's
+next iteration papered over it; on a reconnect after a long outage that single throw was enough.
+
+⚠️ **The pre-invoke wait can only use `IsAlive`, which is `State != Disconnected`** and therefore also
+true while the connection is still *Connecting* — exactly the window that produces the exception. A
+strict `IsConnected` would have to be added to `ISignalRClient` in **octo-sdk** and shipped as a
+NuGet, so the actual wait for an active connection is the retry: the next attempt runs after the
+back-off, by which time the connection has either finished connecting or is gone for good.
+
+Failed attempts log at **Error**, not Warn, on purpose: the adapter log carries WARN-level
+`[Audit:DataPermissions.ReadViolation]` noise by the dozen per pipeline run and rotates the startup
+log away within the hour, which is why this was missed twice (AB#5409 item 3, a different layer).
+
+Tests: `Sdk.Common.Tests/Adapters/AdapterExecutionServiceTests` (a reconnect whose first registration
+throws ends registered; all attempts failing marks not-registered and rethrows) and
+`Sdk.Common.Tests/Adapters/AdapterHubRegistrationReadinessTests` (readiness matrix, recovery timing,
+never-registered guard, and a connection state that cannot be read: it counts as an outage, the
+service keeps sampling and restarts only after the timeout).
+
 ## Node inventory (`src/Sdk.Pipeline/EtlDataPipeline/Nodes/`)
 
 - **Triggers**: `FromPipelineDataEvent@1`, `FromExecutePipelineCommand@1`, `FromPolling@1`
@@ -521,6 +619,31 @@ against that era cast the argument via `((JsonElement)arg).EnumerateArray()`; su
 made version-tolerant (check `arg is JsonElement` and fall back to the typed array) while pre-fix
 adapter images are still deployed. Null/absent arguments still coalesce to the type's default
 (`null` for arrays).
+
+#### A JSON type that does not match the declared `dataType` (AB#5463)
+
+Argument resolution runs **before** the script, so a deserializer throw there is invisible to any
+`try`/`catch` inside the script and — with no `continueOnError` on `ExecuteCSharp@1` or the
+per-item `ForEach@1` — kills the whole iteration. The production case was an LLM emitting
+`documentNumber` as an unquoted JSON number for an argument declared `String`: STJ has no
+number→string coercion, so `Get<string>` threw.
+
+`ResolveTypedFromPath` therefore tries the strict typed read first (fast path unchanged) and only
+on `JsonException`/`FormatException` falls back to `ResolveLeniently`: number→`String` becomes the
+raw token text, `"true"`→`Boolean` parses, numeric strings parse **invariant**, and the array kinds
+convert element-wise. Every fallback conversion logs a **warning** naming the argument and both
+types. A value that genuinely cannot be converted (an object where a `Double` is declared) still
+throws, now as a `PipelineExecutionException` that names argument, path, declared type and found
+kind — a silent null would be worse than the throw.
+
+🔴 Two things are deliberate. The coercion sits in the **node**, not in `SystemTextJsonOptions.
+Default` — that bundle is shared by the whole engine and every adapter, and a string converter
+there would change behaviour far outside this node. And **`DateTime` stays strict**: STJ already
+reads every ISO 8601 string, and whatever it rejects (`"01.02.2026"`, a bare Unix number) is
+ambiguous; `DateTime.Parse` under the invariant culture would guess a month/day order rather than
+fail. Note that numeric strings into `Double`/`Int` already parsed before AB#5463 —
+`SystemTextJsonOptions.Default` inherits `NumberHandling.AllowReadingFromString` from the CK
+engine's `RtSystemTextJsonSerializer.CreateDefault()`, and the parity converters honour it.
 
 ## Development Notes
 

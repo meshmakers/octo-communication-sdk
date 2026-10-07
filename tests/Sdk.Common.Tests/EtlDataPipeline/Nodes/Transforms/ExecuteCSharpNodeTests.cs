@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Reflection;
+using Microsoft.CodeAnalysis.Scripting;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using FakeItEasy;
@@ -16,9 +19,9 @@ namespace Sdk.Common.Tests.EtlDataPipeline.Nodes.Transforms;
 public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFixture>
 {
     private (IDataContext, INodeContext) PrepareTest(ExecuteCSharpNodeConfiguration configuration, JsonObject? testData = null,
-        IServiceProvider? serviceProvider = null)
+        IServiceProvider? serviceProvider = null, IPipelineLogger? logger = null)
     {
-        var logger = A.Fake<IPipelineLogger>();
+        logger ??= A.Fake<IPipelineLogger>();
         var data = testData ?? new JsonObject();
         var dataContext = new DataContextImpl(JsonDocument.Parse(data.ToJsonString()));
         var services = serviceProvider ?? fixture.Services.BuildServiceProvider();
@@ -746,5 +749,259 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         var filtered = dataContext.Get<string[]>("$.filtered");
         Assert.NotNull(filtered);
         Assert.Equal(new[] { "apple", "avocado" }, filtered);
+    }
+
+    // Regression guard for AB#5448: the cache must hold the executable DELEGATE, never the
+    // Script<object>. A Script keeps its entire Roslyn Compilation graph alive — syntax
+    // trees, symbol tables and a MetadataReference per referenced assembly — and that state
+    // lives largely in unmanaged/mmapped metadata buffers. Measured: ~61 MB of resident
+    // memory per DISTINCT cached script, so the 43 ExecuteCSharp nodes of the accounting
+    // blueprint pinned ~2.8 GB against a 3Gi container limit and drove node-wide OOMs on
+    // prod-1 (four episodes). Caching the delegate takes the same 43 scripts to ~700 MB,
+    // where it plateaus. The retention is invisible to `dotnet.assembly.count` (a
+    // MetadataReference is an unmanaged metadata reader, not a loaded assembly), so
+    // asserting on the cached TYPE is the only cheap, non-flaky guard available.
+    [Fact]
+    public async Task CompiledScriptCache_CachesDelegate_NotScriptWithCompilationGraph()
+    {
+        ExecuteCSharpNode.ClearCompiledScriptCache();
+
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "1 + 1 /* AB#5448 cache-shape guard */",
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var (dataContext, nodeContext) = PrepareTest(config);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(2, dataContext.Get<int>("$.result"));
+        Assert.True(ExecuteCSharpNode.CompiledScriptCacheCount >= 1);
+
+        // The cache is a static field shared with every other test class in this
+        // assembly, so assert on its declared SHAPE rather than its contents — a
+        // contents assertion would race whatever else is compiling scripts in parallel.
+        var field = typeof(ExecuteCSharpNode).GetField("CompiledScripts",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(field);
+
+        // ConcurrentDictionary<string, Lazy<T>> — T must be the delegate, not Script<object>.
+        var lazyType = field!.FieldType.GetGenericArguments()[1];
+        var cachedType = lazyType.GetGenericArguments()[0];
+        Assert.Equal(typeof(ScriptRunner<object>), cachedType);
+        Assert.NotEqual(typeof(Script<object>), cachedType);
+    }
+
+    // AB#5463: an LLM emitted an invoice number as an unquoted JSON number, the pipeline
+    // declared the argument String, and STJ (no string coercion in the shared options) threw
+    // during argument resolution — BEFORE the script ran, so no try/catch in the script could
+    // see it and the whole ForEach iteration died. The node must hand the script the number's
+    // invariant text instead, and say so in the log.
+    [Fact]
+    public async Task ProcessObjectAsync_JsonNumberDeclaredString_ReceivesInvariantTextAndWarns()
+    {
+        var logger = A.Fake<IPipelineLogger>();
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "\"RE-\" + documentNumber",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "documentNumber", ValuePath = "$.invoice.documentNumber", DataType = AttributeValueTypesDto.String }
+            },
+            ReturnType = AttributeValueTypesDto.String,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject { ["invoice"] = new JsonObject { ["documentNumber"] = 20260001 } };
+        var (dataContext, nodeContext) = PrepareTest(config, testData, logger: logger);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("RE-20260001", dataContext.Get<string>("$.result"));
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Matches(m => m.Contains("documentNumber") && m.Contains("String") && m.Contains("Number")),
+                A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    // AB#5463: a numeric STRING where a Double is declared parses with the INVARIANT culture.
+    // Run under de-AT (comma decimal separator) so a culture-sensitive parse would yield
+    // 123456 or throw instead of 1234.56. NOTE: this one passes on the strict path already —
+    // SystemTextJsonOptions.Default inherits NumberHandling.AllowReadingFromString from the
+    // CK engine and its parity double converter parses invariantly — so it pins that
+    // contract (and the node's own fallback, should the options ever change) rather than
+    // proving the fix.
+    [Fact]
+    public async Task ProcessObjectAsync_NumericStringDeclaredDouble_ParsesInvariantUnderCommaCulture()
+    {
+        var previousCulture = CultureInfo.CurrentCulture;
+        var previousUiCulture = CultureInfo.CurrentUICulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("de-AT");
+            CultureInfo.CurrentUICulture = new CultureInfo("de-AT");
+
+            var config = new ExecuteCSharpNodeConfiguration
+            {
+                Code = "amount * 2",
+                Arguments = new List<ScriptArgument>
+                {
+                    new() { Name = "amount", ValuePath = "$.amount", DataType = AttributeValueTypesDto.Double }
+                },
+                ReturnType = AttributeValueTypesDto.Double,
+                TargetPath = "$.result"
+            };
+            var testData = new JsonObject { ["amount"] = "1234.56" };
+            var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+            var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+            await node.ProcessObjectAsync(dataContext, nodeContext);
+
+            Assert.Equal(2469.12, dataContext.Get<double>("$.result"), precision: 10);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previousCulture;
+            CultureInfo.CurrentUICulture = previousUiCulture;
+        }
+    }
+
+    // AB#5463: a numeric string where an Int is declared. Same caveat as the Double test
+    // above: the Int32 parity converter honours the inherited AllowReadingFromString, so this
+    // pins the existing invariant parse rather than the fallback.
+    [Fact]
+    public async Task ProcessObjectAsync_NumericStringDeclaredInt_ParsesInvariant()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "count + 1",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "count", ValuePath = "$.count", DataType = AttributeValueTypesDto.Int }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject { ["count"] = "41" };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(42, dataContext.Get<int>("$.result"));
+    }
+
+    // AB#5463: a value that genuinely cannot be converted must STILL fail — a silent null
+    // here would be worse than the throw — and the message must name the argument, the
+    // path, the declared type and what was actually found.
+    [Fact]
+    public async Task ProcessObjectAsync_JsonObjectDeclaredDouble_ThrowsNamingArgumentAndPath()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "amount * 2",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "amount", ValuePath = "$.invoice.amount", DataType = AttributeValueTypesDto.Double }
+            },
+            ReturnType = AttributeValueTypesDto.Double,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject
+        {
+            ["invoice"] = new JsonObject { ["amount"] = new JsonObject { ["value"] = 12.5, ["currency"] = "EUR" } }
+        };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        var ex = await Assert.ThrowsAsync<PipelineExecutionException>(() => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains("amount", ex.Message);
+        Assert.Contains("$.invoice.amount", ex.Message);
+        Assert.Contains("Double", ex.Message);
+        Assert.Contains("Object", ex.Message);
+        Assert.False(dataContext.Exists("$.result"));
+    }
+
+    // AB#5463: STJ's bool converter rejects a JSON string outright, so "true" declared
+    // Boolean goes through the fallback — and warns.
+    [Fact]
+    public async Task ProcessObjectAsync_StringDeclaredBoolean_ParsesAndWarns()
+    {
+        var logger = A.Fake<IPipelineLogger>();
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "isPaid ? \"paid\" : \"open\"",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "isPaid", ValuePath = "$.isPaid", DataType = AttributeValueTypesDto.Boolean }
+            },
+            ReturnType = AttributeValueTypesDto.String,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject { ["isPaid"] = "true" };
+        var (dataContext, nodeContext) = PrepareTest(config, testData, logger: logger);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("paid", dataContext.Get<string>("$.result"));
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Matches(m => m.Contains("isPaid") && m.Contains("Boolean") && m.Contains("String")),
+                A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    // AB#5463: the array kinds convert element-wise — numbers inside a StringArray become
+    // their invariant text instead of killing the read.
+    [Fact]
+    public async Task ProcessObjectAsync_NumberElementsDeclaredStringArray_ConvertsElementWise()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "string.Join(\"|\", ids)",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "ids", ValuePath = "$.ids", DataType = AttributeValueTypesDto.StringArray }
+            },
+            ReturnType = AttributeValueTypesDto.String,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject { ["ids"] = new JsonArray(20260001, "A-7", 3.5) };
+        var (dataContext, nodeContext) = PrepareTest(config, testData);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("20260001|A-7|3.5", dataContext.Get<string>("$.result"));
+    }
+
+    // AB#5463 guard: the strict typed read is still the first and only path for a matching
+    // JSON type — no lenient conversion, no warning.
+    [Fact]
+    public async Task ProcessObjectAsync_MatchingJsonType_DoesNotWarn()
+    {
+        var logger = A.Fake<IPipelineLogger>();
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "name.Length + (int)amount",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "name", ValuePath = "$.name", DataType = AttributeValueTypesDto.String },
+                new() { Name = "amount", ValuePath = "$.amount", DataType = AttributeValueTypesDto.Double }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject { ["name"] = "abc", ["amount"] = 4.0 };
+        var (dataContext, nodeContext) = PrepareTest(config, testData, logger: logger);
+
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        await node.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(7, dataContext.Get<int>("$.result"));
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._)).MustNotHaveHappened();
     }
 }

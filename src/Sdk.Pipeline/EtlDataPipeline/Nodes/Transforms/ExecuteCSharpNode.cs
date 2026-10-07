@@ -103,40 +103,48 @@ public record ExecuteCSharpNodeConfiguration : TargetPathNodeConfiguration
 public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
 {
     /// <summary>
-    /// Process-wide compiled-script cache, keyed by the full value-independent template
-    /// text. The template depends only on the node's code, argument signature and usings
-    /// — never on values, and never on machine-specific rtIds (those live in other nodes'
-    /// configuration, not in the script) — so the SAME script used by N simulated
-    /// machines / pipelines / tenants compiles exactly once and is shared. This makes the
-    /// retained footprint scale with the number of DISTINCT scripts, not with the number
-    /// of machines or executions (measured: 5 machines dropped from ~10GB with a
-    /// per-context cache to a fraction of that once the identical scripts are shared).
+    /// Process-wide cache of compiled script <b>delegates</b>, keyed by the full
+    /// value-independent template text. The template depends only on the node's code,
+    /// argument signature and usings — never on values, and never on machine-specific
+    /// rtIds (those live in other nodes' configuration, not in the script) — so the SAME
+    /// script used by N simulated machines / pipelines / tenants compiles exactly once and
+    /// is shared. This makes the retained footprint scale with the number of DISTINCT
+    /// scripts, not with the number of machines or executions (measured: 5 machines
+    /// dropped from ~10GB with a per-context cache to a fraction of that once the
+    /// identical scripts are shared).
+    /// <para>
+    /// The value is a <see cref="ScriptRunner{T}"/>, deliberately <b>not</b> a
+    /// <c>Script&lt;object&gt;</c>: holding the Script would pin its entire Roslyn
+    /// Compilation graph, which cost ~61 MB of resident memory per distinct script and
+    /// caused node-wide OOMs on prod-1 (AB#5448). See <c>GetOrCompileScript</c>.
+    /// </para>
     /// A compiled script holds only code; per-execution values flow in through
     /// <see cref="ExecuteCSharpGlobals"/>, so cross-tenant sharing carries no data.
     /// <see cref="ConcurrentDictionary{TKey,TValue}"/> + <see cref="Lazy{T}"/> give
     /// thread-safe compile-exactly-once without locking the pipeline data path.
     /// </summary>
-    private static readonly ConcurrentDictionary<string, Lazy<Script<object>>> CompiledScripts = new();
+    private static readonly ConcurrentDictionary<string, Lazy<ScriptRunner<object>>> CompiledScripts = new();
 
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var c = nodeContext.GetNodeConfiguration<ExecuteCSharpNodeConfiguration>();
+        EnsureNoSecrets(dataContext, c, nodeContext);
 
         try
         {
             // Value-independent script template (declarations read from Args) — stable
             // across runs so the cache key is stable and compilation happens once.
             var scriptTemplate = BuildScriptTemplate(c);
-            var script = GetOrCompileScript(scriptTemplate, nodeContext);
+            var runner = GetOrCompileScript(scriptTemplate, nodeContext);
 
             // Resolve the actual values for this run and pass them via globals.
             var globals = new ExecuteCSharpGlobals { Args = BuildArgumentValues(dataContext, c, nodeContext) };
 
             using var cts = new CancellationTokenSource(c.TimeoutMs);
-            var result = await script.RunAsync(globals, cancellationToken: cts.Token);
+            var returnValue = await runner(globals, cts.Token);
 
-            var convertedResult = ConvertResult(result.ReturnValue, c.ReturnType, nodeContext);
+            var convertedResult = ConvertResult(returnValue, c.ReturnType, nodeContext);
             dataContext.Set(c.TargetPath, convertedResult, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
         }
         catch (CompilationErrorException ex)
@@ -170,13 +178,13 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext);
     }
 
-    private static Script<object> GetOrCompileScript(string scriptCode, INodeContext nodeContext)
+    private static ScriptRunner<object> GetOrCompileScript(string scriptCode, INodeContext nodeContext)
     {
         // GetOrAdd may build the Lazy more than once under contention, but only the
         // stored one is ever resolved, and Lazy(ExecutionAndPublication) guarantees its
         // factory — the actual compilation — runs exactly once. Keyed by the full
         // template text so identical scripts across machines/pipelines share one compile.
-        var lazy = CompiledScripts.GetOrAdd(scriptCode, code => new Lazy<Script<object>>(() =>
+        var lazy = CompiledScripts.GetOrAdd(scriptCode, code => new Lazy<ScriptRunner<object>>(() =>
         {
             nodeContext.Debug("Compiling C# script");
 
@@ -206,7 +214,20 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
                 throw new CompilationErrorException("Compilation failed", compilation);
             }
 
-            return script;
+            // Cache the DELEGATE, not the Script (AB#5448). A Script<T> keeps its whole
+            // Roslyn Compilation graph alive — syntax trees, symbol tables and a
+            // MetadataReference per referenced assembly — and that state lives largely in
+            // unmanaged/mmapped metadata buffers. Measured cost: ~61 MB of resident memory
+            // per DISTINCT cached script, so the 43 ExecuteCSharp nodes of the accounting
+            // blueprint pinned ~2.8 GB against a 3Gi container limit and drove node-wide
+            // OOMs on prod-1. CreateDelegate() hands back the emitted assembly plus its
+            // entry point; dropping the Script reference here lets the compilation graph be
+            // collected and takes the same 43 scripts down to ~700 MB, where it plateaus.
+            // Cache semantics are unchanged: still keyed by the value-independent template,
+            // still compiled exactly once, same CPU profile. Note that this memory is
+            // invisible to `dotnet.assembly.count` — MetadataReferences are unmanaged
+            // metadata readers, not loaded assemblies — which is why it went unnoticed.
+            return script.CreateDelegate();
         }, LazyThreadSafetyMode.ExecutionAndPublication));
 
         return lazy.Value;
@@ -273,6 +294,19 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
     /// handed to the script as globals. Every configured argument is always present (null
     /// when unresolved) so the generated <c>Args["name"]</c> lookups never throw.
     /// </summary>
+    private static void EnsureNoSecrets(IDataContext dataContext, ExecuteCSharpNodeConfiguration c,
+        INodeContext nodeContext)
+    {
+        // AB#5538: a script must not compute with Secrets - neither as a declared type (argument or
+        // return) nor by receiving a Secret marker as an argument value.
+        PipelineSecretValues.ThrowIfSecretValueType(nodeContext, c.ReturnType, "returnType");
+        foreach (var arg in c.Arguments)
+        {
+            PipelineSecretValues.ThrowIfSecretValueType(nodeContext, arg.DataType, $"arguments.{arg.Name}.dataType");
+            PipelineSecretValues.ThrowIfSecretMarker(nodeContext, dataContext, arg.ValuePath);
+        }
+    }
+
     private Dictionary<string, object?> BuildArgumentValues(
         IDataContext dataContext, ExecuteCSharpNodeConfiguration c, INodeContext nodeContext)
     {
@@ -298,7 +332,7 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
                 }
                 else
                 {
-                    value = ResolveTypedFromPath(dataContext, arg.ValuePath!, arg.DataType);
+                    value = ResolveTypedFromPath(dataContext, arg, nodeContext);
                 }
             }
             else
@@ -324,7 +358,224 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
         return $"return {c.Code};";
     }
 
-    private static object? ResolveTypedFromPath(IDataContext dataContext, string path, AttributeValueTypesDto dataType)
+    /// <summary>
+    /// Resolves one argument from the data context. The strict typed read is always tried
+    /// first, so the fast path and every existing behaviour are unchanged; only when the
+    /// deserializer rejects the JSON value because its type does not match the declared
+    /// <see cref="ScriptArgument.DataType"/> does the lenient fallback run (AB#5463).
+    /// </summary>
+    private static object? ResolveTypedFromPath(IDataContext dataContext, ScriptArgument arg, INodeContext nodeContext)
+    {
+        var path = arg.ValuePath!;
+        try
+        {
+            return ResolveTypedStrict(dataContext, path, arg.DataType);
+        }
+        catch (Exception ex) when (ex is JsonException or FormatException)
+        {
+            // Deliberately narrow: JsonException is STJ's "the JSON value could not be
+            // converted to T" (a number token read as string, an object read as double, an
+            // out-of-range integer from the parity converters); FormatException is what a
+            // converter's own invariant Parse raises for a non-numeric string. Anything else
+            // — a bug in the data context, a broken path expression — must keep surfacing.
+            return ResolveLeniently(dataContext, arg, path, nodeContext, ex);
+        }
+    }
+
+    /// <summary>
+    /// AB#5463: a JSON value whose type does not match the declared argument type used to
+    /// throw INSIDE argument resolution — before the script ran — so no <c>try</c>/<c>catch</c>
+    /// in the script could see it, and with no <c>continueOnError</c> on <c>ExecuteCSharp@1</c>
+    /// or the per-item <c>ForEach@1</c> the whole iteration died with a generic
+    /// "Script execution failed". The trigger in production was an LLM emitting an invoice
+    /// number as an unquoted JSON number for an argument declared <c>String</c>.
+    /// <para>
+    /// The coercion lives HERE and not in <see cref="SystemTextJsonOptions.Default"/> on purpose:
+    /// those options are the one bundle every node and every adapter deserializes with, so a
+    /// string converter there would silently change behaviour far outside this node (and a
+    /// number→string coercion has no Newtonsoft-parity oracle to pin it against).
+    /// </para>
+    /// Conversions are invariant-culture only. <c>DateTime</c> is deliberately NOT lenient:
+    /// STJ already accepts every ISO 8601 string, and anything it rejects (<c>"01.02.2026"</c>,
+    /// a bare Unix number) is ambiguous — <c>DateTime.Parse</c> under the invariant culture
+    /// would happily read that as February 1st or January 2nd depending on the format it
+    /// guesses, which is a worse outcome than the clear error produced here.
+    /// </summary>
+    private static object? ResolveLeniently(
+        IDataContext dataContext, ScriptArgument arg, string path, INodeContext nodeContext, Exception cause)
+    {
+        // JsonElement deserializes from any JSON kind, so this read cannot fail on a type
+        // mismatch — it only tells us what is actually there.
+        var element = dataContext.Get<JsonElement>(path);
+        var found = element.ValueKind;
+
+        if (TryConvertLeniently(element, arg.DataType, out var converted))
+        {
+            // A pipeline quietly relying on coercion should be visible in the log: name the
+            // argument and both types so the producer (or the declared dataType) can be fixed.
+            nodeContext.Warning(
+                $"Argument '{arg.Name}' is declared {arg.DataType} but the value at '{path}' is a JSON {found}; " +
+                $"converted it to {arg.DataType} with the invariant culture (AB#5463). " +
+                "Fix the producer or the argument's dataType — this fallback is not a contract.");
+            return converted;
+        }
+
+        // A silent null here would be worse than the original throw: fail, but name the
+        // argument, the path, the declared type and what was actually found.
+        throw new PipelineExecutionException(
+            $"[{nodeContext.NodePath}]: Argument '{arg.Name}' is declared {arg.DataType} but the value at " +
+            $"'{path}' is a JSON {found} that cannot be converted to {arg.DataType}: {cause.Message}",
+            cause);
+    }
+
+    /// <summary>
+    /// Lenient scalar/array conversion for a JSON value of the wrong kind. Returns false for
+    /// every combination that is not unambiguously convertible (objects, arrays where a scalar
+    /// is declared, non-numeric strings, booleans into numbers, anything into DateTime).
+    /// </summary>
+    private static bool TryConvertLeniently(JsonElement element, AttributeValueTypesDto dataType, out object? value)
+    {
+        value = null;
+        switch (dataType)
+        {
+            case AttributeValueTypesDto.String:
+                switch (element.ValueKind)
+                {
+                    case JsonValueKind.Number:
+                        // The raw token text IS the invariant representation (JSON numbers
+                        // have no culture), and it preserves the digits exactly as emitted —
+                        // "20260001" stays "20260001", not "2.0260001E+07".
+                        value = element.GetRawText();
+                        return true;
+                    case JsonValueKind.True:
+                        value = "true";
+                        return true;
+                    case JsonValueKind.False:
+                        value = "false";
+                        return true;
+                    default:
+                        return false;
+                }
+
+            case AttributeValueTypesDto.Double:
+                if (element.ValueKind == JsonValueKind.String &&
+                    double.TryParse(element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
+                {
+                    value = d;
+                    return true;
+                }
+                return false;
+
+            case AttributeValueTypesDto.Int:
+                if (TryParseIntegralString(element, out var l) && l is >= int.MinValue and <= int.MaxValue)
+                {
+                    value = (int)l;
+                    return true;
+                }
+                return false;
+
+            case AttributeValueTypesDto.Int64:
+                if (TryParseIntegralString(element, out var l64))
+                {
+                    value = l64;
+                    return true;
+                }
+                return false;
+
+            case AttributeValueTypesDto.Boolean:
+                if (element.ValueKind == JsonValueKind.String &&
+                    bool.TryParse(element.GetString(), out var b))
+                {
+                    value = b;
+                    return true;
+                }
+                return false;
+
+            case AttributeValueTypesDto.StringArray:
+                return TryConvertArrayLeniently<string>(element, AttributeValueTypesDto.String, out value);
+
+            case AttributeValueTypesDto.IntArray:
+                return TryConvertArrayLeniently<int>(element, AttributeValueTypesDto.Int, out value);
+
+            // DateTime (see ResolveLeniently) and everything else: strict.
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Reads a JSON string as an integral value with the invariant culture: a plain integer,
+    /// or a real whose value is integral (<c>"5.0"</c>). A fractional string is not an integer
+    /// and is rejected rather than rounded — the banker's rounding of AB#5275 applies to JSON
+    /// numbers the data context reads, not to text somebody typed.
+    /// </summary>
+    private static bool TryParseIntegralString(JsonElement element, out long value)
+    {
+        value = 0;
+        if (element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var s = element.GetString();
+        if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+        {
+            return true;
+        }
+
+        if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) &&
+            Math.Floor(d) == d && d is >= long.MinValue and <= long.MaxValue)
+        {
+            value = (long)d;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Element-wise lenient conversion for the typed array kinds: each element is read
+    /// strictly first and falls back to <see cref="TryConvertLeniently"/> only on a mismatch.
+    /// A non-array where an array is declared is never converted.
+    /// </summary>
+    private static bool TryConvertArrayLeniently<T>(JsonElement element, AttributeValueTypesDto elementType, out object? value)
+    {
+        value = null;
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
+        var result = new List<T>();
+        foreach (var item in element.EnumerateArray())
+        {
+            try
+            {
+                var strict = item.Deserialize<T>(SystemTextJsonOptions.Default);
+                if (strict is null)
+                {
+                    return false;
+                }
+                result.Add(strict);
+                continue;
+            }
+            catch (Exception ex) when (ex is JsonException or FormatException)
+            {
+                // fall through to the lenient element conversion
+            }
+
+            if (!TryConvertLeniently(item, elementType, out var converted) || converted is not T typed)
+            {
+                return false;
+            }
+            result.Add(typed);
+        }
+
+        value = result.ToArray();
+        return true;
+    }
+
+    private static object? ResolveTypedStrict(IDataContext dataContext, string path, AttributeValueTypesDto dataType)
     {
         // STJ deserializes the underlying JsonNode/JsonElement directly to the target
         // CLR type. This avoids the JsonElement-is-not-IConvertible problem.
