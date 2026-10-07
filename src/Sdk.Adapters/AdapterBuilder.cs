@@ -204,8 +204,9 @@ public class AdapterBuilder
 
             services.AddSingleton<IConfigureOptions<AuthenticatorOptions>, ConfigureAdapterAuthenticatorOptions>();
             services.AddSingleton<IAuthenticatorClient, AuthenticatorClient>();
-            services.AddSingleton<AdapterAccessTokenService>();
-            services.AddHostedService(provider => provider.GetRequiredService<AdapterAccessTokenService>());
+            // AB#5865 — on a pool member the own credential goes to the pool hub connection only; see
+            // AddAdapterAccessTokenService.
+            services.AddAdapterAccessTokenService(isPoolMember);
 
             if (isPoolMember)
             {

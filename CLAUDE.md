@@ -678,6 +678,24 @@ the never-reached endpoint ready state (AB#4968 pattern) until `TriggerStopTimeo
 failed and the member drained on **every** leased run of the canonical cron form (AB#5863). Tests:
 `PipelineRegistryServiceTests.PoolMember_*` / `DedicatedAdapter_RegisterPipelineAsync_StillStartsTriggerNodes`.
 
+### Two identities, two token holders (AB#5865)
+
+A pool member presents **its own** identity (the lending pool's tenant, from `Adapter:ClientId` +
+`AdapterPool:AdapterPoolTenantId`) on the `/adapterPoolHub` management connection, and the
+**borrower's** identity on everything a leased execution does. They live in two holders:
+- `AdapterPoolHubAccessToken` — read only by `AdapterPoolHubClient` (registered by factory in
+  `AddAdapterPoolMember`), written by `AdapterAccessTokenService` on a member
+  (`AddAdapterAccessTokenService(isPoolMember: true)`, shared by both builders).
+- the process-wide `IServiceClientAccessToken` — the lease identity: the borrower's token while a
+  lease runs (`BorrowerIdentityLeaseParticipant`, octo-mesh-adapter), empty between leases.
+
+Why: SignalR's `AccessTokenProvider` reads the client's holder on every (re)connect. With one shared
+holder a pool hub connection rebuilt during a lease (controller restart) was authenticated as the
+borrower, and the deferred re-registration went out on it — refused under
+`AdapterPoolHubAuthorization:Mode=Enforce` (test-2-dev 2026-10-07). It also let the own-credential
+refresh overwrite a borrower token mid-lease, and a lease leave wipe the member's own token. A
+dedicated adapter is unchanged (one identity, process-wide holder). Tests: `AdapterPoolHubIdentityTests`.
+
 ## Node inventory (`src/Sdk.Pipeline/EtlDataPipeline/Nodes/`)
 
 - **Triggers**: `FromPipelineDataEvent@1`, `FromExecutePipelineCommand@1`, `FromPolling@1`

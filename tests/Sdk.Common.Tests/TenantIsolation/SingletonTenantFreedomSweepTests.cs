@@ -95,6 +95,12 @@ public class SingletonTenantFreedomSweepTests
                 + "client -> hub client -> callbacks -> client, which Microsoft DI could not see "
                 + "through a factory lambda and which hung the member process silently. It carries no "
                 + "tenant state of its own; the instance it forwards to is cleared above.",
+            ["IAdapterPoolHubClient"] =
+                "AdapterPoolHubClient, built by a factory only to hand it the pool hub's OWN token "
+                + "holder (AdapterPoolHubAccessToken, AB#5865) instead of the process-wide lease "
+                + "identity. Same type the sweep inspected by implementation type before; the "
+                + "management connection addresses no tenant (BuildServiceUri) and holds no lease "
+                + "state. AdapterPoolHubIdentityTests pins which holder it reads.",
         };
 
     /// <summary>
@@ -201,6 +207,10 @@ public class SingletonTenantFreedomSweepTests
             // The pool-member composition aliases a contract interface (IAdapterPoolHubCallbacks),
             // which lives in Communication.Contracts rather than in either SDK assembly.
             .Concat(typeof(Meshmakers.Octo.Communication.Contracts.Hubs.IAdapterPoolHubCallbacks)
+                .Assembly.GetTypes())
+            // AB#5865: the pool hub client is now registered by factory; its interface lives in the
+            // octo-sdk service client assembly.
+            .Concat(typeof(Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices.IAdapterPoolHubClient)
                 .Assembly.GetTypes())
             .Select(t => t.Name)
             .ToHashSet(StringComparer.Ordinal);

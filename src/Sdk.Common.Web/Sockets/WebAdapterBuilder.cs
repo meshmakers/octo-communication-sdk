@@ -170,8 +170,9 @@ public class WebAdapterBuilder
         builder.Services
             .AddSingleton<IConfigureOptions<AuthenticatorOptions>, ConfigureAdapterAuthenticatorOptions>();
         builder.Services.AddSingleton<IAuthenticatorClient, AuthenticatorClient>();
-        builder.Services.AddSingleton<AdapterAccessTokenService>();
-        builder.Services.AddHostedService(provider => provider.GetRequiredService<AdapterAccessTokenService>());
+        // AB#5865 — on a pool member the own credential goes to the pool hub connection only; see
+        // AddAdapterAccessTokenService.
+        builder.Services.AddAdapterAccessTokenService(isPoolMember);
 
         builder.Services.AddSingleton<AdapterLifetimeManagement>();
 

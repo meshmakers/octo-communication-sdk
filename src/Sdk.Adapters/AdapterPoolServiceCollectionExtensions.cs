@@ -6,6 +6,7 @@ using Meshmakers.Octo.Sdk.ServiceClient.CommunicationControllerServices;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 // ReSharper disable once CheckNamespace
@@ -106,7 +107,17 @@ public static class AdapterPoolServiceCollectionExtensions
         // See DeferredAdapterPoolHubCallbacks.
         services.TryAddSingleton<IAdapterPoolHubCallbacks, DeferredAdapterPoolHubCallbacks>();
         services.TryAddSingleton<IServiceClientAccessToken, ServiceClientAccessToken>();
-        services.TryAddSingleton<IAdapterPoolHubClient, AdapterPoolHubClient>();
+
+        // 🔴 AB#5865 — the pool hub connection carries the member's OWN identity, in its own holder.
+        // The process-wide IServiceClientAccessToken above becomes the BORROWER's token for the length
+        // of a lease (BorrowerIdentityLeaseParticipant in octo-mesh-adapter); a hub connection rebuilt
+        // during a lease must not pick that up. See AdapterPoolHubAccessToken.
+        services.TryAddSingleton<AdapterPoolHubAccessToken>();
+        services.TryAddSingleton<IAdapterPoolHubClient>(sp => new AdapterPoolHubClient(
+            sp.GetRequiredService<IOptions<AdapterPoolHubClientOptions>>(),
+            sp.GetRequiredService<ILogger<AdapterPoolHubClient>>(),
+            sp.GetRequiredService<AdapterPoolHubAccessToken>(),
+            sp.GetRequiredService<IAdapterPoolHubCallbacks>()));
 
         return services;
     }
