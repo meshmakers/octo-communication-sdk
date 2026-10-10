@@ -66,16 +66,20 @@ secrets:
   #                 externally-managed Secret (operator-managed `{release}-octo-secrets`,
   #                 External Secrets, etc.)
   # See octo-mesh.secretEnv in templates/_helpers.tpl.
-  databaseUser: ""
-  databaseAdmin: ""
-  streamDataPassword: ""
-  rabbitmq: ""
+  # AB#6424: databaseUser, databaseAdmin, streamDataPassword, rabbitmq and serviceAccountClientSecret
+  # deliberately have NO default. A default of "" is a scalar;
+  # the operator passes them as {valueFrom: ...} maps and Helm then prints
+  # "destination for <chart>.secrets.<key> is a table. Ignoring non-table value ()" on every install.
+  # databaseUser:
+  # databaseAdmin:
+  # streamDataPassword:
+  # rabbitmq:
   # Client secret of `serviceAccountClientId` (AB#5072). Accepts a plaintext string
   # (packed into the chart-owned `<fullname>-backend` Secret) or a
   # `{valueFrom: {secretKeyRef: ...}}` map -- the latter is what the communication
   # operator supplies from `{release}-octo-secrets`. Unlike the cluster secrets this
   # one is OPTIONAL: unset means the adapter connects anonymously.
-  serviceAccountClientSecret: ""
+  # serviceAccountClientSecret:
   # Optional: PEM-encoded CA bundle. When set, the initContainer adds it to
   # the system trust store so the plug accepts self-signed / private CA
   # certs (e.g. mm-cloud-issuer on the test-2 cluster).
