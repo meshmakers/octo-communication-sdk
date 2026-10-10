@@ -41,7 +41,10 @@ dotnet build -c Release
 
 Three configurations: `Debug`, `Release`, `DebugL`. **DebugL** pins every version to `999.0.0` and
 prepends `../nuget` to `RestoreSources`; every packable project has `GeneratePackageOnBuild`, so a
-build drops the `.nupkg` into `<project>/bin/DebugL/`.
+build drops the `.nupkg` into `<project>/bin/DebugL/`. Outside DebugL the upstream versions come only
+from the pipeline (AB#6297): there is no release-line `OctoVersion` fallback in `Directory.Build.props`,
+so `dotnet build -c Release` needs `-p:OctoVersion=X.Y.Z` (or `-p:OctoNugetPrivateServer=<feed>` for
+the main line `0.1.*`) and otherwise fails fast with `OCTO0001`.
 
 ⚠️ **Propagating a change to the consumers is three steps, and skipping any of them looks like the
 change did not happen:**

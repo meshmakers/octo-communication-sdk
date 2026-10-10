@@ -45,7 +45,7 @@ dotnet build Octo.CommunicationSdk.sln -c DebugL
 
 ## Release
 
-Releases are driven by `release-communication-train.yml` in `octo-mesh-deployment` (Phase 5 of the migration). The train tags `r<X.Y.Z>` on this repo and queues the CI on the tag. Versioning follows the A2 Layered strategy: this repo carries its own version line (`comm-X.Y.Z`) and pins to a Libs major-minor via `OctoVersion` in `Directory.Build.props`.
+Releases are driven by `release-communication-train.yml` in `octo-mesh-deployment` (Phase 5 of the migration). The train tags `r<X.Y.Z>` on this repo and queues the CI on the tag. Versioning follows the A2 Layered strategy: this repo shares the Libs major-minor line; the train passes `octoCoreLibVersion` / `octoCommVersion` to the CI, and `Directory.Build.props` carries no release-line fallback (versions come only from the pipeline, AB#6297).
 
 ## See also
 
