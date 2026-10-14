@@ -1,4 +1,4 @@
 $schema: https://schemas.meshmakers.cloud/construction-kit-meta.schema.json
 modelId: System.Sdk
 dependencies:
-- System
+- System-[1.0,2.0)
