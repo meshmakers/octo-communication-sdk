@@ -316,8 +316,11 @@ public class PipelineExecutionException : Exception
     /// <returns></returns>
     public static Exception LocalTimeDoesNotExist(NodePath nodePath, DateTime localTime, string timeZoneId)
     {
+        // ':' in a custom format is the culture's time separator; the invariant culture keeps the
+        // value in the message identical to the input whatever culture the adapter host runs in.
+        var formattedLocalTime = localTime.ToString("yyyy-MM-dd'T'HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
         return new PipelineExecutionException(
-            $"[{nodePath}]: Local time '{localTime:yyyy-MM-ddTHH:mm:ss}' does not exist in time zone '{timeZoneId}' " +
+            $"[{nodePath}]: Local time '{formattedLocalTime}' does not exist in time zone '{timeZoneId}' " +
             "(it falls into the hour skipped when daylight saving time starts).");
     }
 

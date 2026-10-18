@@ -1194,6 +1194,26 @@ public class DateTimeNodeTests(NodeFixture fixture) : IClassFixture<NodeFixture>
     }
 
     [Fact]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_NonExistingLocalTime_MessageIsCultureIndependent()
+    {
+        // fi-FI uses '.' as the time separator: a culture-sensitive format would print 02.30.00.
+        var previous = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fi-FI");
+        try
+        {
+            var (_, run) = PrepareFromTimeZone(data: new { local = "2026-03-29T02:30:00" });
+
+            var exception = await Assert.ThrowsAsync<PipelineExecutionException>(run);
+
+            Assert.Contains("'2026-03-29T02:30:00'", exception.Message);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
+    }
+
+    [Fact]
     public async Task ProcessObjectAsync_ConvertFromTimeZone_ZoneFromValuePath_SameAsFixedValue()
     {
         var (dataContext, run) = PrepareFromTimeZone(zoneValue: null, zonePath: "$.zoneId",
