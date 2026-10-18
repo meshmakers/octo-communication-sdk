@@ -318,7 +318,10 @@ public class PipelineExecutionException : Exception
     {
         // ':' in a custom format is the culture's time separator; the invariant culture keeps the
         // value in the message identical to the input whatever culture the adapter host runs in.
-        var formattedLocalTime = localTime.ToString("yyyy-MM-dd'T'HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+        // 'FFFFFFF' prints the fractional seconds that are present and nothing when there are none,
+        // so the message names the actual value (02:30:00.5 stays 02:30:00.5, 02:30:00 stays 02:30:00).
+        var formattedLocalTime = localTime.ToString("yyyy-MM-dd'T'HH:mm:ss.FFFFFFF",
+            System.Globalization.CultureInfo.InvariantCulture);
         return new PipelineExecutionException(
             $"[{nodePath}]: Local time '{formattedLocalTime}' does not exist in time zone '{timeZoneId}' " +
             "(it falls into the hour skipped when daylight saving time starts).");

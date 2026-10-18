@@ -304,18 +304,13 @@ public class DateTimeNode(NodeDelegate next) : IPipelineNode
     private static DateTime ConvertFromTimeZone(IDataContext dataContext, DateTimeNodeConfiguration config,
         INodeContext nodeContext)
     {
-        var source = GetSourceDateTime(dataContext, config, nodeContext);
+        var wallClock = GetSourceWallClock(dataContext, config, nodeContext);
         var timeZoneId = GetTimeZoneId(dataContext, config, nodeContext);
 
         if (!TimeZoneInfo.TryFindSystemTimeZoneById(timeZoneId, out var timeZone))
         {
             throw PipelineExecutionException.TimeZoneNotFound(nodeContext.NodePath, timeZoneId);
         }
-
-        // The clock fields are the local time whatever Kind the value carries: an upstream system
-        // may have tagged it Z or dropped the tag. Unspecified keeps TimeZoneInfo from applying the
-        // machine's own zone, so the result never depends on where the adapter runs.
-        var wallClock = DateTime.SpecifyKind(source, DateTimeKind.Unspecified);
 
         if (timeZone.IsInvalidTime(wallClock))
         {
@@ -330,6 +325,33 @@ public class DateTimeNode(NodeDelegate next) : IPipelineNode
             : timeZone.GetUtcOffset(wallClock);
 
         return DateTime.SpecifyKind(wallClock - offset, DateTimeKind.Utc);
+    }
+
+    /// <summary>
+    /// Reads the source as the clock fields written in the value, as Kind <c>Unspecified</c>. A value
+    /// may carry <c>Z</c>, a UTC offset or nothing; all three are ignored here, the clock reading is
+    /// the local time.
+    /// </summary>
+    private static DateTime GetSourceWallClock(IDataContext dataContext, DateTimeNodeConfiguration config,
+        INodeContext nodeContext)
+    {
+        // A typed DateTime read converts a value with a UTC offset (for example +05:00) to the
+        // HOST's local time, so its clock fields would depend on the machine's time zone. The text
+        // is therefore parsed here, with AssumeUniversal so that no host zone is consulted either,
+        // and the clock fields are taken exactly as written.
+        if (dataContext.GetKind(config.Path) == DataKind.String)
+        {
+            var text = dataContext.Get<string>(config.Path);
+            if (!string.IsNullOrWhiteSpace(text) &&
+                DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal,
+                    out var parsed))
+            {
+                return DateTime.SpecifyKind(parsed.DateTime, DateTimeKind.Unspecified);
+            }
+        }
+
+        // Not a string or not parsable as text: the typed read decides (and reports a missing value).
+        return DateTime.SpecifyKind(GetSourceDateTime(dataContext, config, nodeContext), DateTimeKind.Unspecified);
     }
 
     private static DateTime StartOfMonth(DateTime source)

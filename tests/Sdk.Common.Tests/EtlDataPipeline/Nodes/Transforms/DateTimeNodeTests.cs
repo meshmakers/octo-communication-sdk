@@ -1286,6 +1286,45 @@ public class DateTimeNodeTests(NodeFixture fixture) : IClassFixture<NodeFixture>
         Assert.Equal(new DateTime(2026, 7, 14, 22, 0, 0, DateTimeKind.Utc), dataContext.Get<DateTime>("$.result"));
     }
 
+    [Theory]
+    // A UTC offset in the value is ignored like Z: the clock fields as written are the local time.
+    // A typed DateTime read would convert these to the host's local time and shift the clock.
+    [InlineData("2026-07-15T00:00:00+05:00")]
+    [InlineData("2026-07-15T00:00:00-08:00")]
+    [InlineData("2026-07-15T00:00:00+02:00")]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_OffsetInValue_KeepsTheClockFieldsAsWritten(string local)
+    {
+        var (dataContext, run) = PrepareFromTimeZone(data: new { local });
+
+        await run();
+
+        Assert.Equal(new DateTime(2026, 7, 14, 22, 0, 0, DateTimeKind.Utc), dataContext.Get<DateTime>("$.result"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_FractionalSeconds_AreKept()
+    {
+        var (dataContext, run) = PrepareFromTimeZone(data: new { local = "2026-07-15T00:00:00.5" });
+
+        await run();
+
+        Assert.Equal(new DateTime(2026, 7, 14, 22, 0, 0, 500, DateTimeKind.Utc),
+            dataContext.Get<DateTime>("$.result"));
+    }
+
+    [Theory]
+    [InlineData("2026-03-29T02:30:00.5")]
+    [InlineData("2026-03-29T02:30:00.1234567")]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_NonExistingLocalTimeWithFraction_MessageNamesTheExactValue(
+        string local)
+    {
+        var (_, run) = PrepareFromTimeZone(data: new { local });
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(run);
+
+        Assert.Contains($"'{local}'", exception.Message);
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_ConvertFromTimeZone_UtcZone_KeepsTheClockAsInstant()
     {

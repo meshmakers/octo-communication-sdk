@@ -738,9 +738,12 @@ pins every ordinal). Still `DateTime@1`: no node version, no CK change.
   `valuePath` or `value`; unknown/empty zone fails the node.
 - `StartOfMonth` (14): first of the month, 00:00, **keeps the Kind** of the source, no zone conversion.
 
-🔴 `ConvertFromTimeZone` takes the **clock fields** of the source as local time whatever its Kind says,
-so a `Z` an upstream system attached does not change the result and it never depends on the machine's
-zone. Daylight saving time is fixed by contract: a non-existing local time (spring gap) **fails the
+🔴 `ConvertFromTimeZone` takes the **clock fields as written in the value** as local time: `Z`, a UTC
+offset (`+05:00`) and no marker at all are all ignored, so the result never depends on the machine's
+zone. That is why `GetSourceWallClock` parses the **text** (`DateTimeOffset.TryParse`, invariant,
+`AssumeUniversal`) instead of using the typed `Get<DateTime?>` of the other operations: STJ converts a
+value with an offset to the **host's** local time, which would shift the clock fields by a host-dependent
+amount. The error message formats the value with the invariant culture and keeps fractional seconds. Daylight saving time is fixed by contract: a non-existing local time (spring gap) **fails the
 node** (`PipelineExecutionException.LocalTimeDoesNotExist`, names value and zone); an ambiguous local
 time (autumn repeat) maps to the **earlier** instant (daylight saving offset = the larger one of
 `GetAmbiguousTimeOffsets`). `TimeZoneInfo.ConvertTimeToUtc` is deliberately not used: for an ambiguous
