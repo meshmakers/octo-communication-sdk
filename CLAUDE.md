@@ -726,6 +726,33 @@ dedicated adapter is unchanged (one identity, process-wide holder). Tests: `Adap
 Domain nodes (entity CRUD, stream data, HTTP, files, PDF, mail, …) live in `octo-mesh-adapter`, not
 here.
 
+### `DateTime@1` time zone operations (AB#5095, AB#6854)
+
+Operation ordinals are persisted in deployed pipelines and the generated schema maps names onto them,
+so new operations are **only appended** (`DateTimeOperationDto`; `DateTimeOperationDto_AppendsNewOperations…`
+pins every ordinal). Still `DateTime@1`: no node version, no CK change.
+
+- `ConvertToTimeZone` (11): UTC instant → **wall clock** of an IANA zone, result Kind `Unspecified`
+  (serializes without `Z`). A source without Kind is read as UTC.
+- `ConvertFromTimeZone` (13): wall clock → **UTC instant**, result Kind `Utc`. The zone comes from
+  `valuePath` or `value`; unknown/empty zone fails the node.
+- `StartOfMonth` (14): first of the month, 00:00, **keeps the Kind** of the source, no zone conversion.
+
+🔴 `ConvertFromTimeZone` takes the **clock fields as written in the value** as local time: `Z`, a UTC
+offset (`+05:00`) and no marker at all are all ignored, so the result never depends on the machine's
+zone. `GetSourceWallClock` starts with the same strict typed `Get<DateTime?>` as the other operations
+(only ISO 8601 date-times are valid; `"12:00:00"` or `"07/15/2026"` fail instead of being completed with
+today's date). Only a value that comes back as Kind `Local` — STJ converts a value with an offset to the
+**host's** local time, which would shift the clock fields by a host-dependent amount — is parsed again
+from its text (`DateTimeOffset.TryParse`, invariant, `AssumeUniversal`). The error message formats the
+value with the invariant culture and keeps fractional seconds. Daylight saving time is fixed by contract: a non-existing local time (spring gap) **fails the
+node** (`PipelineExecutionException.LocalTimeDoesNotExist`, names value and zone); an ambiguous local
+time (autumn repeat) maps to the **earlier** instant (daylight saving offset = the larger one of
+`GetAmbiguousTimeOffsets`). `TimeZoneInfo.ConvertTimeToUtc` is deliberately not used: for an ambiguous
+time it picks the standard-time offset, i.e. the later instant. The only round trip that cannot hold is
+the second pass of the repeated hour (its wall clock equals the first pass). A lenient mode for the gap
+(shift forward) would be a separate story, not an option.
+
 ### ExecuteCSharp argument typing (AB#5232)
 
 `ExecuteCSharp@1` arguments are declared in the generated script with the real C# type for their

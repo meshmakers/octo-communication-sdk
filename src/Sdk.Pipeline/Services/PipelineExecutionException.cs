@@ -307,6 +307,27 @@ public class PipelineExecutionException : Exception
     }
 
     /// <summary>
+    /// Exception thrown when a local wall-clock time does not exist in a time zone, because it falls
+    /// into the hour skipped by the spring-forward switch of daylight saving time
+    /// </summary>
+    /// <param name="nodePath">Path to the node</param>
+    /// <param name="localTime">The local time that does not exist</param>
+    /// <param name="timeZoneId">The time zone id the local time was read in</param>
+    /// <returns></returns>
+    public static Exception LocalTimeDoesNotExist(NodePath nodePath, DateTime localTime, string timeZoneId)
+    {
+        // ':' in a custom format is the culture's time separator; the invariant culture keeps the
+        // value in the message identical to the input whatever culture the adapter host runs in.
+        // 'FFFFFFF' prints the fractional seconds that are present and nothing when there are none,
+        // so the message names the actual value (02:30:00.5 stays 02:30:00.5, 02:30:00 stays 02:30:00).
+        var formattedLocalTime = localTime.ToString("yyyy-MM-dd'T'HH:mm:ss.FFFFFFF",
+            System.Globalization.CultureInfo.InvariantCulture);
+        return new PipelineExecutionException(
+            $"[{nodePath}]: Local time '{formattedLocalTime}' does not exist in time zone '{timeZoneId}' " +
+            "(it falls into the hour skipped when daylight saving time starts).");
+    }
+
+    /// <summary>
     /// Exception thrown when a value cannot be read as Unix time in milliseconds
     /// </summary>
     /// <param name="nodePath">Path to the node</param>
