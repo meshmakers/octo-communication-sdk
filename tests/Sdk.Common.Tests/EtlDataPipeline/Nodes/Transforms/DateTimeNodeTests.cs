@@ -595,6 +595,8 @@ public class DateTimeNodeTests(NodeFixture fixture) : IClassFixture<NodeFixture>
         Assert.Equal(10, (int)DateTimeOperationDto.ExtractTime);
         Assert.Equal(11, (int)DateTimeOperationDto.ConvertToTimeZone);
         Assert.Equal(12, (int)DateTimeOperationDto.FromUnixTimeMilliseconds);
+        Assert.Equal(13, (int)DateTimeOperationDto.ConvertFromTimeZone);
+        Assert.Equal(14, (int)DateTimeOperationDto.StartOfMonth);
     }
 
     [Fact]
@@ -1131,5 +1133,277 @@ public class DateTimeNodeTests(NodeFixture fixture) : IClassFixture<NodeFixture>
 
         Assert.Equal(new DateTime(2025, 6, 15, 15, 6, 40, DateTimeKind.Utc), dataContext.Get<DateTime>("$.utc"));
         Assert.Equal(new DateTime(2025, 6, 15, 17, 6, 40), dataContext.Get<DateTime>("$.local"));
+    }
+
+    // -----------------------------------------------------------------------------
+    // AB#6854: ConvertFromTimeZone (13) and StartOfMonth (14), appended operations.
+    // -----------------------------------------------------------------------------
+
+    private (IDataContext DataContext, Func<Task> Run) PrepareFromTimeZone(string? zoneValue = ViennaTimeZoneId,
+        string? zonePath = null, object? data = null)
+    {
+        var config = new DateTimeNodeConfiguration
+        {
+            Operation = DateTimeOperationDto.ConvertFromTimeZone,
+            Path = "$.local",
+            Value = zoneValue,
+            ValuePath = zonePath,
+            TargetPath = "$.result",
+        };
+
+        var (dataContext, nodeContext) = PrepareTest(config, data);
+        var testee = new DateTimeNode(A.Fake<NodeDelegate>());
+        return (dataContext, () => testee.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Theory]
+    [InlineData("2026-07-15T00:00:00", "2026-07-14T22:00:00")] // CEST, UTC+2
+    [InlineData("2026-01-15T00:00:00", "2026-01-14T23:00:00")] // CET, UTC+1
+    [InlineData("2026-03-29T00:00:00", "2026-03-28T23:00:00")] // spring change day, before the switch
+    [InlineData("2026-03-29T03:30:00", "2026-03-29T01:30:00")] // spring change day, after the switch
+    [InlineData("2026-10-25T00:00:00", "2026-10-24T22:00:00")] // autumn change day, before the repeat
+    [InlineData("2026-10-25T03:00:00", "2026-10-25T02:00:00")] // autumn change day, after the repeat (CET)
+    [InlineData("2026-10-25T02:30:00", "2026-10-25T00:30:00")] // ambiguous: earlier instant (CEST)
+    [InlineData("2026-10-25T02:00:00", "2026-10-25T00:00:00")] // ambiguous: first second of the repeat
+    [InlineData("2026-10-25T02:59:59", "2026-10-25T00:59:59")] // ambiguous: last second, still CEST
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_Vienna_OK(string local, string expectedUtc)
+    {
+        var (dataContext, run) = PrepareFromTimeZone(data: new { local });
+
+        await run();
+
+        var result = dataContext.Get<DateTime>("$.result");
+        Assert.Equal(DateTime.Parse(expectedUtc + "Z", CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            result);
+        Assert.Equal(DateTimeKind.Utc, result.Kind);
+        Assert.Equal(expectedUtc + "Z", dataContext.Get<string>("$.result"));
+    }
+
+    [Theory]
+    [InlineData("2026-03-29T02:00:00")] // first second of the gap
+    [InlineData("2026-03-29T02:30:00")]
+    [InlineData("2026-03-29T02:59:59")]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_NonExistingLocalTime_ThrowsNamingValueAndZone(string local)
+    {
+        var (_, run) = PrepareFromTimeZone(data: new { local });
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(run);
+
+        Assert.Contains(local, exception.Message);
+        Assert.Contains(ViennaTimeZoneId, exception.Message);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_ZoneFromValuePath_SameAsFixedValue()
+    {
+        var (dataContext, run) = PrepareFromTimeZone(zoneValue: null, zonePath: "$.zoneId",
+            data: new { local = "2026-07-15T00:00:00", zoneId = ViennaTimeZoneId });
+
+        await run();
+
+        Assert.Equal(new DateTime(2026, 7, 14, 22, 0, 0, DateTimeKind.Utc), dataContext.Get<DateTime>("$.result"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_ValuePathTakesPrecedenceOverValue()
+    {
+        var (dataContext, run) = PrepareFromTimeZone(zoneValue: "America/New_York", zonePath: "$.zoneId",
+            data: new { local = "2026-07-15T00:00:00", zoneId = ViennaTimeZoneId });
+
+        await run();
+
+        Assert.Equal(new DateTime(2026, 7, 14, 22, 0, 0, DateTimeKind.Utc), dataContext.Get<DateTime>("$.result"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_UnknownZone_ThrowsNamingTheZone()
+    {
+        var (_, run) = PrepareFromTimeZone(zoneValue: "Europe/Wien", data: new { local = "2026-07-15T00:00:00" });
+
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(run);
+
+        Assert.Contains("Europe/Wien", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_EmptyFixedZone_ThrowsException(string? zone)
+    {
+        var (_, run) = PrepareFromTimeZone(zoneValue: zone, data: new { local = "2026-07-15T00:00:00" });
+
+        await Assert.ThrowsAsync<PipelineExecutionException>(run);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_EmptyZoneFromValuePath_ThrowsException(string? zone)
+    {
+        var (_, run) = PrepareFromTimeZone(zoneValue: null, zonePath: "$.zoneId",
+            data: new { local = "2026-07-15T00:00:00", zoneId = zone });
+
+        await Assert.ThrowsAsync<PipelineExecutionException>(run);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_MissingSourcePath_ThrowsException()
+    {
+        var (_, run) = PrepareFromTimeZone(data: new { other = "2026-07-15T00:00:00" });
+
+        await Assert.ThrowsAsync<PipelineExecutionException>(run);
+    }
+
+    [Theory]
+    [InlineData("2026-07-15T00:00:00Z")] // tagged UTC by an upstream system: still the local clock reading
+    [InlineData("2026-07-15T00:00:00")]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_ClockFieldsAreLocalTimeWhateverTheKind(string local)
+    {
+        var (dataContext, run) = PrepareFromTimeZone(data: new { local });
+
+        await run();
+
+        Assert.Equal(new DateTime(2026, 7, 14, 22, 0, 0, DateTimeKind.Utc), dataContext.Get<DateTime>("$.result"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_UtcZone_KeepsTheClockAsInstant()
+    {
+        var (dataContext, run) = PrepareFromTimeZone(zoneValue: "UTC", data: new { local = "2026-07-15T10:20:30" });
+
+        await run();
+
+        var result = dataContext.Get<DateTime>("$.result");
+        Assert.Equal(new DateTime(2026, 7, 15, 10, 20, 30), result);
+        Assert.Equal(DateTimeKind.Utc, result.Kind);
+    }
+
+    private async Task<DateTime> RoundTripViaVienna(DateTime utc)
+    {
+        var toConfig = new DateTimeNodeConfiguration
+        {
+            Operation = DateTimeOperationDto.ConvertToTimeZone,
+            Path = "$.utc",
+            Value = ViennaTimeZoneId,
+            TargetPath = "$.local",
+        };
+        var fromConfig = new DateTimeNodeConfiguration
+        {
+            Operation = DateTimeOperationDto.ConvertFromTimeZone,
+            Path = "$.local",
+            Value = ViennaTimeZoneId,
+            TargetPath = "$.back",
+        };
+
+        var (dataContext, toNode) = PrepareTest(toConfig, new { utc });
+        var testee = new DateTimeNode(A.Fake<NodeDelegate>());
+
+        await testee.ProcessObjectAsync(dataContext, toNode);
+        await testee.ProcessObjectAsync(dataContext, PrepareNextNode(dataContext, fromConfig));
+
+        var back = dataContext.Get<DateTime>("$.back");
+        Assert.Equal(DateTimeKind.Utc, back.Kind);
+        return back;
+    }
+
+    [Theory]
+    // Summer, winter, both change days around the switch and every unambiguous time on them.
+    [InlineData("2026-07-15T12:00:00Z")]
+    [InlineData("2026-01-15T12:00:00Z")]
+    [InlineData("2026-03-29T00:59:59Z")] // last second before the spring switch
+    [InlineData("2026-03-29T01:00:00Z")] // first second after it (local 03:00)
+    [InlineData("2026-03-29T12:00:00Z")]
+    [InlineData("2026-10-24T22:00:00Z")] // local midnight of the autumn change day
+    [InlineData("2026-10-25T00:00:00Z")] // local 02:00 CEST: first pass of the repeated hour
+    [InlineData("2026-10-25T00:59:59Z")] // local 02:59:59 CEST: last second of the first pass
+    [InlineData("2026-10-25T02:00:00Z")] // local 03:00 CET: after the repeat
+    [InlineData("2026-10-25T12:00:00Z")]
+    public async Task ConvertToTimeZoneThenConvertFromTimeZone_ReturnsTheOriginalInstant(string utcInstant)
+    {
+        var original = DateTime.Parse(utcInstant, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+
+        var back = await RoundTripViaVienna(original);
+
+        Assert.Equal(original, back);
+    }
+
+    [Fact]
+    public async Task ConvertToTimeZoneThenConvertFromTimeZone_SecondPassOfRepeatedHour_MapsToTheFirstPass()
+    {
+        // The one case a round trip cannot preserve: local 02:30 occurs twice on 2026-10-25, and the
+        // wall-clock reading alone cannot tell the passes apart. By contract it maps to the first.
+        var secondPass = new DateTime(2026, 10, 25, 1, 30, 0, DateTimeKind.Utc); // 02:30 CET
+
+        var back = await RoundTripViaVienna(secondPass);
+
+        Assert.Equal(new DateTime(2026, 10, 25, 0, 30, 0, DateTimeKind.Utc), back);
+    }
+
+    [Theory]
+    [InlineData("2026-12-31T23:59:00Z", "2026-12-01T00:00:00Z", DateTimeKind.Utc)] // year boundary
+    [InlineData("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", DateTimeKind.Utc)] // already the first
+    [InlineData("2026-03-31T23:59:59.9999999Z", "2026-03-01T00:00:00Z", DateTimeKind.Utc)] // end of month
+    [InlineData("2028-02-29T13:45:10Z", "2028-02-01T00:00:00Z", DateTimeKind.Utc)] // leap day
+    [InlineData("2026-07-15T14:30:45", "2026-07-01T00:00:00", DateTimeKind.Unspecified)] // Kind is kept
+    public async Task ProcessObjectAsync_StartOfMonth_OK(string source, string expected, DateTimeKind expectedKind)
+    {
+        var config = new DateTimeNodeConfiguration
+        {
+            Operation = DateTimeOperationDto.StartOfMonth,
+            Path = "$.timestamp",
+            TargetPath = "$.result",
+        };
+
+        var (dataContext, nodeContext) = PrepareTest(config, new { timestamp = source });
+        var testee = new DateTimeNode(A.Fake<NodeDelegate>());
+
+        await testee.ProcessObjectAsync(dataContext, nodeContext);
+
+        var result = dataContext.Get<DateTime>("$.result");
+        Assert.Equal(DateTime.Parse(expected, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind), result);
+        Assert.Equal(expectedKind, result.Kind);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_StartOfMonth_MissingSourcePath_ThrowsException()
+    {
+        var config = new DateTimeNodeConfiguration
+        {
+            Operation = DateTimeOperationDto.StartOfMonth,
+            Path = "$.nonexistent",
+            TargetPath = "$.result",
+        };
+
+        var (dataContext, nodeContext) = PrepareTest(config);
+        var testee = new DateTimeNode(A.Fake<NodeDelegate>());
+
+        await Assert.ThrowsAsync<PipelineExecutionException>(() => testee.ProcessObjectAsync(dataContext, nodeContext));
+    }
+
+    [Fact]
+    public async Task StartOfMonthThenConvertFromTimeZone_GivesViennaMonthStartAsUtc()
+    {
+        // The consumer case: first of the month in Vienna, expressed as UTC for GetStreamData@1.
+        var monthConfig = new DateTimeNodeConfiguration
+        {
+            Operation = DateTimeOperationDto.StartOfMonth,
+            Path = "$.local",
+            TargetPath = "$.monthStart",
+        };
+        var utcConfig = new DateTimeNodeConfiguration
+        {
+            Operation = DateTimeOperationDto.ConvertFromTimeZone,
+            Path = "$.monthStart",
+            Value = ViennaTimeZoneId,
+            TargetPath = "$.from",
+        };
+
+        var (dataContext, monthNode) = PrepareTest(monthConfig, new { local = "2026-10-18T11:41:00" });
+        var testee = new DateTimeNode(A.Fake<NodeDelegate>());
+
+        await testee.ProcessObjectAsync(dataContext, monthNode);
+        await testee.ProcessObjectAsync(dataContext, PrepareNextNode(dataContext, utcConfig));
+
+        Assert.Equal(new DateTime(2026, 9, 30, 22, 0, 0, DateTimeKind.Utc), dataContext.Get<DateTime>("$.from"));
     }
 }

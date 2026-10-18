@@ -77,6 +77,22 @@ public enum DateTimeOperationDto
     /// into a UTC date/time value.
     /// </summary>
     FromUnixTimeMilliseconds = 12,
+
+    /// <summary>
+    /// Reads the source value as wall-clock time in an IANA time zone (for example
+    /// <c>Europe/Vienna</c>) and writes the matching UTC instant. The zone id comes from ValuePath,
+    /// or from Value when no path is configured. The Kind of the source is ignored: its clock fields
+    /// are the local time. A local time that does not exist (spring-forward gap) fails the node; an
+    /// ambiguous local time (autumn repeat) resolves to the earlier instant, i.e. the daylight
+    /// saving time offset.
+    /// </summary>
+    ConvertFromTimeZone = 13,
+
+    /// <summary>
+    /// Returns the first day of the month of the source value at 00:00, keeping the Kind of the
+    /// source. No time zone conversion takes place.
+    /// </summary>
+    StartOfMonth = 14,
 }
 
 /// <summary>
@@ -93,8 +109,8 @@ public record DateTimeNodeConfiguration : SourceTargetPathNodeConfiguration
 
     /// <summary>
     /// A static value to be used in the operation. For Add* operations this is a number,
-    /// for Format it is the .NET format string, and for ConvertToTimeZone it is the IANA
-    /// time zone id (for example <c>Europe/Vienna</c>).
+    /// for Format it is the .NET format string, and for ConvertToTimeZone and ConvertFromTimeZone
+    /// it is the IANA time zone id (for example <c>Europe/Vienna</c>).
     /// </summary>
     [PropertyGroup("Options", 1)]
     public object? Value { get; init; }
@@ -108,8 +124,8 @@ public record DateTimeNodeConfiguration : SourceTargetPathNodeConfiguration
 
 /// <summary>
 /// DateTime node that performs date/time operations on pipeline data.
-/// Supports arithmetic (Add*), comparison (DaysBetween), formatting, extraction, IANA time zone
-/// conversion, and Unix epoch conversion operations.
+/// Supports arithmetic (Add*), comparison (DaysBetween), formatting, extraction, start of day and
+/// month, IANA time zone conversion in both directions, and Unix epoch conversion operations.
 /// </summary>
 /// <param name="next">The next node in the pipeline to execute after this operation.</param>
 [NodeConfiguration(typeof(DateTimeNodeConfiguration))]
@@ -147,6 +163,8 @@ public class DateTimeNode(NodeDelegate next) : IPipelineNode
                 .ToString("HH:mm:ss", CultureInfo.InvariantCulture),
             DateTimeOperationDto.ConvertToTimeZone => ConvertToTimeZone(dataContext, c, nodeContext),
             DateTimeOperationDto.FromUnixTimeMilliseconds => FromUnixTimeMilliseconds(dataContext, c, nodeContext),
+            DateTimeOperationDto.ConvertFromTimeZone => ConvertFromTimeZone(dataContext, c, nodeContext),
+            DateTimeOperationDto.StartOfMonth => StartOfMonth(GetSourceDateTime(dataContext, c, nodeContext)),
             _ => throw new NotSupportedException($"Operation {c.Operation} is not supported")
         };
 
@@ -281,6 +299,42 @@ public class DateTimeNode(NodeDelegate next) : IPipelineNode
         // Unspecified for every other zone. The result of this operation is wall-clock time for
         // all zones alike, so the kind is normalized and the value never serializes with a Z.
         return DateTime.SpecifyKind(converted, DateTimeKind.Unspecified);
+    }
+
+    private static DateTime ConvertFromTimeZone(IDataContext dataContext, DateTimeNodeConfiguration config,
+        INodeContext nodeContext)
+    {
+        var source = GetSourceDateTime(dataContext, config, nodeContext);
+        var timeZoneId = GetTimeZoneId(dataContext, config, nodeContext);
+
+        if (!TimeZoneInfo.TryFindSystemTimeZoneById(timeZoneId, out var timeZone))
+        {
+            throw PipelineExecutionException.TimeZoneNotFound(nodeContext.NodePath, timeZoneId);
+        }
+
+        // The clock fields are the local time whatever Kind the value carries: an upstream system
+        // may have tagged it Z or dropped the tag. Unspecified keeps TimeZoneInfo from applying the
+        // machine's own zone, so the result never depends on where the adapter runs.
+        var wallClock = DateTime.SpecifyKind(source, DateTimeKind.Unspecified);
+
+        if (timeZone.IsInvalidTime(wallClock))
+        {
+            throw PipelineExecutionException.LocalTimeDoesNotExist(nodeContext.NodePath, wallClock, timeZoneId);
+        }
+
+        // TimeZoneInfo.ConvertTimeToUtc resolves an ambiguous time to the standard-time offset,
+        // i.e. the LATER instant. The contract here is the first occurrence (daylight saving time
+        // offset, the larger one), so the offset is picked explicitly.
+        var offset = timeZone.IsAmbiguousTime(wallClock)
+            ? timeZone.GetAmbiguousTimeOffsets(wallClock).Max()
+            : timeZone.GetUtcOffset(wallClock);
+
+        return DateTime.SpecifyKind(wallClock - offset, DateTimeKind.Utc);
+    }
+
+    private static DateTime StartOfMonth(DateTime source)
+    {
+        return new DateTime(source.Year, source.Month, 1, 0, 0, 0, source.Kind);
     }
 
     private static string GetTimeZoneId(IDataContext dataContext, DateTimeNodeConfiguration config,

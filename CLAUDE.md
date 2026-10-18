@@ -726,6 +726,28 @@ dedicated adapter is unchanged (one identity, process-wide holder). Tests: `Adap
 Domain nodes (entity CRUD, stream data, HTTP, files, PDF, mail, …) live in `octo-mesh-adapter`, not
 here.
 
+### `DateTime@1` time zone operations (AB#5095, AB#6854)
+
+Operation ordinals are persisted in deployed pipelines and the generated schema maps names onto them,
+so new operations are **only appended** (`DateTimeOperationDto`; `DateTimeOperationDto_AppendsNewOperations…`
+pins every ordinal). Still `DateTime@1`: no node version, no CK change.
+
+- `ConvertToTimeZone` (11): UTC instant → **wall clock** of an IANA zone, result Kind `Unspecified`
+  (serializes without `Z`). A source without Kind is read as UTC.
+- `ConvertFromTimeZone` (13): wall clock → **UTC instant**, result Kind `Utc`. The zone comes from
+  `valuePath` or `value`; unknown/empty zone fails the node.
+- `StartOfMonth` (14): first of the month, 00:00, **keeps the Kind** of the source, no zone conversion.
+
+🔴 `ConvertFromTimeZone` takes the **clock fields** of the source as local time whatever its Kind says,
+so a `Z` an upstream system attached does not change the result and it never depends on the machine's
+zone. Daylight saving time is fixed by contract: a non-existing local time (spring gap) **fails the
+node** (`PipelineExecutionException.LocalTimeDoesNotExist`, names value and zone); an ambiguous local
+time (autumn repeat) maps to the **earlier** instant (daylight saving offset = the larger one of
+`GetAmbiguousTimeOffsets`). `TimeZoneInfo.ConvertTimeToUtc` is deliberately not used: for an ambiguous
+time it picks the standard-time offset, i.e. the later instant. The only round trip that cannot hold is
+the second pass of the repeated hour (its wall clock equals the first pass). A lenient mode for the gap
+(shift forward) would be a separate story, not an option.
+
 ### ExecuteCSharp argument typing (AB#5232)
 
 `ExecuteCSharp@1` arguments are declared in the generated script with the real C# type for their
