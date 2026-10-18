@@ -1301,6 +1301,21 @@ public class DateTimeNodeTests(NodeFixture fixture) : IClassFixture<NodeFixture>
         Assert.Equal(new DateTime(2026, 7, 14, 22, 0, 0, DateTimeKind.Utc), dataContext.Get<DateTime>("$.result"));
     }
 
+    [Theory]
+    // A lenient text parser would complete these with today's date or guess a month/day order;
+    // the result would then depend on the day the pipeline runs. They fail like in every other operation.
+    [InlineData("12:00:00")]
+    [InlineData("07/15/2026 00:00:00")]
+    [InlineData("not a date")]
+    public async Task ProcessObjectAsync_ConvertFromTimeZone_NoCompleteIsoDateTime_Fails(string local)
+    {
+        var (dataContext, run) = PrepareFromTimeZone(data: new { local });
+
+        await Assert.ThrowsAnyAsync<Exception>(run);
+
+        Assert.Equal(DataKind.Undefined, dataContext.GetKind("$.result"));
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_ConvertFromTimeZone_FractionalSeconds_AreKept()
     {

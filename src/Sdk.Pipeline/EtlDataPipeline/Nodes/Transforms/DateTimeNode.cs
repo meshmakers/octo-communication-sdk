@@ -335,11 +335,16 @@ public class DateTimeNode(NodeDelegate next) : IPipelineNode
     private static DateTime GetSourceWallClock(IDataContext dataContext, DateTimeNodeConfiguration config,
         INodeContext nodeContext)
     {
-        // A typed DateTime read converts a value with a UTC offset (for example +05:00) to the
-        // HOST's local time, so its clock fields would depend on the machine's time zone. The text
-        // is therefore parsed here, with AssumeUniversal so that no host zone is consulted either,
-        // and the clock fields are taken exactly as written.
-        if (dataContext.GetKind(config.Path) == DataKind.String)
+        // The typed read comes first and decides what a valid value is: it accepts only ISO 8601
+        // date-times (a time-only "12:00:00" or "07/15/2026" fails exactly as in every other
+        // DateTime@1 operation) and reports a missing value.
+        var typed = GetSourceDateTime(dataContext, config, nodeContext);
+
+        // Z and "no marker" come back with the clock fields as written. A UTC offset (+05:00) does
+        // not: the typed read converts it to the HOST's local time (Kind Local), so the clock fields
+        // would depend on the machine's time zone. Only for that case the already validated text is
+        // parsed again, with AssumeUniversal so that no host zone is consulted either.
+        if (typed.Kind == DateTimeKind.Local && dataContext.GetKind(config.Path) == DataKind.String)
         {
             var text = dataContext.Get<string>(config.Path);
             if (!string.IsNullOrWhiteSpace(text) &&
@@ -350,8 +355,7 @@ public class DateTimeNode(NodeDelegate next) : IPipelineNode
             }
         }
 
-        // Not a string or not parsable as text: the typed read decides (and reports a missing value).
-        return DateTime.SpecifyKind(GetSourceDateTime(dataContext, config, nodeContext), DateTimeKind.Unspecified);
+        return DateTime.SpecifyKind(typed, DateTimeKind.Unspecified);
     }
 
     private static DateTime StartOfMonth(DateTime source)
