@@ -188,49 +188,56 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
         {
             nodeContext.Debug("Compiling C# script");
 
-            // Options (imports + the full loaded-AppDomain reference set) are built HERE,
-            // inside the compile factory, so they are resolved once per DISTINCT script at
-            // the moment it first compiles — i.e. only on a cache miss, which after warmup
-            // is bounded by the number of distinct scripts and is rare. This keeps the
-            // enumeration off the per-execution hot path (the Lazy factory runs exactly
-            // once per template) while ensuring a script compiled later sees the AppDomain's
-            // CURRENT assemblies — a reference to an assembly loaded after an earlier compile
-            // resolves correctly, instead of being frozen out by a build-once shared set.
-            // The full AppDomain set (not a framework-only subset) is kept deliberately for
-            // backward compatibility with scripts that reference application/domain assemblies.
-            var scriptOptions = ScriptOptions.Default
-                .AddImports("System")
-                .AddImports("System.Math")
-                .AddReferences(AppDomain.CurrentDomain.GetAssemblies()
-                    .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
-                    .Select(a => a.Location));
-
-            // Compile with the globals type so Args is in scope as a bare identifier.
-            var script = CSharpScript.Create<object>(code, scriptOptions, typeof(ExecuteCSharpGlobals));
-            var compilation = script.Compile();
-
-            if (compilation.Any())
-            {
-                throw new CompilationErrorException("Compilation failed", compilation);
-            }
-
-            // Cache the DELEGATE, not the Script (AB#5448). A Script<T> keeps its whole
-            // Roslyn Compilation graph alive — syntax trees, symbol tables and a
-            // MetadataReference per referenced assembly — and that state lives largely in
-            // unmanaged/mmapped metadata buffers. Measured cost: ~61 MB of resident memory
-            // per DISTINCT cached script, so the 43 ExecuteCSharp nodes of the accounting
-            // blueprint pinned ~2.8 GB against a 3Gi container limit and drove node-wide
-            // OOMs on prod-1. CreateDelegate() hands back the emitted assembly plus its
-            // entry point; dropping the Script reference here lets the compilation graph be
-            // collected and takes the same 43 scripts down to ~700 MB, where it plateaus.
-            // Cache semantics are unchanged: still keyed by the value-independent template,
-            // still compiled exactly once, same CPU profile. Note that this memory is
-            // invisible to `dotnet.assembly.count` — MetadataReferences are unmanaged
-            // metadata readers, not loaded assemblies — which is why it went unnoticed.
-            return script.CreateDelegate();
+            // Compiles are serialised per process and followed by a full GC + malloc_trim, so the
+            // native metadata a compile leaves behind is returned before the next one starts and
+            // parallel first executions cannot stack their peaks (AB#7063).
+            return ScriptCompileCoordinator.Shared.Run(() => CompileScript(code));
         }, LazyThreadSafetyMode.ExecutionAndPublication));
 
         return lazy.Value;
+    }
+
+    private static ScriptRunner<object> CompileScript(string code)
+    {
+        // Options are built HERE, i.e. once per DISTINCT script on a cache miss, off the
+        // per-execution hot path.
+        //
+        // References (AB#7063): ONE process-wide MetadataReference set is shared by every compile
+        // (ScriptMetadataReferences) instead of passing ~250 assembly paths that Roslyn would turn
+        // into a fresh set of native metadata readers per compile (350-750 MB each). The set is
+        // re-checked on every compile and only rebuilt when the loaded non-dynamic assemblies
+        // changed, so a script compiled after a new assembly was loaded into the AppDomain still
+        // resolves types of that assembly. The full AppDomain set (not a framework-only subset) is
+        // kept deliberately for backward compatibility with scripts that reference
+        // application/domain assemblies.
+        var scriptOptions = ScriptOptions.Default
+            .AddImports("System")
+            .AddImports("System.Math")
+            .AddReferences(ScriptMetadataReferences.Shared.GetReferences());
+
+        // Compile with the globals type so Args is in scope as a bare identifier.
+        var script = CSharpScript.Create<object>(code, scriptOptions, typeof(ExecuteCSharpGlobals));
+        var compilation = script.Compile();
+
+        if (compilation.Any())
+        {
+            throw new CompilationErrorException("Compilation failed", compilation);
+        }
+
+        // Cache the DELEGATE, not the Script (AB#5448). A Script<T> keeps its whole
+        // Roslyn Compilation graph alive — syntax trees, symbol tables and a
+        // MetadataReference per referenced assembly — and that state lives largely in
+        // unmanaged/mmapped metadata buffers. Measured cost: ~61 MB of resident memory
+        // per DISTINCT cached script, so the 43 ExecuteCSharp nodes of the accounting
+        // blueprint pinned ~2.8 GB against a 3Gi container limit and drove node-wide
+        // OOMs on prod-1. CreateDelegate() hands back the emitted assembly plus its
+        // entry point; dropping the Script reference here lets the compilation graph be
+        // collected and takes the same 43 scripts down to ~700 MB, where it plateaus.
+        // Cache semantics are unchanged: still keyed by the value-independent template,
+        // still compiled exactly once, same CPU profile. Note that this memory is
+        // invisible to `dotnet.assembly.count` — MetadataReferences are unmanaged
+        // metadata readers, not loaded assemblies — which is why it went unnoticed.
+        return script.CreateDelegate();
     }
 
     /// <summary>Test seam: number of distinct scripts currently cached process-wide.</summary>

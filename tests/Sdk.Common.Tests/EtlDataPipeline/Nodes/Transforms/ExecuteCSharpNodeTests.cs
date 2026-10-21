@@ -1004,4 +1004,102 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         Assert.Equal(7, dataContext.Get<int>("$.result"));
         A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._)).MustNotHaveHappened();
     }
+
+    // AB#7063: the shared reference set must not change what a broken script reports.
+    [Fact]
+    public async Task ProcessObjectAsync_WithCompilationError_MessageIsStable()
+    {
+        ExecuteCSharpNode.ClearCompiledScriptCache();
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "this is not valid C# code",
+            ReturnType = AttributeValueTypesDto.String,
+            TargetPath = "$.result"
+        };
+        var (dataContext, nodeContext) = PrepareTest(config);
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+
+        var ex = await Assert.ThrowsAsync<PipelineExecutionException>(
+            () => node.ProcessObjectAsync(dataContext, nodeContext));
+
+        // Diagnostic texts are culture dependent; the surrounding format and the line numbers are not.
+        Assert.Matches(@"^\[PipelineExecution/ExecuteCSharp\]: C# compilation failed:  Line 3: [^\n]+\r?\n  Line 4: [^\n]+\r?\n$",
+            ex.Message);
+    }
+
+    // AB#7063: the reference set is shared, but a script compiled AFTER an assembly was loaded into
+    // the AppDomain must still resolve a type of that assembly.
+    [Fact]
+    public async Task ProcessObjectAsync_AssemblyLoadedAfterEarlierCompile_ResolvesItsTypes()
+    {
+        ExecuteCSharpNode.ClearCompiledScriptCache();
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+
+        // First compile builds the shared reference set.
+        var (warmData, warmContext) = PrepareTest(new ExecuteCSharpNodeConfiguration
+        {
+            Code = "1 + 1 /* late-assembly warmup */",
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        });
+        await node.ProcessObjectAsync(warmData, warmContext);
+
+        var typeName = "LateLoaded" + Guid.NewGuid().ToString("N");
+        var path = Path.Combine(Path.GetTempPath(), typeName + ".dll");
+        try
+        {
+            var compilation = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create(
+                typeName,
+                [Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(
+                    $"public static class {typeName} {{ public static int Value => 4711; }}", cancellationToken: TestContext.Current.CancellationToken)],
+                [Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
+                new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(
+                    Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary));
+            using (var stream = File.Create(path))
+            {
+                Assert.True(compilation.Emit(stream, cancellationToken: TestContext.Current.CancellationToken).Success);
+            }
+
+            Assembly.LoadFrom(path);
+
+            var (dataContext, nodeContext) = PrepareTest(new ExecuteCSharpNodeConfiguration
+            {
+                Code = $"{typeName}.Value",
+                ReturnType = AttributeValueTypesDto.Int,
+                TargetPath = "$.result"
+            });
+            await node.ProcessObjectAsync(dataContext, nodeContext);
+
+            Assert.Equal(4711, dataContext.Get<int>("$.result"));
+        }
+        finally
+        {
+            try { File.Delete(path); } catch (IOException) { /* still mapped on some platforms */ }
+        }
+    }
+
+    // AB#7063: first executions of different scripts in parallel share the reference set without
+    // a race and compile one at a time.
+    [Fact]
+    public async Task ProcessObjectAsync_ParallelDistinctScripts_AllCompileAndRun()
+    {
+        ExecuteCSharpNode.ClearCompiledScriptCache();
+        var node = new ExecuteCSharpNode(A.Fake<NodeDelegate>());
+        var serviceProvider = fixture.Services.BuildServiceProvider();
+
+        var tasks = Enumerable.Range(0, 8).Select(i => Task.Run(async () =>
+        {
+            var (dataContext, nodeContext) = PrepareTest(new ExecuteCSharpNodeConfiguration
+            {
+                Code = $"{i} * 10 /* parallel distinct {i} */",
+                ReturnType = AttributeValueTypesDto.Int,
+                TargetPath = "$.result"
+            }, serviceProvider: serviceProvider);
+            await node.ProcessObjectAsync(dataContext, nodeContext);
+            Assert.Equal(i * 10, dataContext.Get<int>("$.result"));
+        }));
+        await Task.WhenAll(tasks);
+
+        Assert.Equal(8, ExecuteCSharpNode.CompiledScriptCacheCount);
+    }
 }
