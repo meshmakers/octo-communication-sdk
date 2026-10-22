@@ -787,9 +787,12 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
             BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(field);
 
-        // ConcurrentDictionary<string, Lazy<T>> — T must be the delegate, not Script<object>.
+        // ConcurrentDictionary<string, Lazy<Task<T>>> (AB#7063: the compile gate is awaited) — T must be
+        // the delegate, not Script<object>.
         var lazyType = field!.FieldType.GetGenericArguments()[1];
-        var cachedType = lazyType.GetGenericArguments()[0];
+        var taskType = lazyType.GetGenericArguments()[0];
+        Assert.Equal(typeof(Task<>), taskType.GetGenericTypeDefinition());
+        var cachedType = taskType.GetGenericArguments()[0];
         Assert.Equal(typeof(ScriptRunner<object>), cachedType);
         Assert.NotEqual(typeof(Script<object>), cachedType);
     }

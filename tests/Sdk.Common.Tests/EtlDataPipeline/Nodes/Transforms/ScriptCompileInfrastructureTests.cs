@@ -6,9 +6,12 @@ namespace Sdk.Common.Tests.EtlDataPipeline.Nodes.Transforms;
 /// <summary>AB#7063: shared metadata references and serialised compiles.</summary>
 public class ScriptMetadataReferencesTests
 {
-    // A new, distinct MetadataReference instance per call (Roslyn reads the file lazily, so this is cheap).
+    // One shared image; each call returns a distinct MetadataReference over the same bytes (no per-call copy).
+    private static readonly System.Collections.Immutable.ImmutableArray<byte> FakeImage =
+        System.Collections.Immutable.ImmutableArray.Create(File.ReadAllBytes(typeof(object).Assembly.Location));
+
     private static MetadataReference Fake(string location) =>
-        MetadataReference.CreateFromFile(typeof(object).Assembly.Location);
+        MetadataReference.CreateFromImage(FakeImage, filePath: location);
 
     [Fact]
     public void GetReferences_BuildsOnceAndReusesTheSameArray()
@@ -81,7 +84,6 @@ public class ScriptMetadataReferencesTests
         var references = ScriptMetadataReferences.Shared.GetReferences();
 
         Assert.Contains(references, r => r.Display == typeof(object).Assembly.Location);
-        Assert.Same(references, ScriptMetadataReferences.Shared.GetReferences());
     }
 }
 
@@ -95,7 +97,7 @@ public class ScriptCompileCoordinatorTests
         var reclaimed = 0;
         var sut = new ScriptCompileCoordinator(() => Interlocked.Increment(ref reclaimed));
 
-        await Task.WhenAll(Enumerable.Range(0, 8).Select(i => Task.Run(() => sut.Run(() =>
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(i => Task.Run(() => sut.RunAsync(() =>
         {
             var now = Interlocked.Increment(ref running);
             InterlockedMax(ref maxRunning, now);
@@ -109,35 +111,54 @@ public class ScriptCompileCoordinatorTests
     }
 
     [Fact]
-    public void Run_ReclaimsAfterEachCompileAndBeforeTheNextStarts()
+    public async Task Run_ReclaimsAfterEachCompileAndBeforeTheNextStarts()
     {
         var log = new List<string>();
         var sut = new ScriptCompileCoordinator(() => log.Add("reclaim"));
 
-        sut.Run(() => { log.Add("compile1"); return 1; });
-        sut.Run(() => { log.Add("compile2"); return 2; });
+        await sut.RunAsync(() => { log.Add("compile1"); return 1; });
+        await sut.RunAsync(() => { log.Add("compile2"); return 2; });
 
         Assert.Equal(["compile1", "reclaim", "compile2", "reclaim"], log);
     }
 
     [Fact]
-    public void Run_CompileThrows_ReclaimsReleasesGateAndRethrows()
+    public async Task Run_CompileThrows_ReclaimsReleasesGateAndRethrows()
     {
         var reclaimed = 0;
         var sut = new ScriptCompileCoordinator(() => reclaimed++);
 
-        Assert.Throws<InvalidOperationException>(() => sut.Run<int>(() => throw new InvalidOperationException("boom")));
-        Assert.Equal(5, sut.Run(() => 5));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => sut.RunAsync<int>(() => throw new InvalidOperationException("boom")));
+        Assert.Equal(5, await sut.RunAsync(() => 5));
         Assert.Equal(2, reclaimed);
     }
 
     [Fact]
-    public void Run_ReclaimThrows_DoesNotChangeResultOrBlockTheGate()
+    public async Task Run_ReclaimThrows_DoesNotChangeResultOrBlockTheGate()
     {
         var sut = new ScriptCompileCoordinator(() => throw new InvalidOperationException("trim failed"));
 
-        Assert.Equal(7, sut.Run(() => 7));
-        Assert.Equal(8, sut.Run(() => 8));
+        Assert.Equal(7, await sut.RunAsync(() => 7));
+        Assert.Equal(8, await sut.RunAsync(() => 8));
+    }
+
+    [Fact]
+    public async Task RunAsync_WhileAnotherCompileRuns_ReturnsPendingTaskInsteadOfBlockingTheCaller()
+    {
+        var started = new ManualResetEventSlim();
+        var release = new ManualResetEventSlim();
+        var sut = new ScriptCompileCoordinator(() => { });
+
+        var first = Task.Run(() => sut.RunAsync(() => { started.Set(); release.Wait(); return 1; }));
+        Assert.True(started.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+
+        // Called on this thread: must come back immediately with a pending task, not block on the gate.
+        var second = sut.RunAsync(() => 2);
+        Assert.False(second.IsCompleted);
+
+        release.Set();
+        Assert.Equal(1, await first);
+        Assert.Equal(2, await second);
     }
 
     [Fact]

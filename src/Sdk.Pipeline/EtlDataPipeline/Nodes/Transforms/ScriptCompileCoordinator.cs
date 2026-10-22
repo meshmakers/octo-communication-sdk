@@ -27,10 +27,11 @@ internal sealed class ScriptCompileCoordinator
         _reclaim = reclaim;
     }
 
-    /// <summary>Runs <paramref name="compile"/> exclusively, then reclaims memory (also when it throws).</summary>
-    internal T Run<T>(Func<T> compile)
+    /// <summary>Runs <paramref name="compile"/> exclusively (one at a time per coordinator), then reclaims memory (also when it throws).</summary>
+    internal async Task<T> RunAsync<T>(Func<T> compile)
     {
-        _gate.Wait();
+        // Awaited, not blocked: waiting callers must not hold thread-pool workers while a compile runs.
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             return compile();

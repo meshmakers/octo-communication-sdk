@@ -123,7 +123,7 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
     /// <see cref="ConcurrentDictionary{TKey,TValue}"/> + <see cref="Lazy{T}"/> give
     /// thread-safe compile-exactly-once without locking the pipeline data path.
     /// </summary>
-    private static readonly ConcurrentDictionary<string, Lazy<ScriptRunner<object>>> CompiledScripts = new();
+    private static readonly ConcurrentDictionary<string, Lazy<Task<ScriptRunner<object>>>> CompiledScripts = new();
 
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -136,7 +136,7 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
             // Value-independent script template (declarations read from Args) — stable
             // across runs so the cache key is stable and compilation happens once.
             var scriptTemplate = BuildScriptTemplate(c);
-            var runner = GetOrCompileScript(scriptTemplate, nodeContext);
+            var runner = await GetOrCompileScript(scriptTemplate, nodeContext).ConfigureAwait(false);
 
             // Resolve the actual values for this run and pass them via globals.
             var globals = new ExecuteCSharpGlobals { Args = BuildArgumentValues(dataContext, c, nodeContext) };
@@ -178,20 +178,22 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext);
     }
 
-    private static ScriptRunner<object> GetOrCompileScript(string scriptCode, INodeContext nodeContext)
+    private static Task<ScriptRunner<object>> GetOrCompileScript(string scriptCode, INodeContext nodeContext)
     {
         // GetOrAdd may build the Lazy more than once under contention, but only the
         // stored one is ever resolved, and Lazy(ExecutionAndPublication) guarantees its
         // factory — the actual compilation — runs exactly once. Keyed by the full
         // template text so identical scripts across machines/pipelines share one compile.
-        var lazy = CompiledScripts.GetOrAdd(scriptCode, code => new Lazy<ScriptRunner<object>>(() =>
+        var lazy = CompiledScripts.GetOrAdd(scriptCode, code => new Lazy<Task<ScriptRunner<object>>>(() =>
         {
             nodeContext.Debug("Compiling C# script");
 
             // Compiles are serialised per process and followed by a full GC + malloc_trim, so the
             // native metadata a compile leaves behind is returned before the next one starts and
-            // parallel first executions cannot stack their peaks (AB#7063).
-            return ScriptCompileCoordinator.Shared.Run(() => CompileScript(code));
+            // parallel first executions cannot stack their peaks (AB#7063). The gate is awaited, so
+            // callers queued behind another compile do not occupy thread-pool workers; the cached
+            // Task (like the former Lazy value) is created once per distinct script and shared.
+            return ScriptCompileCoordinator.Shared.RunAsync(() => CompileScript(code));
         }, LazyThreadSafetyMode.ExecutionAndPublication));
 
         return lazy.Value;
