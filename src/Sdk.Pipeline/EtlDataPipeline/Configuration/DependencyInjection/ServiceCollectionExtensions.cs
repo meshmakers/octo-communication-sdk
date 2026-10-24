@@ -59,6 +59,7 @@ public static class ServiceCollectionExtensions
         pipelineBuilder.RegisterNodeConfiguration<ConvertDataTypeNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<DistinctNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<FlattenNodeConfiguration>();
+        pipelineBuilder.RegisterNodeConfiguration<GroupByNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<LinearScalerNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<LoggerNodeConfiguration>();
         pipelineBuilder.RegisterNodeConfiguration<MapNodeConfiguration>();
@@ -156,6 +157,7 @@ public static class ServiceCollectionExtensions
         builder.RegisterNode<ConvertDataTypeNode>();
         builder.RegisterNode<DistinctNode>();
         builder.RegisterNode<FlattenNode>();
+        builder.RegisterNode<GroupByNode>();
         builder.RegisterNode<LinearScalerNode>();
         builder.RegisterNode<LoggerNode>();
         builder.RegisterNode<MapNode>();
