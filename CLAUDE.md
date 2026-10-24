@@ -717,7 +717,7 @@ dedicated adapter is unchanged (one identity, process-wide holder). Tests: `Adap
 - **Control**: `ForEach`, `For`, `Group`, `If`, `Switch`, `ObjectIterator`, `SelectByPath`
 - **Extracts**: `SetJson`, `SetPrimitiveValue`, `SetArrayOfPrimitiveValues`,
   `GetPipelineConfigByWellKnownName`
-- **Transforms**: `Concat`, `FormatString`, `Map`, `Project`, `Flatten`, `Join`, `Distinct`, `Math`,
+- **Transforms**: `Concat`, `FormatString`, `Map`, `Project`, `Flatten`, `Join`, `Distinct`, `GroupBy` (not the editor container `Group`), `Math`,
   `LinearScaler`, `Hash`, `Base64Encode`/`Decode`, `ConvertDataType`, `DateTime`, `TransformString`,
   `ExecuteCSharp`, `Logger`, `PrintDebug`, `SumAggregation`
 - **Loads**: `ToPipelineDataEvent@1`, `ToWebhook@1`, `SetPipelineExecutionResult@1`
