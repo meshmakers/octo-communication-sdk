@@ -152,6 +152,13 @@ in `octo-mesh-adapter`). What lives **here** is the carrier and the triggers tha
   `IEtlContext.Properties` — that dictionary hangs on the `PipelineRegistration` and is shared across
   **all runs** of the pipeline, so a token left there would outlive its request. It is a
   **per-execution** side channel: trigger → ETL context of exactly this execution, nowhere else.
+- **`ExecutePipelineOptions.MethodInvocation`** (AB#7459, F3.7) — nullable `ExecutePipelineMethodInvocation`
+  marker (octo-sdk) that the run was started by a CK method invocation; consumed by the mesh adapter's
+  generic-create guard. `FromExecutePipelineCommandNode` copies `request.MethodInvocation` **unconditionally**
+  — for every `CallerBindingMode` and caller outcome, deliberately *not* via
+  `ExecuteCommandCallerCarryThrough.Apply` (which only writes on `UseResolvedCaller`). Transport-only side
+  channel like `CallerAccessToken`: never in the data root or `IEtlContext.Properties`. Null when the request
+  has none. Set only by the controller's method invoker; the marker does not travel over `ToPipelineDataEvent`.
 - Both surface on `IEtlContext` as **default interface members**, so an adapter implementing the
   interface itself was not broken by their addition.
 
