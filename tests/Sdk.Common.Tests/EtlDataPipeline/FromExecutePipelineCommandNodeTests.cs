@@ -2,6 +2,7 @@ using FakeItEasy;
 using Meshmakers.Octo.Common.DistributionEventHub.Services;
 using Meshmakers.Octo.Communication.Contracts.MessageObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -138,5 +139,93 @@ public class FromExecutePipelineCommandNodeTests
         Assert.NotNull(capturedOptions);
         Assert.Null(capturedOptions!.VerifiedPrincipal);
         Assert.Null(capturedOptions.CallerAccessToken);
+    }
+
+    private static ExecutePipelineMethodInvocation AMarker() => new()
+    {
+        MethodId = "Model-1/Type-1/Create",
+        InvocationId = Guid.NewGuid(),
+        CkTypeId = "Model-1/Type-1",
+        PipelineRtId = "507f1f77bcf86cd799439011"
+    };
+
+    private async Task<(ExecutePipelineOptions? Options, ExecutePipelineResponse? Response)> RunAsync(
+        CallerBindingMode mode, ExecutePipelineRequest request)
+    {
+        var nodeContext = A.Fake<INodeContext>();
+        A.CallTo(() => nodeContext.GetNodeConfiguration<FromExecutePipelineCommandNodeConfiguration>())
+            .Returns(new FromExecutePipelineCommandNodeConfiguration { CallerBinding = mode });
+        A.CallTo(() => _context.NodeContext).Returns(nodeContext);
+
+        ExecutePipelineOptions? captured = null;
+        A.CallTo(() => _context.StartExecutePipelineAsync(A<ExecutePipelineOptions>._, A<object?>._))
+            .Invokes(call => captured = (ExecutePipelineOptions)call.Arguments[0]!)
+            .Returns(Task.FromResult(Guid.NewGuid()));
+
+        ExecutePipelineResponse? response = null;
+        await _sut.StartAsync(_context);
+        await _capturedHandler!(request, r =>
+        {
+            response = (ExecutePipelineResponse)r;
+            return Task.CompletedTask;
+        });
+        return (captured, response);
+    }
+
+    private static ExecutePipelineCaller ACaller() => new() { SubjectId = "user-42", TenantId = TenantId, TrustLevel = 2 };
+
+    /// <summary>
+    ///     AB#7459: the method-invocation marker is copied for every binding mode — whether the caller is
+    ///     carried through (UseResolvedCaller) or dropped (RunAsServiceAccount) — because it does not go
+    ///     through ExecuteCommandCallerCarryThrough.
+    /// </summary>
+    [Theory]
+    [InlineData(CallerBindingMode.AnonymousAllowed, true)]
+    [InlineData(CallerBindingMode.AnonymousAllowed, false)]
+    [InlineData(CallerBindingMode.BindingOptional, true)]
+    [InlineData(CallerBindingMode.BindingOptional, false)]
+    [InlineData(CallerBindingMode.BindingRequired, true)]
+    public async Task Handler_CopiesTheMethodInvocation_ForEveryBindingModeAndCallerOutcome(
+        CallerBindingMode mode, bool withCaller)
+    {
+        var marker = AMarker();
+        var request = new ExecutePipelineRequest(TenantId, null) { MethodInvocation = marker };
+        if (withCaller)
+        {
+            request = request with { Caller = ACaller(), CallerAccessToken = "raw-token" };
+        }
+
+        var (options, response) = await RunAsync(mode, request);
+
+        Assert.True(response!.IsSuccessStartingExecution);
+        Assert.NotNull(options);
+        Assert.Equal(marker, options!.MethodInvocation);
+        // The caller part still follows the binding policy: carried only when a caller exists.
+        Assert.Equal(withCaller, options.VerifiedPrincipal != null);
+    }
+
+    [Fact]
+    public async Task Handler_WhenCallerBindingRejects_DoesNotStartTheExecution()
+    {
+        var request = new ExecutePipelineRequest(TenantId, null) { MethodInvocation = AMarker() };
+
+        var (options, response) = await RunAsync(CallerBindingMode.BindingRequired, request);
+
+        Assert.Null(options);
+        Assert.False(response!.IsSuccessStartingExecution);
+    }
+
+    [Theory]
+    [InlineData(CallerBindingMode.AnonymousAllowed)]
+    [InlineData(CallerBindingMode.BindingOptional)]
+    [InlineData(CallerBindingMode.BindingRequired)]
+    public async Task Handler_LeavesTheMethodInvocationNull_WhenTheRequestHasNone(CallerBindingMode mode)
+    {
+        var request = new ExecutePipelineRequest(TenantId, null) { Caller = ACaller(), CallerAccessToken = "raw-token" };
+
+        var (options, _) = await RunAsync(mode, request);
+
+        Assert.NotNull(options);
+        Assert.Null(options!.MethodInvocation);
     }
 }

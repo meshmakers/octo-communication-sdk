@@ -54,7 +54,12 @@ public class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
                     var startDateTime = DateTime.UtcNow;
                     var executeOptions = new ExecutePipelineOptions(startDateTime)
                     {
-                        IsDryRun = message.IsDryRun
+                        IsDryRun = message.IsDryRun,
+                        // AB#7459: transport-only marker of a CK method invocation. Copied
+                        // unconditionally — NOT through ExecuteCommandCallerCarryThrough, which only
+                        // writes on UseResolvedCaller — so it is independent of the CallerBindingMode and
+                        // of the caller outcome (also when the caller is dropped or the pipeline rejects).
+                        MethodInvocation = message.MethodInvocation
                     };
 
                     // AB#5126: the invoker already holds a token, so carry it through onto the

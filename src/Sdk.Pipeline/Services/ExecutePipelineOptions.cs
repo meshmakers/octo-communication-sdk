@@ -1,4 +1,5 @@
 using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
+using Meshmakers.Octo.Communication.Contracts.MessageObjects;
 
 namespace Meshmakers.Octo.Sdk.Common.Services;
 
@@ -73,4 +74,27 @@ public class ExecutePipelineOptions(DateTime transactionStartedDateTime)
     /// ETL context so a node can demand a minimum before it acts as the caller.
     /// </summary>
     public CallerTrustLevel CallerTrust { get; set; } = CallerTrustLevel.None;
+
+    /// <summary>
+    /// Gets or sets the marker that tells the executor this run was started by the invocation of a
+    /// Construction Kit method (AB#7459, Feature AB#6884 F3.7). Null for every run that was not started
+    /// by a method invocation.
+    /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <b>Transport-only side channel.</b> It travels from the trigger to the ETL context of exactly
+    ///         this execution and is consumed by the mesh adapter's generic-create guard, which lets the
+    ///         replacing method's own pipeline run insert entities of a type whose method
+    ///         <c>replacesGenericCreate</c>. It is neither a credential nor a proof; nodes must not treat it
+    ///         as an identity.
+    ///     </para>
+    ///     <para>
+    ///         <b>Independent of the caller binding.</b> <c>FromExecutePipelineCommand</c> copies it from
+    ///         the request unconditionally — for every <c>CallerBindingMode</c> and whatever the caller
+    ///         resolution outcome — and does <b>not</b> route it through
+    ///         <c>ExecuteCommandCallerCarryThrough</c>. Like <see cref="CallerAccessToken" /> it is not part
+    ///         of the data context and not of <c>IEtlContext.Properties</c> (shared across all runs).
+    ///     </para>
+    /// </remarks>
+    public ExecutePipelineMethodInvocation? MethodInvocation { get; set; }
 }
