@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using FakeItEasy;
@@ -252,16 +253,100 @@ public class ConvertDataTypeNodeTests(ServiceCollectionFixture fixture)
 
         var toDouble = rootNodeContext.RegisterChildNode("ToDouble", 0, new ConvertDataTypeNodeConfiguration
         {
-            Path = "$.v", TargetPath = "$.asDouble", ValueType = AttributeValueTypesDto.Double
+            Path = "$.v",
+            TargetPath = "$.asDouble",
+            ValueType = AttributeValueTypesDto.Double
         }, dataContext);
         await testee.ProcessObjectAsync(dataContext, toDouble);
         Assert.Equal(5.0, dataContext.Get<double>("$.asDouble"));
 
         var backToInt = rootNodeContext.RegisterChildNode("ToInt", 1, new ConvertDataTypeNodeConfiguration
         {
-            Path = "$.asDouble", TargetPath = "$.asInt", ValueType = AttributeValueTypesDto.Int
+            Path = "$.asDouble",
+            TargetPath = "$.asInt",
+            ValueType = AttributeValueTypesDto.Int
         }, dataContext);
         await testee.ProcessObjectAsync(dataContext, backToInt);
         Assert.Equal(5, dataContext.Get<int>("$.asInt"));
+    }
+
+    // ---- AB#7509: devices (e.g. MQTT smart meters) send every value as a JSON string ----------
+    // "234.20" must become 234.2 with the decimal POINT whatever the host culture is (de-AT uses a
+    // decimal comma and a thousands point).
+
+    [Theory]
+    [InlineData("de-AT", "234.20", 234.2)]
+    [InlineData("de-AT", "12345.678", 12345.678)]
+    [InlineData("de-AT", "-0.5", -0.5)]
+    [InlineData("de-AT", "512", 512.0)]
+    [InlineData("fr-FR", "234.20", 234.2)]
+    [InlineData("en-US", "234.20", 234.2)]
+    public async Task ConvertDataType_NumericString_ToDouble_IsCultureIndependent(string culture, string text,
+        double expected)
+    {
+        var previous = (CultureInfo.CurrentCulture, CultureInfo.CurrentUICulture);
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.CurrentUICulture = new CultureInfo(culture);
+            var ctx = await ConvertAsync($"{{\"v\":\"{text}\"}}", "$.v", AttributeValueTypesDto.Double);
+            Assert.Equal(expected, ctx.Get<double>("$.Demo"));
+        }
+        finally
+        {
+            (CultureInfo.CurrentCulture, CultureInfo.CurrentUICulture) = previous;
+        }
+    }
+
+    [Fact]
+    public async Task ConvertDataType_NumericString_ToInt_IsCultureIndependent()
+    {
+        var previous = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("de-AT");
+            var ctx = await ConvertAsync("{\"v\":\"512\"}", "$.v", AttributeValueTypesDto.Int);
+            Assert.Equal(512, ctx.Get<int>("$.Demo"));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
+    }
+
+    [Theory]
+    [InlineData("n/a")]
+    [InlineData("")]
+    [InlineData("234,20")]
+    public async Task ConvertDataType_NonNumericString_ToDouble_ThrowsNamingPath(string text)
+    {
+        var e = await Assert.ThrowsAsync<DataPipelineException>(
+            () => ConvertAsync($"{{\"v\":\"{text}\"}}", "$.v", AttributeValueTypesDto.Double));
+
+        Assert.Contains("$.v", e.Message);
+    }
+
+    [Fact]
+    public async Task ConvertDataType_QuotedDottedKey_AfterAnEarlierWrite_ConvertsTheValue()
+    {
+        // A smart-meter payload: OBIS codes are keys with dots. The second conversion runs after the first
+        // one has written to the context; it used to read nothing and convert it to 0 without an error.
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse("{\"v\":{\"32.7.0\":\"234.20\",\"1.8.0\":\"12345.678\"}}"));
+        var rootNodeContext = NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var testee = new ConvertDataTypeNode(A.Fake<NodeDelegate>());
+
+        foreach (var (index, key, target) in new[] { (0u, "32.7.0", "voltage"), (1u, "1.8.0", "energy") })
+        {
+            var nodeContext = rootNodeContext.RegisterChildNode("Convert", index, new ConvertDataTypeNodeConfiguration
+            {
+                Path = $"$.v['{key}']",
+                TargetPath = $"$.reading.{target}",
+                ValueType = AttributeValueTypesDto.Double
+            }, dataContext);
+            await testee.ProcessObjectAsync(dataContext, nodeContext);
+        }
+
+        Assert.Equal(234.2, dataContext.Get<double>("$.reading.voltage"));
+        Assert.Equal(12345.678, dataContext.Get<double>("$.reading.energy"));
     }
 }

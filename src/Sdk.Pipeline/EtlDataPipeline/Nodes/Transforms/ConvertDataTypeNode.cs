@@ -97,7 +97,9 @@ public class ConvertDataTypeNode(NodeDelegate next) : IPipelineNode
                 _ => throw DataPipelineException.ValueTypeUnsupported(c.Path, c.ValueType)
             };
         }
-        catch (JsonException e)
+        // AB#7509: a non-numeric JSON string ("n/a", "") surfaces as a raw FormatException from the
+        // numeric converters; report it like every other unconvertible value, naming the path.
+        catch (Exception e) when (e is JsonException or FormatException or OverflowException)
         {
             throw DataPipelineException.ValueNotConvertible(c.Path, c.ValueType, e);
         }
