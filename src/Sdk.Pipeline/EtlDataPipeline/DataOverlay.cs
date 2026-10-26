@@ -58,6 +58,17 @@ internal sealed class DataOverlay
                 value = null;
                 return canonicalPath == "$";
             }
+            if (HasQuotedProperty(canonicalPath))
+            {
+                // AB#7509: read paths are not always canonical. A bracket-quoted property name
+                // ($.a['32.7.0']) is not a ".name"/"[index]" segment, so the lifted navigation below
+                // treated it as a missing index and the read silently yielded nothing once any write had
+                // happened. Evaluate such paths with the full JSONPath walker instead.
+                var found = JsonPathWalker.Select(new NodeView(_lifted), canonicalPath).Take(1).ToList();
+                value = found.Count == 0 ? null : found[0].Match.Node;
+                return found.Count > 0;
+            }
+
             value = NavigateLifted(_lifted, canonicalPath, allowMissing: true);
             // Use PathExistsInLifted (which checks object-key/array-slot existence)
             // so an explicitly-written null value is reported as present (returns true
@@ -95,12 +106,22 @@ internal sealed class DataOverlay
             // Same null-root handling as TryRead: a null lifted root means the root
             // path exists (it's the JSON value null) but no nested path does.
             if (_lifted is null) return canonicalPath == "$";
+            if (HasQuotedProperty(canonicalPath))
+            {
+                return JsonPathWalker.Select(new NodeView(_lifted), canonicalPath).Any();
+            }
+
             return PathExistsInLifted(_lifted, canonicalPath);
         }
 
         // No writes yet — walk the base.
         return JsonPathWalker.Select(new ElementView(_base), canonicalPath).Any();
     }
+
+    // A bracket-quoted property name ($.a['b.c'] or $.a["b.c"]); the canonical ".name"/"[index]" grammar
+    // cannot express it (AB#7509).
+    private static bool HasQuotedProperty(string path) =>
+        path.Contains("['", StringComparison.Ordinal) || path.Contains("[\"", StringComparison.Ordinal);
 
     private static bool PathExistsInLifted(JsonNode root, string canonicalPath)
     {

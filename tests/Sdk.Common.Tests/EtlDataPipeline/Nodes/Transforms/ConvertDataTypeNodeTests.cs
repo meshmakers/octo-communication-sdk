@@ -324,4 +324,29 @@ public class ConvertDataTypeNodeTests(ServiceCollectionFixture fixture)
 
         Assert.Contains("$.v", e.Message);
     }
+
+    [Fact]
+    public async Task ConvertDataType_QuotedDottedKey_AfterAnEarlierWrite_ConvertsTheValue()
+    {
+        // A smart-meter payload: OBIS codes are keys with dots. The second conversion runs after the first
+        // one has written to the context; it used to read nothing and convert it to 0 without an error.
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse("{\"v\":{\"32.7.0\":\"234.20\",\"1.8.0\":\"12345.678\"}}"));
+        var rootNodeContext = NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var testee = new ConvertDataTypeNode(A.Fake<NodeDelegate>());
+
+        foreach (var (index, key, target) in new[] { (0u, "32.7.0", "voltage"), (1u, "1.8.0", "energy") })
+        {
+            var nodeContext = rootNodeContext.RegisterChildNode("Convert", index, new ConvertDataTypeNodeConfiguration
+            {
+                Path = $"$.v['{key}']",
+                TargetPath = $"$.reading.{target}",
+                ValueType = AttributeValueTypesDto.Double
+            }, dataContext);
+            await testee.ProcessObjectAsync(dataContext, nodeContext);
+        }
+
+        Assert.Equal(234.2, dataContext.Get<double>("$.reading.voltage"));
+        Assert.Equal(12345.678, dataContext.Get<double>("$.reading.energy"));
+    }
 }
