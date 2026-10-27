@@ -7,6 +7,24 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Transforms;
 
 /// <summary>
+/// AB#7540: what <c>ConvertDataType@1</c> does when the source path does not exist in the data context.
+/// </summary>
+public enum ConvertMissingBehaviorDto
+{
+    /// <summary>
+    /// Convert as before: the missing value becomes the default of the target type (for example 0 for
+    /// <c>Double</c>), a warning naming the path is logged. This is the default, so no existing pipeline changes.
+    /// </summary>
+    Default = 0,
+
+    /// <summary>Do not write the target; the pipeline continues with the next node.</summary>
+    Skip = 1,
+
+    /// <summary>Fail the node with an error that names the missing path.</summary>
+    Fail = 2
+}
+
+/// <summary>
 /// Configuration data type conversion
 /// </summary>
 [NodeName("ConvertDataType", 1)]
@@ -17,6 +35,14 @@ public record ConvertDataTypeNodeConfiguration : SourceTargetPathNodeConfigurati
     /// </summary>
     [PropertyGroup("Options", 0)]
     public required AttributeValueTypesDto ValueType { get; set; }
+
+    /// <summary>
+    /// What to do when the source path does not exist (key or parent missing): <c>Default</c> converts the
+    /// missing value to the type default (for example 0) and logs a warning, <c>Skip</c> leaves the target
+    /// unwritten, <c>Fail</c> throws an error naming the path. A path that exists with the value null is not missing.
+    /// </summary>
+    [PropertyGroup("Options", 1)]
+    public ConvertMissingBehaviorDto OnMissing { get; set; } = ConvertMissingBehaviorDto.Default;
 }
 
 /// <summary>
@@ -32,7 +58,26 @@ public class ConvertDataTypeNode(NodeDelegate next) : IPipelineNode
         // AB#5538: a Secret can neither be the target type nor the source value.
         PipelineSecretValues.ThrowIfSecretValueType(nodeContext, c.ValueType, "valueType");
 
-        if (dataContext.GetKind("$") == DataKind.Undefined || dataContext.GetKind("$") == DataKind.Null)
+        var rootEmpty = dataContext.GetKind("$") == DataKind.Undefined || dataContext.GetKind("$") == DataKind.Null;
+        if (rootEmpty || dataContext.GetKind(c.Path) == DataKind.Undefined)
+        {
+            switch (c.OnMissing)
+            {
+                case ConvertMissingBehaviorDto.Fail:
+                    throw DataPipelineException.SourcePathMissing(c.Path, c.ValueType);
+                case ConvertMissingBehaviorDto.Skip:
+                    await next(dataContext, nodeContext);
+                    return;
+                default:
+                    // AB#7540: unchanged output, but make the fabricated default visible.
+                    nodeContext.Warning(
+                        "Source path '{0}' does not exist; the value is converted to the default of '{1}'. Set onMissing to Skip or Fail to avoid this.",
+                        c.Path, c.ValueType);
+                    break;
+            }
+        }
+
+        if (rootEmpty)
         {
             dataContext.Set<object>(c.TargetPath, null,
                 c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);

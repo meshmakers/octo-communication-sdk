@@ -349,4 +349,100 @@ public class ConvertDataTypeNodeTests(ServiceCollectionFixture fixture)
         Assert.Equal(234.2, dataContext.Get<double>("$.reading.voltage"));
         Assert.Equal(12345.678, dataContext.Get<double>("$.reading.energy"));
     }
+
+    // AB#7540: onMissing. Missing key = "$.v.x" absent below an existing parent; missing parent = "$.p.q" with no "p".
+    private const string MissingDoc = "{\"v\":{\"a\":1}}";
+
+    private async Task<(DataContextImpl Data, IPipelineLogger Logger, NodeDelegate Next, Exception? Error)> RunOnMissingAsync(
+        string path, AttributeValueTypesDto type, ConvertMissingBehaviorDto? onMissing)
+    {
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(MissingDoc));
+        var root = NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var cfg = new ConvertDataTypeNodeConfiguration { Path = path, TargetPath = "$.out", ValueType = type };
+        if (onMissing.HasValue) cfg.OnMissing = onMissing.Value;
+        var nodeContext = root.RegisterChildNode("Convert", 0, cfg, dataContext);
+        var next = A.Fake<NodeDelegate>();
+        Exception? error = null;
+        try { await new ConvertDataTypeNode(next).ProcessObjectAsync(dataContext, nodeContext); }
+        catch (Exception e) { error = e; }
+        return (dataContext, logger, next, error);
+    }
+
+    [Theory]
+    [InlineData("$.v.x")]
+    [InlineData("$.p.q")]
+    public async Task OnMissing_Default_Double_WritesZeroAndWarnsOnce(string path)
+    {
+        // Unset and explicit Default behave the same and keep today's output.
+        foreach (ConvertMissingBehaviorDto? mode in new ConvertMissingBehaviorDto?[] { null, ConvertMissingBehaviorDto.Default })
+        {
+            var r = await RunOnMissingAsync(path, AttributeValueTypesDto.Double, mode);
+            Assert.Null(r.Error);
+            Assert.Equal(0d, r.Data.Get<double>("$.out"));
+            Assert.True(r.Data.Exists("$.out"));
+            A.CallTo(() => r.Logger.Warning(A<string>._, A<string>._, A<string>.That.Contains("does not exist"), A<object[]>._))
+                .MustHaveHappenedOnceExactly();
+            A.CallTo(() => r.Next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustHaveHappenedOnceExactly();
+        }
+    }
+
+    [Theory]
+    [InlineData("$.v.x")]
+    [InlineData("$.p.q")]
+    public async Task OnMissing_Default_String_WritesNullAndWarnsOnce(string path)
+    {
+        var r = await RunOnMissingAsync(path, AttributeValueTypesDto.String, null);
+        Assert.Null(r.Error);
+        Assert.Null(r.Data.Get<string>("$.out"));
+        A.CallTo(() => r.Logger.Warning(A<string>._, A<string>._, A<string>.That.Contains("does not exist"), A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Theory]
+    [InlineData("$.v.x", AttributeValueTypesDto.Double)]
+    [InlineData("$.p.q", AttributeValueTypesDto.Double)]
+    [InlineData("$.v.x", AttributeValueTypesDto.String)]
+    [InlineData("$.p.q", AttributeValueTypesDto.String)]
+    public async Task OnMissing_Skip_DoesNotWriteTargetAndContinues(string path, AttributeValueTypesDto type)
+    {
+        var r = await RunOnMissingAsync(path, type, ConvertMissingBehaviorDto.Skip);
+        Assert.Null(r.Error);
+        Assert.False(r.Data.Exists("$.out"));
+        A.CallTo(() => r.Next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => r.Logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._)).MustNotHaveHappened();
+    }
+
+    [Theory]
+    [InlineData("$.v.x", AttributeValueTypesDto.Double)]
+    [InlineData("$.p.q", AttributeValueTypesDto.Double)]
+    [InlineData("$.v.x", AttributeValueTypesDto.String)]
+    [InlineData("$.p.q", AttributeValueTypesDto.String)]
+    public async Task OnMissing_Fail_ThrowsNamingThePath(string path, AttributeValueTypesDto type)
+    {
+        var r = await RunOnMissingAsync(path, type, ConvertMissingBehaviorDto.Fail);
+        Assert.IsType<DataPipelineException>(r.Error);
+        Assert.Contains(path, r.Error!.Message);
+        Assert.False(r.Data.Exists("$.out"));
+        A.CallTo(() => r.Next.Invoke(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    [Theory]
+    [InlineData(ConvertMissingBehaviorDto.Default)]
+    [InlineData(ConvertMissingBehaviorDto.Skip)]
+    [InlineData(ConvertMissingBehaviorDto.Fail)]
+    public async Task OnMissing_ExistingValue_IsConvertedInEveryMode(ConvertMissingBehaviorDto mode)
+    {
+        var r = await RunOnMissingAsync("$.v.a", AttributeValueTypesDto.Double, mode);
+        Assert.Null(r.Error);
+        Assert.Equal(1d, r.Data.Get<double>("$.out"));
+        A.CallTo(() => r.Logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public void OnMissing_DefaultsToDefault()
+    {
+        Assert.Equal(ConvertMissingBehaviorDto.Default,
+            new ConvertDataTypeNodeConfiguration { Path = "$.a", TargetPath = "$.b", ValueType = AttributeValueTypesDto.Int }.OnMissing);
+    }
 }
