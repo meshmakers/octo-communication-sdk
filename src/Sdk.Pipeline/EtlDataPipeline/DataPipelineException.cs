@@ -48,6 +48,15 @@ public class DataPipelineException : Exception
     }
 
     /// <summary>
+    /// AB#7540: the source path of a conversion does not exist and the node is configured with <c>onMissing: Fail</c>.
+    /// </summary>
+    internal static Exception SourcePathMissing(string path, AttributeValueTypesDto valueType)
+    {
+        return new DataPipelineException(
+            $"Value at path '{path}' does not exist and cannot be converted to '{valueType}' (onMissing is Fail).");
+    }
+
+    /// <summary>
     /// A value exists at <paramref name="path" /> but cannot be represented as
     /// <paramref name="valueType" /> (out of range, wrong JSON kind). The serializer's own message
     /// names only the CLR type, so the data path is prepended here — the node path is added later by
