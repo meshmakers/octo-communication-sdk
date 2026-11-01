@@ -138,7 +138,8 @@ internal class AdapterTriggerContext(
             completedAt,
             durationMs,
             ex.Message,
-            failureKind: PipelineExecutionFailureKinds.Of(ex));
+            null,
+            PipelineExecutionFailureKinds.Of(ex));
     }
 
     /// <inheritdoc />

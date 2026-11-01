@@ -246,9 +246,11 @@ step. Tests: `AdapterTriggerContextTests` (`StartExecutePipelineAsync_WhenContex
 ### Failure kind of a failed execution (AB#8037)
 
 A failed execution reports **what it means for its writes** next to `PipelineExecutionStatus.Failed`:
-`IPipelineExecutionReporter.ReportExecutionEndAsync(..., failureKind)` (new optional last parameter) fills
-`PipelineExecutionEndDto.FailureKind`, and a pool member's release fills `LeaseResultDto.FailureKind` from
-`LeaseWorkOutcome.FailureKind` (new optional member; `LeaseWorkOutcome.Failed(message, failureKind)`). The value comes from
+the new seven-parameter overload `IPipelineExecutionReporter.ReportExecutionEndAsync(..., outputData, failureKind)` fills
+`PipelineExecutionEndDto.FailureKind` (a default interface member that forwards to the unchanged six-parameter member, so
+existing implementers keep compiling and binding but drop the kind until they override it), and a pool member's release fills
+`LeaseResultDto.FailureKind` from `LeaseWorkOutcome.FailureKind` (an `init` property, not positional, so constructor and
+`Deconstruct` keep their shape; new overload `LeaseWorkOutcome.Failed(message, failureKind)` next to `Failed(message)`). The value comes from
 `PipelineExecutionFailureKinds.Of(exception)` (octo-sdk), i.e. the engine's `UnacknowledgedWriteClassifier`:
 `OutcomeUnknown` when a MongoDB write was not acknowledged (write-concern error, `UnknownTransactionCommitResult`) and may
 have taken effect, `Failed` otherwise. Set at the same three places as in the mesh adapter: `AdapterTriggerContext.EndExecutePipelineAsync`

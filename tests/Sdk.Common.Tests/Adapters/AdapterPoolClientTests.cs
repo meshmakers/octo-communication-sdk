@@ -589,6 +589,25 @@ public class AdapterPoolClientTests
         Assert.Equal(PipelineExecutionFailureKind.OutcomeUnknown, Assert.Single(hubClient.Releases).FailureKind);
     }
 
+    /// <summary>
+    ///     AB#8037 review: the failure kind is not positional, so the generated constructor and Deconstruct keep their
+    ///     three members, Failed(string) keeps its signature, and a with-expression keeps the kind.
+    /// </summary>
+    [Fact]
+    public void LeaseWorkOutcome_KeepsItsPositionalShape_AndCarriesTheKindThroughAWithExpression()
+    {
+        var (success, statusMessage, outputData) =
+            LeaseWorkOutcome.Failed("write not acknowledged", PipelineExecutionFailureKind.OutcomeUnknown);
+        var drained = LeaseWorkOutcome.Failed("write not acknowledged", PipelineExecutionFailureKind.OutcomeUnknown)
+            with { StatusMessage = "drained" };
+
+        Assert.False(success);
+        Assert.Equal("write not acknowledged", statusMessage);
+        Assert.Null(outputData);
+        Assert.Equal(PipelineExecutionFailureKind.OutcomeUnknown, drained.FailureKind);
+        Assert.Null(LeaseWorkOutcome.Failed("plain").FailureKind);
+    }
+
     private sealed class OutcomeWorkItem(LeaseWorkOutcome outcome) : IAdapterLeaseWorkItem
     {
         public Task<LeaseWorkOutcome> RunAsync(LeaseDto lease, CancellationToken cancellationToken) =>

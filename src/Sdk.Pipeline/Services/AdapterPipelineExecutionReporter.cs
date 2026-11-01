@@ -123,14 +123,24 @@ public class AdapterPipelineExecutionReporter : IPipelineExecutionReporter
     }
 
     /// <inheritdoc />
-    public async Task ReportExecutionEndAsync(
+    public Task ReportExecutionEndAsync(
         Guid executionId,
         PipelineExecutionStatus status,
         DateTime completedAt,
         int durationMs,
         string? errorMessage = null,
-        string? outputData = null,
-        PipelineExecutionFailureKind? failureKind = null)
+        string? outputData = null) =>
+        ReportExecutionEndAsync(executionId, status, completedAt, durationMs, errorMessage, outputData, null);
+
+    /// <inheritdoc />
+    public async Task ReportExecutionEndAsync(
+        Guid executionId,
+        PipelineExecutionStatus status,
+        DateTime completedAt,
+        int durationMs,
+        string? errorMessage,
+        string? outputData,
+        PipelineExecutionFailureKind? failureKind)
     {
         try
         {
