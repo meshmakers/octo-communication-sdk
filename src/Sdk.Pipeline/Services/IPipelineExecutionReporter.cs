@@ -34,6 +34,11 @@ public interface IPipelineExecutionReporter
     /// <param name="durationMs">Duration in milliseconds</param>
     /// <param name="errorMessage">Optional error message if failed</param>
     /// <param name="outputData">Optional output data (JSON) from pipeline result</param>
+    /// <param name="failureKind">
+    /// What a failed execution says about its writes (AB#8037), derived with
+    /// <see cref="PipelineExecutionFailureKinds.Of" /> from the exception that ended it; null when the status is not
+    /// <see cref="PipelineExecutionStatus.Failed" />. Never a marker in <paramref name="errorMessage" />.
+    /// </param>
     /// <returns>Task representing the async operation</returns>
     Task ReportExecutionEndAsync(
         Guid executionId,
@@ -41,7 +46,8 @@ public interface IPipelineExecutionReporter
         DateTime completedAt,
         int durationMs,
         string? errorMessage = null,
-        string? outputData = null);
+        string? outputData = null,
+        PipelineExecutionFailureKind? failureKind = null);
 
     /// <summary>
     /// Reports a pipeline's live status line (AB#5385) — one line per poll from a trigger node,

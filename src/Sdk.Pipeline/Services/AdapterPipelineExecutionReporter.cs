@@ -129,7 +129,8 @@ public class AdapterPipelineExecutionReporter : IPipelineExecutionReporter
         DateTime completedAt,
         int durationMs,
         string? errorMessage = null,
-        string? outputData = null)
+        string? outputData = null,
+        PipelineExecutionFailureKind? failureKind = null)
     {
         try
         {
@@ -140,7 +141,9 @@ public class AdapterPipelineExecutionReporter : IPipelineExecutionReporter
                 CompletedAt = completedAt,
                 DurationMs = durationMs,
                 ErrorMessage = errorMessage,
-                OutputData = outputData
+                OutputData = outputData,
+                // AB#8037: only a failure carries a kind; the controller treats null like Failed
+                FailureKind = status == PipelineExecutionStatus.Failed ? failureKind : null
             };
 
             await _adapterHubClient.ReportExecutionEndAsync(endDto);
