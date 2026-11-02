@@ -96,6 +96,7 @@ public class AdapterTriggerContextTests
                 A<DateTime>._,
                 A<int>._,
                 null,
+                null,
                 null))
             .MustHaveHappenedOnceExactly();
 
@@ -137,7 +138,8 @@ public class AdapterTriggerContextTests
                 A<DateTime>._,
                 A<int>._,
                 null,
-                "{\"data\":\"test\"}"))
+                "{\"data\":\"test\"}",
+                null))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -225,13 +227,65 @@ public class AdapterTriggerContextTests
                 A<DateTime>._,
                 A<int>._,
                 "Pipeline failed",
-                null))
+                null,
+                PipelineExecutionFailureKind.Failed))
             .MustHaveHappenedOnceExactly();
 
         // AB#5493 moved the start report ahead of context creation; a run that fails in the
         // pipeline itself must still produce exactly one start and one end.
         A.CallTo(() => _executionReporter.ReportExecutionStartAsync(
                 _pipelineRtEntityId, executionId, A<PipelineTriggerType>._, A<DateTime>._, A<string?>._))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task EndExecutePipelineAsync_WhenAWriteIsNotAcknowledged_ReportsOutcomeUnknown()
+    {
+        // AB#8037: a write the database did not acknowledge may be on the primary; the controller must learn that as a
+        // structured kind so a pipeline method answers METHOD_OUTCOME_UNKNOWN, not METHOD_HANDLER_FAILED
+        var etlContext = A.Fake<IEtlContext>();
+        A.CallTo(() => etlContext.Properties).Returns(new Dictionary<string, object?>());
+        A.CallTo(() => _contextCreatorService.CreateEtlContext<IEtlContext>(
+                A<PipelineRegistration>._, A<ExecutePipelineOptions>._, A<Guid>._))
+            .Returns(Task.FromResult(etlContext));
+        A.CallTo(() => _etlDataOrchestrator.ExecutePipelineAsync(
+                A<NodeDefinitionRoot>._, A<IEtlContext>._, null, A<object?>._))
+            .ThrowsAsync(new InvalidOperationException("Database operation 'ApplyChangesAsync' failed.",
+                new MongoDB.Driver.FakeWriteConcernFaultException()));
+
+        var executionId = await _sut.StartExecutePipelineAsync(new ExecutePipelineOptions(DateTime.UtcNow));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.EndExecutePipelineAsync(executionId));
+
+        A.CallTo(() => _executionReporter.ReportExecutionEndAsync(
+                executionId,
+                PipelineExecutionStatus.Failed,
+                A<DateTime>._,
+                A<int>._,
+                "Database operation 'ApplyChangesAsync' failed.",
+                null,
+                PipelineExecutionFailureKind.OutcomeUnknown))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task StartExecutePipelineAsync_WhenContextCreationFailsOnAnUnacknowledgedWrite_ReportsOutcomeUnknown()
+    {
+        // AB#8037: the pre-start failure path classifies like the running pipeline
+        A.CallTo(() => _contextCreatorService.CreateEtlContext<IEtlContext>(
+                A<PipelineRegistration>._, A<ExecutePipelineOptions>._, A<Guid>._))
+            .ThrowsAsync(new MongoDB.Driver.FakeWriteConcernFaultException());
+
+        await Assert.ThrowsAsync<MongoDB.Driver.FakeWriteConcernFaultException>(
+            () => _sut.StartExecutePipelineAsync(new ExecutePipelineOptions(DateTime.UtcNow)));
+
+        A.CallTo(() => _executionReporter.ReportExecutionEndAsync(
+                A<Guid>._,
+                PipelineExecutionStatus.Failed,
+                A<DateTime>._,
+                A<int>._,
+                A<string?>._,
+                A<string?>._,
+                PipelineExecutionFailureKind.OutcomeUnknown))
             .MustHaveHappenedOnceExactly();
     }
 
@@ -268,7 +322,8 @@ public class AdapterTriggerContextTests
                 A<DateTime>._,
                 A<int>._,
                 "System tenant database does not exist",
-                null))
+                null,
+                PipelineExecutionFailureKind.Failed))
             .MustHaveHappenedOnceExactly();
 
         // Nothing ran and nothing dangles: no orchestrator call, no execution left registered.

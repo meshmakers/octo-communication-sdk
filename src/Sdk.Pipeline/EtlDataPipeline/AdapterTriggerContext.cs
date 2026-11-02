@@ -116,6 +116,7 @@ internal class AdapterTriggerContext(
     /// Closes an execution whose start was reported but which never reached the orchestrator
     /// (AB#5493): logs the failure and reports it as <see cref="PipelineExecutionStatus.Failed" />
     /// under the same execution id, so the controller's statistics and the failure metric see it.
+    /// The failure kind (AB#8037) is classified like a failure of the running pipeline.
     /// </summary>
     private async Task ReportExecutionFailedBeforeRunAsync(Guid pipelineExecutionId, DateTime startedDateTime,
         Exception ex)
@@ -136,7 +137,9 @@ internal class AdapterTriggerContext(
             PipelineExecutionStatus.Failed,
             completedAt,
             durationMs,
-            ex.Message);
+            ex.Message,
+            null,
+            PipelineExecutionFailureKinds.Of(ex));
     }
 
     /// <inheritdoc />
@@ -182,6 +185,7 @@ internal class AdapterTriggerContext(
 
         var status = PipelineExecutionStatus.Running;
         string? errorMessage = null;
+        PipelineExecutionFailureKind? failureKind = null;
         object? result = null;
 
         try
@@ -193,6 +197,8 @@ internal class AdapterTriggerContext(
         {
             status = PipelineExecutionStatus.Failed;
             errorMessage = ex.Message;
+            // AB#8037: an unacknowledged write is reported as a structured kind, never as a marker in the message
+            failureKind = PipelineExecutionFailureKinds.Of(ex);
             throw;
         }
         finally
@@ -219,7 +225,8 @@ internal class AdapterTriggerContext(
                     completedAt,
                     durationMs,
                     errorMessage,
-                    outputData);
+                    outputData,
+                    failureKind);
             }
 
             _logger.LogDebug("[{TenantId}] Pipeline finished for pipeline {PipelineRtEntityId} with status {Status}",

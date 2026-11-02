@@ -554,7 +554,8 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
         {
             _logger.LogError(e, "Lease '{LeaseId}' for tenant '{TenantId}' failed",
                 lease.LeaseId, lease.TenantId);
-            outcome = LeaseWorkOutcome.Failed(e.Message);
+            // AB#8037: a work item that threw is classified like a failed pipeline run
+            outcome = LeaseWorkOutcome.Failed(e.Message, PipelineExecutionFailureKinds.Of(e));
         }
         finally
         {
@@ -612,7 +613,7 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
         // Only now — the tenant is gone from the process, so the controller is free to hand this
         // member another one.
         await ReportReleaseAsync(lease, reason, outcome.Success, outcome.StatusMessage, outcome.OutputData,
-            workDurationMs);
+            workDurationMs, outcome.Success ? null : outcome.FailureKind);
     }
 
     /// <summary>
@@ -630,7 +631,8 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
     }
 
     private async Task ReportReleaseAsync(LeaseDto lease, LeaseReleaseReasonDto reason, bool success,
-        string? statusMessage, string? outputData = null, long? workDurationMs = null)
+        string? statusMessage, string? outputData = null, long? workDurationMs = null,
+        PipelineExecutionFailureKind? failureKind = null)
     {
         var result = new LeaseResultDto
         {
@@ -638,6 +640,8 @@ public sealed class AdapterPoolClient : IAdapterPoolHubCallbacks, IAsyncDisposab
             Reason = reason,
             Success = success,
             StatusMessage = statusMessage,
+            // AB#8037: structured, never a marker in StatusMessage; null on success and where nothing ran
+            FailureKind = failureKind,
             // AB#4924 §9.9 / D4: the only route a leased execution's output has back to its
             // entity. The member has no adapter-hub connection to report an execution end on.
             OutputData = outputData,

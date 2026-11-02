@@ -535,4 +535,82 @@ public class AdapterPoolClientTests
         Assert.NotNull(release.WorkDurationMs);
         Assert.InRange(release.WorkDurationMs!.Value, 20, 10_000);
     }
+
+    /// <summary>
+    ///     AB#8037 — a work item that threw on a write the database did not acknowledge releases with the structured
+    ///     failure kind, so the controller answers a pipeline method METHOD_OUTCOME_UNKNOWN; an ordinary failure says
+    ///     <see cref="PipelineExecutionFailureKind.Failed" /> and a success carries no kind.
+    /// </summary>
+    [Fact]
+    public async Task AWorkItemThatThrewOnAnUnacknowledgedWrite_ReleasesWithOutcomeUnknown()
+    {
+        var journal = new Journal();
+        var scope = new AdapterPoolTenantScope();
+        var hubClient = new RecordingHubClient(journal, scope);
+        var client = CreateClient(scope, hubClient, [],
+            new JournalWorkItem(journal, scope, body: () =>
+                throw new InvalidOperationException("Database operation 'ApplyChangesAsync' failed.",
+                    new MongoDB.Driver.FakeWriteConcernFaultException())));
+
+        await client.LeaseAsync(ALease());
+
+        var release = Assert.Single(hubClient.Releases);
+        Assert.False(release.Success);
+        Assert.Equal(PipelineExecutionFailureKind.OutcomeUnknown, release.FailureKind);
+    }
+
+    [Fact]
+    public async Task AWorkItemThatThrewOrdinarily_ReleasesWithFailed_AndASuccessCarriesNoKind()
+    {
+        var journal = new Journal();
+        var scope = new AdapterPoolTenantScope();
+        var failing = new RecordingHubClient(journal, scope);
+        await CreateClient(scope, failing, [],
+                new JournalWorkItem(journal, scope, body: () => throw new InvalidOperationException("boom")))
+            .LeaseAsync(ALease());
+        var succeeding = new RecordingHubClient(journal, scope);
+        await CreateClient(scope, succeeding, [], new JournalWorkItem(journal, scope)).LeaseAsync(ALease());
+
+        Assert.Equal(PipelineExecutionFailureKind.Failed, Assert.Single(failing.Releases).FailureKind);
+        Assert.Null(Assert.Single(succeeding.Releases).FailureKind);
+    }
+
+    [Fact]
+    public async Task AWorkItemThatReportsOutcomeUnknownItself_KeepsItOnTheRelease()
+    {
+        var journal = new Journal();
+        var scope = new AdapterPoolTenantScope();
+        var hubClient = new RecordingHubClient(journal, scope);
+        var client = CreateClient(scope, hubClient, [], new OutcomeWorkItem(
+            LeaseWorkOutcome.Failed("write not acknowledged", PipelineExecutionFailureKind.OutcomeUnknown)));
+
+        await client.LeaseAsync(ALease());
+
+        Assert.Equal(PipelineExecutionFailureKind.OutcomeUnknown, Assert.Single(hubClient.Releases).FailureKind);
+    }
+
+    /// <summary>
+    ///     AB#8037 review: the failure kind is not positional, so the generated constructor and Deconstruct keep their
+    ///     three members, Failed(string) keeps its signature, and a with-expression keeps the kind.
+    /// </summary>
+    [Fact]
+    public void LeaseWorkOutcome_KeepsItsPositionalShape_AndCarriesTheKindThroughAWithExpression()
+    {
+        var (success, statusMessage, outputData) =
+            LeaseWorkOutcome.Failed("write not acknowledged", PipelineExecutionFailureKind.OutcomeUnknown);
+        var drained = LeaseWorkOutcome.Failed("write not acknowledged", PipelineExecutionFailureKind.OutcomeUnknown)
+            with { StatusMessage = "drained" };
+
+        Assert.False(success);
+        Assert.Equal("write not acknowledged", statusMessage);
+        Assert.Null(outputData);
+        Assert.Equal(PipelineExecutionFailureKind.OutcomeUnknown, drained.FailureKind);
+        Assert.Null(LeaseWorkOutcome.Failed("plain").FailureKind);
+    }
+
+    private sealed class OutcomeWorkItem(LeaseWorkOutcome outcome) : IAdapterLeaseWorkItem
+    {
+        public Task<LeaseWorkOutcome> RunAsync(LeaseDto lease, CancellationToken cancellationToken) =>
+            Task.FromResult(outcome);
+    }
 }

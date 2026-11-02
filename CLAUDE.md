@@ -243,6 +243,24 @@ existing end path. The mesh adapter's hand-maintained copy carries the same orde
 step. Tests: `AdapterTriggerContextTests` (`StartExecutePipelineAsync_WhenContextCreationFails_*`,
 `StartExecutePipelineAsync_ReportsTheStartBeforeTheContextIsCreated`).
 
+### Failure kind of a failed execution (AB#8037)
+
+A failed execution reports **what it means for its writes** next to `PipelineExecutionStatus.Failed`:
+the new seven-parameter overload `IPipelineExecutionReporter.ReportExecutionEndAsync(..., outputData, failureKind)` fills
+`PipelineExecutionEndDto.FailureKind` (a default interface member that forwards to the unchanged six-parameter member, so
+existing implementers keep compiling and binding but drop the kind until they override it), and a pool member's release fills
+`LeaseResultDto.FailureKind` from `LeaseWorkOutcome.FailureKind` (an `init` property, not positional, so constructor and
+`Deconstruct` keep their shape; new overload `LeaseWorkOutcome.Failed(message, failureKind)` next to `Failed(message)`). The value comes from
+`PipelineExecutionFailureKinds.Of(exception)` (octo-sdk), i.e. the engine's `UnacknowledgedWriteClassifier`:
+`OutcomeUnknown` when a MongoDB write was not acknowledged (write-concern error, `UnknownTransactionCommitResult`) and may
+have taken effect, `Failed` otherwise. Set at the same three places as in the mesh adapter: `AdapterTriggerContext.EndExecutePipelineAsync`
+(pipeline task faulted), `ReportExecutionFailedBeforeRunAsync` (context creation failed) and `AdapterPoolClient` (a work item that
+threw; a work item may also return its own kind). The reporter sends a kind only with `Failed`; the interrupted-execution report
+(`ReportInterruptedExecutionResultAsync`) carries none (no exception is known there). The communication controller maps
+`OutcomeUnknown` of a pipeline method to `METHOD_OUTCOME_UNKNOWN` + `correlationId`. Never put a marker into the error
+message instead. Tests: `AdapterTriggerContextTests` (`*NotAcknowledged*`, `*UnacknowledgedWrite*`), `AdapterPoolClientTests`
+(`*UnacknowledgedWrite*`, `*OutcomeUnknown*`); `FakeWriteConcernFaultException` stands in for the driver exception.
+
 ## Adapter hub authentication (AB#5072)
 
 The adapter acquires its **own** client-credentials access token at startup and presents it on the

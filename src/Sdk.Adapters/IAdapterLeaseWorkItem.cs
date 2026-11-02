@@ -52,12 +52,30 @@ public interface IAdapterLeaseWorkItem
 /// </remarks>
 public readonly record struct LeaseWorkOutcome(bool Success, string? StatusMessage, string? OutputData = null)
 {
+    /// <summary>
+    ///     What a failed work item says about its writes (AB#8037), derived with
+    ///     <see cref="PipelineExecutionFailureKinds.Of" />; null on success. Carried back on the release
+    ///     (<see cref="LeaseResultDto.FailureKind" />) so a pipeline method answers <c>METHOD_OUTCOME_UNKNOWN</c> when a
+    ///     write was not acknowledged.
+    /// </summary>
+    /// <remarks>
+    ///     Not a positional member on purpose: the generated constructor and <c>Deconstruct</c> keep their shape for
+    ///     existing consumers.
+    /// </remarks>
+    public PipelineExecutionFailureKind? FailureKind { get; init; }
+
     /// <summary>The work item ran and succeeded.</summary>
     public static LeaseWorkOutcome Succeeded(string? statusMessage = null, string? outputData = null) =>
         new(true, statusMessage, outputData);
 
     /// <summary>The work item ran and failed.</summary>
     public static LeaseWorkOutcome Failed(string statusMessage) => new(false, statusMessage);
+
+    /// <summary>The work item ran and failed; <paramref name="failureKind" /> says what that means for its writes (AB#8037).</summary>
+    /// <param name="statusMessage">Human-readable outcome; never credential material.</param>
+    /// <param name="failureKind">What the failure says about the writes; null = <c>Failed</c>.</param>
+    public static LeaseWorkOutcome Failed(string statusMessage, PipelineExecutionFailureKind? failureKind) =>
+        new(false, statusMessage) { FailureKind = failureKind };
 }
 
 /// <summary>

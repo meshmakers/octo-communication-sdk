@@ -44,6 +44,37 @@ public interface IPipelineExecutionReporter
         string? outputData = null);
 
     /// <summary>
+    /// Reports the end of a pipeline execution together with the failure kind of a failed execution (AB#8037).
+    /// </summary>
+    /// <remarks>
+    /// A separate member, so implementers and callers of the six-parameter member keep compiling and binding. The
+    /// default implementation forwards to the six-parameter member and therefore drops <paramref name="failureKind" />:
+    /// an implementer that wants the controller to answer a pipeline method <c>METHOD_OUTCOME_UNKNOWN</c> overrides
+    /// this member (as <see cref="AdapterPipelineExecutionReporter" /> does).
+    /// </remarks>
+    /// <param name="executionId">Unique execution identifier</param>
+    /// <param name="status">Final status of the execution</param>
+    /// <param name="completedAt">When the execution completed (UTC)</param>
+    /// <param name="durationMs">Duration in milliseconds</param>
+    /// <param name="errorMessage">Error message if failed</param>
+    /// <param name="outputData">Output data (JSON) from pipeline result</param>
+    /// <param name="failureKind">
+    /// What a failed execution says about its writes, derived with <see cref="PipelineExecutionFailureKinds.Of" /> from
+    /// the exception that ended it; null when the status is not <see cref="PipelineExecutionStatus.Failed" />. Never a
+    /// marker in <paramref name="errorMessage" />.
+    /// </param>
+    /// <returns>Task representing the async operation</returns>
+    Task ReportExecutionEndAsync(
+        Guid executionId,
+        PipelineExecutionStatus status,
+        DateTime completedAt,
+        int durationMs,
+        string? errorMessage,
+        string? outputData,
+        PipelineExecutionFailureKind? failureKind) =>
+        ReportExecutionEndAsync(executionId, status, completedAt, durationMs, errorMessage, outputData);
+
+    /// <summary>
     /// Reports a pipeline's live status line (AB#5385) — one line per poll from a trigger node,
     /// written by the controller to the pipeline entity's <c>StatusMessage</c>.
     /// </summary>
