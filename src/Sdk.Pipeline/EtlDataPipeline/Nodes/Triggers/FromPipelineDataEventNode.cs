@@ -34,6 +34,15 @@ public record FromPipelineDataEventNodeConfiguration : TriggerNodeConfiguration;
 internal class FromPipelineDataEventNode(IEventHubControl eventHubControl)
     : ITriggerPipelineNode
 {
+    /// <summary>
+    /// Why the pipeline-data command consumer (AwaitResult callers) stays exclusive (AB#8105, option from AB#8363).
+    /// Logged by the event hub at registration (Debug) and listed in the octo-distributedEventHub CLAUDE.md audit table.
+    /// </summary>
+    internal const string CommandExclusiveByDesignReason =
+        "addressed to one pipeline instance (pipelinedatacommand-{tenant}-dataflow-{id}-pipeline-{id}); the sender " +
+        "(ToPipelineDataEvent with AwaitResult) uses the classic topology, so a further adapter replica is a hot " +
+        "standby; going shared needs one legacy bridge per pipeline and belongs with the sender migration (AB#8105)";
+
     private EndpointHandle? _endpointHandle;
     private EndpointHandle? _commandEndpointHandle;
 
@@ -68,7 +77,12 @@ internal class FromPipelineDataEventNode(IEventHubControl eventHubControl)
                 }
             });
 
-        // Command consumer (new: for AwaitResult callers)
+        // Command consumer (for AwaitResult callers). Exclusive by design (AB#8105): exactly one process owns this
+        // pipeline's command address. The address is per pipeline, ToPipelineDataEvent sends with the classic
+        // exclusive topology, and a shared registration would need MigratesLegacyCommand — one legacy bridge per
+        // pipeline probing the broker every 2 s, for every pipeline of every adapter. Same queue and wire behaviour
+        // as before; the declaration only replaces the AB#6909 deprecation warning with a stated decision. The
+        // fire-and-forget path above is a durable shared queue already (AB#5231) and is not affected.
         var commandAddress =
             $"pipelinedatacommand-{context.TenantId.ToLower()}-dataflow-{context.DataFlowRtId.ToString()?.ToLower()}-pipeline-{context.PipelineRtEntityId.RtId.ToString()?.ToLower()}";
 
@@ -104,7 +118,8 @@ internal class FromPipelineDataEventNode(IEventHubControl eventHubControl)
                             Success = false, ErrorMessage = ex.Message
                         });
                     }
-                });
+                },
+                CommandConsumerOptions.ExclusiveByDesign(CommandExclusiveByDesignReason));
 
         return Task.CompletedTask;
     }
