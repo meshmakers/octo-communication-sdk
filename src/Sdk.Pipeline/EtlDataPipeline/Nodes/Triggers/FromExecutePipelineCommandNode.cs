@@ -25,6 +25,16 @@ public record FromExecutePipelineCommandNodeConfiguration : TriggerNodeConfigura
 public class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
     : ITriggerPipelineNode
 {
+    /// <summary>
+    /// Why the execute-pipeline command consumer stays exclusive (AB#8105, option from AB#8363). Logged by the
+    /// event hub at registration (Debug) and listed in the octo-distributedEventHub CLAUDE.md audit table.
+    /// </summary>
+    internal const string ExclusiveByDesignReason =
+        "addressed to one pipeline instance (execute-pipeline-{tenant}-pipeline-{pipelineRtId}); the sender " +
+        "(communication-controller TriggerManagementService) uses the classic topology, so a further adapter " +
+        "replica is a hot standby; going shared needs one legacy bridge per pipeline and belongs with the sender " +
+        "migration (AB#8105)";
+
     private EndpointHandle? _endpointHandle;
 
     /// <inheritdoc />
@@ -38,6 +48,11 @@ public class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
         var address =
             $"{PipelineQueueNames.ExecutePipelineCommand.ToLower()}-{context.TenantId.ToLower()}-pipeline-{context.PipelineRtEntityId.RtId.ToString()?.ToLower()}";
 
+        // Exclusive by design (AB#8105): exactly one process owns this pipeline's execute address. The address is
+        // per pipeline, the sender keeps the classic exclusive topology, and a shared registration would need
+        // MigratesLegacyCommand — one legacy bridge per pipeline probing the broker every 2 s, for every pipeline
+        // of every adapter. Same queue and wire behaviour as before; the declaration only replaces the AB#6909
+        // deprecation warning with a stated decision.
         _endpointHandle = eventHubControl.RegisterCommandConsumer<ExecutePipelineRequest>(address,
             async (message, responseFunc) =>
             {
@@ -100,7 +115,8 @@ public class FromExecutePipelineCommandNode(IEventHubControl eventHubControl)
                         message.TenantId, context.PipelineRtEntityId);
                     throw;
                 }
-            });
+            },
+            CommandConsumerOptions.ExclusiveByDesign(ExclusiveByDesignReason));
 
         return Task.CompletedTask;
     }

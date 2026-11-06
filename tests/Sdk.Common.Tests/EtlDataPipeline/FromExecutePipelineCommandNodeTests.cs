@@ -34,8 +34,8 @@ public class FromExecutePipelineCommandNodeTests
         A.CallTo(() => _context.NodeContext).Returns(A.Fake<INodeContext>());
 
         A.CallTo(() => _eventHubControl.RegisterCommandConsumer<ExecutePipelineRequest>(
-                A<string>._, A<ExecuteCommandHandler<ExecutePipelineRequest>>._))
-            .Invokes((string _, ExecuteCommandHandler<ExecutePipelineRequest> handler) =>
+                A<string>._, A<ExecuteCommandHandler<ExecutePipelineRequest>>._, A<CommandConsumerOptions>._))
+            .Invokes((string _, ExecuteCommandHandler<ExecutePipelineRequest> handler, CommandConsumerOptions _) =>
                 _capturedHandler = handler);
 
         _sut = new FromExecutePipelineCommandNode(_eventHubControl);

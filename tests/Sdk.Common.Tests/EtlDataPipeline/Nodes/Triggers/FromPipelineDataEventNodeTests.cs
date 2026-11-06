@@ -98,7 +98,7 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
             A<string>._, A<Func<PipelineDataReceived, Task>>._)).Returns(eventEndpointHandle);
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
-            A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._)).Returns(commandEndpointHandle);
+            A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._, A<CommandConsumerOptions>._)).Returns(commandEndpointHandle);
 
         var triggerContext = CreateTriggerContext();
         var testee = new FromPipelineDataEventNode(eventHubControl);
@@ -108,7 +108,7 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
             A<string>._, A<Func<PipelineDataReceived, Task>>._)).MustHaveHappenedOnceExactly();
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
-            A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._)).MustHaveHappenedOnceExactly();
+            A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._, A<CommandConsumerOptions>._)).MustHaveHappenedOnceExactly();
     }
 
     [Fact]
@@ -118,8 +118,8 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         string? capturedCommandAddress = null;
 
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
-                A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._))
-            .Invokes((string addr, ExecuteCommandHandler<PipelineDataCommandRequest> _) =>
+                A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._, A<CommandConsumerOptions>._))
+            .Invokes((string addr, ExecuteCommandHandler<PipelineDataCommandRequest> _, CommandConsumerOptions _) =>
                 capturedCommandAddress = addr)
             .Returns(A.Fake<EndpointHandle>());
 
@@ -149,7 +149,7 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
             A<string>._, A<Func<PipelineDataReceived, Task>>._)).Returns(eventEndpointHandle);
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
-            A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._)).Returns(commandEndpointHandle);
+            A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._, A<CommandConsumerOptions>._)).Returns(commandEndpointHandle);
 
         var triggerContext = CreateTriggerContext();
         var testee = new FromPipelineDataEventNode(eventHubControl);
@@ -158,7 +158,7 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         A.CallTo(() => eventHubControl.RegisterRoutedEventConsumer<PipelineDataReceived>(
             A<string>._, A<Func<PipelineDataReceived, Task>>._)).MustHaveHappenedOnceExactly();
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
-            A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._)).MustHaveHappenedOnceExactly();
+            A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._, A<CommandConsumerOptions>._)).MustHaveHappenedOnceExactly();
         await testee.StopAsync(triggerContext);
     }
 
@@ -169,8 +169,8 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         ExecuteCommandHandler<PipelineDataCommandRequest>? capturedHandler = null;
 
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
-                A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._))
-            .Invokes((string _, ExecuteCommandHandler<PipelineDataCommandRequest> handler) =>
+                A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._, A<CommandConsumerOptions>._))
+            .Invokes((string _, ExecuteCommandHandler<PipelineDataCommandRequest> handler, CommandConsumerOptions _) =>
                 capturedHandler = handler)
             .Returns(A.Fake<EndpointHandle>());
 
@@ -217,8 +217,8 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         ExecuteCommandHandler<PipelineDataCommandRequest>? capturedHandler = null;
 
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
-                A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._))
-            .Invokes((string _, ExecuteCommandHandler<PipelineDataCommandRequest> handler) =>
+                A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._, A<CommandConsumerOptions>._))
+            .Invokes((string _, ExecuteCommandHandler<PipelineDataCommandRequest> handler, CommandConsumerOptions _) =>
                 capturedHandler = handler)
             .Returns(A.Fake<EndpointHandle>());
 
@@ -314,8 +314,8 @@ public class FromPipelineDataEventNodeTests(ServiceCollectionFixture fixture)
         ExecuteCommandHandler<PipelineDataCommandRequest>? capturedHandler = null;
 
         A.CallTo(() => eventHubControl.RegisterCommandConsumer<PipelineDataCommandRequest>(
-                A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._))
-            .Invokes((string _, ExecuteCommandHandler<PipelineDataCommandRequest> handler) =>
+                A<string>._, A<ExecuteCommandHandler<PipelineDataCommandRequest>>._, A<CommandConsumerOptions>._))
+            .Invokes((string _, ExecuteCommandHandler<PipelineDataCommandRequest> handler, CommandConsumerOptions _) =>
                 capturedHandler = handler)
             .Returns(A.Fake<EndpointHandle>());
 
