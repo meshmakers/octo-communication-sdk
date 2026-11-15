@@ -198,13 +198,15 @@ public class ExecuteCSharpOptionalArgumentPipelineTests
             {
                 new ExecuteCSharpNodeConfiguration
                 {
-                    Code = "count * 2 + (enabled ? 1 : 0)",
+                    Code = "(count * 2 + (enabled ? 1 : 0)).ToString() + \"|\" + big.ToString()",
                     Arguments = new List<ScriptArgument>
                     {
                         new() { Name = "count", ValuePath = "$.count", DataType = AttributeValueTypesDto.Int, Optional = true, DefaultValue = 21 },
-                        new() { Name = "enabled", ValuePath = "$.enabled", DataType = AttributeValueTypesDto.Boolean, Optional = true, DefaultValue = true }
+                        new() { Name = "enabled", ValuePath = "$.enabled", DataType = AttributeValueTypesDto.Boolean, Optional = true, DefaultValue = true },
+                        // Above 2^53: must not pass through double on the way to the script.
+                        new() { Name = "big", ValuePath = "$.big", DataType = AttributeValueTypesDto.Int64, Optional = true, DefaultValue = 9007199254740993L }
                     },
-                    ReturnType = AttributeValueTypesDto.Int,
+                    ReturnType = AttributeValueTypesDto.String,
                     TargetPath = "$.result"
                 }
             }
@@ -218,7 +220,7 @@ public class ExecuteCSharpOptionalArgumentPipelineTests
 
         var (result, logger) = await ExecuteAsync(root);
 
-        Assert.Equal(43, result!["result"]!.GetValue<int>());
+        Assert.Equal("43|9007199254740993", result!["result"]!.GetValue<string>());
         A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._)).MustNotHaveHappened();
     }
 

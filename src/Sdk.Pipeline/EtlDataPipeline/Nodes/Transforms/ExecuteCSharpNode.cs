@@ -819,7 +819,9 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
         return element.ValueKind switch
         {
             JsonValueKind.String => element.GetString(),
-            JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
+            // Box the long on its own: in `cond ? long : double` the long is promoted to double
+            // first, which rounds integers above 2^53 (9007199254740993 -> ...992).
+            JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
             JsonValueKind.True => true,
             JsonValueKind.False => false,
             JsonValueKind.Null => null,
