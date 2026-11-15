@@ -194,6 +194,11 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
         }
         finally
         {
+            // AB#9006: per-record conditions (e.g. a missing ExecuteCSharp argument path) are
+            // reported once per execution with their count — on success and on failure, and
+            // before the debugger ends so the debug panel shows them too.
+            rootNodeContext.LogAggregator.Flush(rootNodeContext);
+
             try
             {
                 // end debugging

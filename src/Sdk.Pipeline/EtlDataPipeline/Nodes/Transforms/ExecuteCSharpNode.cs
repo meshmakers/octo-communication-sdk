@@ -37,6 +37,27 @@ public record ScriptArgument
     /// Data type of the argument
     /// </summary>
     public required AttributeValueTypesDto DataType { get; set; }
+
+    /// <summary>
+    /// Marks the argument as optional: when <see cref="ValuePath"/> does not exist in the data
+    /// context, the script receives <see cref="DefaultValue"/> (without one, the default of the
+    /// declared C# type: null, 0, false or DateTime.MinValue) and no warning is logged
+    /// (debug level only). Without it, a missing path is reported once per pipeline execution as
+    /// one aggregated warning with the number of records it was missing in (AB#9006).
+    /// </summary>
+    /// <remarks>
+    /// Nullable on purpose: the pipeline YAML deserializer writes null for a key that is present
+    /// without a value, and an absent or null value means "not optional".
+    /// </remarks>
+    public bool? Optional { get; set; }
+
+    /// <summary>
+    /// Value the script receives when <see cref="ValuePath"/> does not exist or holds null
+    /// (without one, the script variable gets the default of its declared C# type: null for
+    /// strings and arrays, 0, false or DateTime.MinValue for value types). Must be convertible to
+    /// <see cref="DataType"/>; an inconvertible value fails the node on every execution.
+    /// </summary>
+    public object? DefaultValue { get; set; }
 }
 
 /// <summary>
@@ -323,6 +344,9 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
 
         foreach (var arg in c.Arguments)
         {
+            // Converted on every execution, also when the path resolves, so an inconvertible
+            // default fails the first run instead of the first record that happens to miss it.
+            var defaultValue = ConvertDefaultValue(arg, nodeContext);
             object? value;
 
             if (!string.IsNullOrEmpty(arg.ValuePath))
@@ -330,19 +354,21 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
                 // Resolve typed values directly via Get<T>() — under STJ, Get<object>()
                 // returns a boxed JsonElement which does not implement IConvertible, so
                 // Convert.ToInt32/etc would throw.
-                if (!dataContext.Exists(arg.ValuePath!) ||
-                    dataContext.GetKind(arg.ValuePath!) == DataKind.Null)
+                if (!dataContext.Exists(arg.ValuePath!))
                 {
-                    if (!dataContext.Exists(arg.ValuePath!))
-                    {
-                        nodeContext.Warning($"Path '{arg.ValuePath}' not found for argument '{arg.Name}', using null");
-                    }
-                    value = null;
+                    ReportMissingPath(c, arg, defaultValue != null, nodeContext);
+                    values[arg.Name] = defaultValue;
+                    continue;
                 }
-                else
+
+                if (dataContext.GetKind(arg.ValuePath!) == DataKind.Null)
                 {
-                    value = ResolveTypedFromPath(dataContext, arg, nodeContext);
+                    // An existing path holding null is a value, not a gap: silent, as before.
+                    values[arg.Name] = defaultValue;
+                    continue;
                 }
+
+                value = ResolveTypedFromPath(dataContext, arg, nodeContext);
             }
             else
             {
@@ -353,6 +379,78 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
         }
 
         return values;
+    }
+
+    /// <summary>
+    /// AB#9006: a missing argument path used to log one WARNING per record — a node inside a
+    /// <c>ForEach@1</c> over optional fields produced ~808k warnings a day on prod-1. Now the
+    /// per-record line is debug only; an optional argument stops there, a non-optional one is
+    /// counted in the execution's <see cref="PipelineLogAggregator"/> and reported once, with the
+    /// count, when the execution ends. Without an aggregator (test doubles, custom hosts) the node
+    /// warns per record as before.
+    /// </summary>
+    private static void ReportMissingPath(ExecuteCSharpNodeConfiguration c, ScriptArgument arg, bool usesDefault,
+        INodeContext nodeContext)
+    {
+        var substitute = usesDefault ? "the default value" : "null";
+        nodeContext.Debug("Path '{ValuePath}' not found for argument '{ArgumentName}', using {Substitute}",
+            arg.ValuePath!, arg.Name, substitute);
+
+        if (arg.Optional == true)
+        {
+            return;
+        }
+
+        var aggregator = nodeContext.LogAggregator;
+        if (aggregator == null)
+        {
+            nodeContext.Warning("Path '{ValuePath}' not found for argument '{ArgumentName}', using {Substitute}",
+                arg.ValuePath!, arg.Name, substitute);
+            return;
+        }
+
+        aggregator.Record(c, arg.Name, count => nodeContext.Warning(
+            "ExecuteCSharp argument '{ArgumentName}': path '{ValuePath}' was not found in {MissingCount} record(s) " +
+            "of this execution, {Substitute} was used. Set 'optional: true' on the argument if the path may be absent.",
+            arg.Name, arg.ValuePath!, count, substitute));
+    }
+
+    /// <summary>
+    /// Converts <see cref="ScriptArgument.DefaultValue"/> to the declared data type. A value that
+    /// cannot be converted fails the node with a message naming argument, type and value.
+    /// </summary>
+    private static object? ConvertDefaultValue(ScriptArgument arg, INodeContext nodeContext)
+    {
+        if (arg.DefaultValue == null)
+        {
+            return null;
+        }
+
+        // The YAML deserializer hands a scalar default over as a string, the JSON pipeline
+        // serializer as a boxed JsonElement (or JsonNode). JsonElement is not IConvertible, so
+        // unwrap scalars first; arrays stay JsonElement, which MaterializeArray accepts.
+        var raw = arg.DefaultValue switch
+        {
+            JsonNode node => JsonElementToClr(node.Deserialize<JsonElement>(SystemTextJsonOptions.Default)),
+            JsonElement element => JsonElementToClr(element),
+            var other => other
+        };
+        if (raw == null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return ConvertArgumentValue(raw, arg.DataType);
+        }
+        catch (Exception ex) when (ex is FormatException or InvalidCastException or OverflowException
+                                       or InvalidOperationException)
+        {
+            throw new PipelineExecutionException(
+                $"[{nodeContext.NodePath}]: The defaultValue '{Convert.ToString(arg.DefaultValue, CultureInfo.InvariantCulture)}' " +
+                $"of argument '{arg.Name}' cannot be converted to {arg.DataType}: {ex.Message}", ex);
+        }
     }
 
     private static string WrapCode(ExecuteCSharpNodeConfiguration c)
@@ -606,7 +704,7 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
         };
     }
 
-    private object? ConvertArgumentValue(object? value, AttributeValueTypesDto dataType)
+    private static object? ConvertArgumentValue(object? value, AttributeValueTypesDto dataType)
     {
         if (value == null) return null;
 
@@ -721,7 +819,9 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
         return element.ValueKind switch
         {
             JsonValueKind.String => element.GetString(),
-            JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
+            // Box the long on its own: in `cond ? long : double` the long is promoted to double
+            // first, which rounds integers above 2^53 (9007199254740993 -> ...992).
+            JsonValueKind.Number => element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
             JsonValueKind.True => true,
             JsonValueKind.False => false,
             JsonValueKind.Null => null,

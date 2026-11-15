@@ -59,6 +59,14 @@ public interface INodeContext
     void RegisterSecret(string? plaintext) => SecretRegistry?.Register(plaintext);
 
     /// <summary>
+    /// Collects per-record conditions of this execution and reports each once, with a count, when
+    /// the execution ends (AB#9006). One instance per execution, shared by every node context of it.
+    /// <c>null</c> for node contexts that do not provide one (test doubles, custom hosts); a node then
+    /// logs per occurrence as before.
+    /// </summary>
+    PipelineLogAggregator? LogAggregator => null;
+
+    /// <summary>
     /// Parent node context. If it is null, then it is the root node.
     /// </summary>
     INodeContext? Parent { get; }

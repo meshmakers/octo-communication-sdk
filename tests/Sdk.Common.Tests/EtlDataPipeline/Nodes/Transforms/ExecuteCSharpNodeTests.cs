@@ -8,7 +8,9 @@ using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Transforms;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -1104,5 +1106,248 @@ public class ExecuteCSharpNodeTests(NodeFixture fixture) : IClassFixture<NodeFix
         await Task.WhenAll(tasks);
 
         Assert.Equal(8, ExecuteCSharpNode.CompiledScriptCacheCount);
+    }
+
+    // ---- AB#9006: optional arguments, default values and one aggregated warning per execution ----
+
+    private const string MissingPathTemplate = "Path '{ValuePath}' not found for argument '{ArgumentName}', using {Substitute}";
+
+    private static bool IsAggregatedMissingWarning(string message) =>
+        message.StartsWith("ExecuteCSharp argument '{ArgumentName}': path '{ValuePath}' was not found", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Runs <paramref name="argument"/> through <c>ForEach@1</c> over <paramref name="recordCount"/>
+    /// records (none of which carries the argument's path) the way the orchestrator does, then
+    /// flushes the execution's aggregator like the orchestrator's finally block.
+    /// </summary>
+    private static async Task<(DataContextImpl Data, IPipelineLogger Logger)> RunForEachAsync(ScriptArgument argument,
+        string code, AttributeValueTypesDto returnType, int recordCount, int maxDegreeOfParallelism = 4)
+    {
+        var fixture = new NodeFixture();
+        fixture.RegisterNode(typeof(ForEachNode));
+        fixture.RegisterNode(typeof(ExecuteCSharpNode));
+
+        var items = new JsonArray();
+        for (var i = 0; i < recordCount; i++)
+        {
+            items.Add(new JsonObject { ["id"] = i });
+        }
+
+        var config = new ForEachNodeConfiguration
+        {
+            Path = "$",
+            IterationPath = "$.items",
+            TargetPath = "$.results",
+            MergePath = "$.key",
+            MaxDegreeOfParallelism = maxDegreeOfParallelism,
+            Transformations = new List<NodeConfiguration>
+            {
+                new ExecuteCSharpNodeConfiguration
+                {
+                    Code = code,
+                    Arguments = new List<ScriptArgument> { argument },
+                    ReturnType = returnType,
+                    TargetPath = "$.key.result"
+                }
+            }
+        };
+
+        var logger = A.Fake<IPipelineLogger>();
+        var dataContext = new DataContextImpl(JsonDocument.Parse(new JsonObject { ["items"] = items }.ToJsonString()));
+        var root = NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = root.RegisterChildNode("ForEach", 0, config, dataContext);
+
+        await new ForEachNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext);
+        root.LogAggregator.Flush(root);
+
+        return (dataContext, logger);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_OptionalArgumentMissingIn1000Records_LogsNoWarningAndPassesNull()
+    {
+        var (data, logger) = await RunForEachAsync(
+            new ScriptArgument { Name = "dueDate", ValuePath = "$.key.dueDate", DataType = AttributeValueTypesDto.String, Optional = true },
+            "dueDate == null ? \"none\" : dueDate", AttributeValueTypesDto.String, 1000);
+
+        Assert.Equal(1000, data.Length("$.results"));
+        Assert.Equal("none", data.Get<string>("$.results[0].result"));
+        Assert.Equal("none", data.Get<string>("$.results[999].result"));
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._)).MustNotHaveHappened();
+        A.CallTo(() => logger.Debug(A<string>._, A<string>._, MissingPathTemplate, A<object[]>._))
+            .MustHaveHappened(1000, Times.Exactly);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_OptionalArgumentWithDefault_PassesTheDefault()
+    {
+        // "42" as a string is the shape YamlDotNet produces for `defaultValue: 42`.
+        var (data, logger) = await RunForEachAsync(
+            new ScriptArgument
+            {
+                Name = "count", ValuePath = "$.key.count", DataType = AttributeValueTypesDto.Int, Optional = true,
+                DefaultValue = "42"
+            },
+            "count * 2", AttributeValueTypesDto.Int, 10);
+
+        Assert.Equal(84, data.Get<int>("$.results[0].result"));
+        Assert.Equal(84, data.Get<int>("$.results[9].result"));
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NonOptionalArgumentMissingIn1000Records_LogsOneAggregatedWarningWithTheCount()
+    {
+        var (data, logger) = await RunForEachAsync(
+            new ScriptArgument { Name = "dueDate", ValuePath = "$.key.dueDate", DataType = AttributeValueTypesDto.String },
+            "dueDate == null ? \"none\" : dueDate", AttributeValueTypesDto.String, 1000);
+
+        // Script input unchanged: null, exactly as before.
+        Assert.Equal("none", data.Get<string>("$.results[500].result"));
+
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Matches(m => IsAggregatedMissingWarning(m)),
+                A<object[]>.That.Matches(a => a.Length == 4 && (string)a[0] == "dueDate" &&
+                                              (string)a[1] == "$.key.dueDate" && (long)a[2] == 1000L &&
+                                              (string)a[3] == "null")))
+            .MustHaveHappenedOnceExactly();
+        // Per-record detail only at debug level.
+        A.CallTo(() => logger.Debug(A<string>._, A<string>._, MissingPathTemplate, A<object[]>._))
+            .MustHaveHappened(1000, Times.Exactly);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NonOptionalArgumentWithDefault_AggregatedWarningNamesTheDefault()
+    {
+        var (data, logger) = await RunForEachAsync(
+            new ScriptArgument
+            {
+                Name = "comment", ValuePath = "$.key.comment", DataType = AttributeValueTypesDto.String, DefaultValue = "-"
+            },
+            "comment", AttributeValueTypesDto.String, 3, maxDegreeOfParallelism: 1);
+
+        Assert.Equal("-", data.Get<string>("$.results[2].result"));
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._,
+                A<string>.That.Matches(m => IsAggregatedMissingWarning(m)),
+                A<object[]>.That.Matches(a => (long)a[2] == 3L && (string)a[3] == "the default value")))
+            .MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NonOptionalMissingPath_CountsInsteadOfWarningPerRecord()
+    {
+        var logger = A.Fake<IPipelineLogger>();
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "value == null ? \"NULL\" : value",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "value", ValuePath = "$.missing", DataType = AttributeValueTypesDto.String }
+            },
+            ReturnType = AttributeValueTypesDto.String,
+            TargetPath = "$.result"
+        };
+        var (dataContext, nodeContext) = PrepareTest(config, logger: logger);
+
+        await new ExecuteCSharpNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("NULL", dataContext.Get<string>("$.result"));
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._)).MustNotHaveHappened();
+        Assert.Equal(1, nodeContext.LogAggregator!.GetCount(config, "value"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NullValuedPath_StaysSilentAndUsesTheDefault()
+    {
+        var logger = A.Fake<IPipelineLogger>();
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "plain == null ? (\"NULL|\" + withDefault) : plain",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "plain", ValuePath = "$.value", DataType = AttributeValueTypesDto.String },
+                new() { Name = "withDefault", ValuePath = "$.value", DataType = AttributeValueTypesDto.String, DefaultValue = "x" }
+            },
+            ReturnType = AttributeValueTypesDto.String,
+            TargetPath = "$.result"
+        };
+        var testData = new JsonObject { ["value"] = null };
+        var (dataContext, nodeContext) = PrepareTest(config, testData, logger: logger);
+
+        await new ExecuteCSharpNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext);
+        nodeContext.LogAggregator!.Flush(nodeContext);
+
+        Assert.Equal("NULL|x", dataContext.Get<string>("$.result"));
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._)).MustNotHaveHappened();
+        Assert.Equal(0, nodeContext.LogAggregator.GetCount(config, "plain"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ExistingPath_IgnoresTheDefault()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "count + 1",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "count", ValuePath = "$.count", DataType = AttributeValueTypesDto.Int, Optional = true, DefaultValue = 100 }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var (dataContext, nodeContext) = PrepareTest(config, new JsonObject { ["count"] = 5 });
+
+        await new ExecuteCSharpNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal(6, dataContext.Get<int>("$.result"));
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_DefaultNotConvertibleToDataType_FailsEvenWhenThePathExists()
+    {
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "count",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "count", ValuePath = "$.count", DataType = AttributeValueTypesDto.Int, DefaultValue = "abc" }
+            },
+            ReturnType = AttributeValueTypesDto.Int,
+            TargetPath = "$.result"
+        };
+        var (dataContext, nodeContext) = PrepareTest(config, new JsonObject { ["count"] = 5 });
+
+        var ex = await Assert.ThrowsAsync<PipelineExecutionException>(() =>
+            new ExecuteCSharpNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext));
+
+        Assert.Contains("defaultValue 'abc'", ex.Message);
+        Assert.Contains("'count'", ex.Message);
+        Assert.Contains("Int", ex.Message);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_ContextWithoutAggregator_WarnsPerRecordAsBefore()
+    {
+        var logger = A.Fake<IPipelineLogger>();
+        var config = new ExecuteCSharpNodeConfiguration
+        {
+            Code = "value == null",
+            Arguments = new List<ScriptArgument>
+            {
+                new() { Name = "value", ValuePath = "$.missing", DataType = AttributeValueTypesDto.String }
+            },
+            ReturnType = AttributeValueTypesDto.Boolean,
+            TargetPath = "$.result"
+        };
+        var (dataContext, realContext) = PrepareTest(config, logger: logger);
+        var nodeContext = A.Fake<INodeContext>(o => o.Wrapping(realContext));
+        A.CallTo(() => nodeContext.LogAggregator).Returns(null);
+
+        await new ExecuteCSharpNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.True(dataContext.Get<bool>("$.result"));
+        A.CallTo(() => nodeContext.Warning(MissingPathTemplate, A<object[]>._)).MustHaveHappenedOnceExactly();
     }
 }

@@ -52,6 +52,10 @@ public class NodeContext : INodeContext
             pipelineDebugger?.AddSecretRegistry(SecretRegistry);
         }
 
+        // One aggregator per execution (AB#9006), inherited like the secret registry; the
+        // orchestrator flushes the root's at the end of the execution.
+        LogAggregator = parent?.LogAggregator ?? new PipelineLogAggregator();
+
         var name = "[" + sequenceNumber + "]";
         var id = name;
         if (!string.IsNullOrEmpty(nodeQualifiedName))
@@ -83,6 +87,9 @@ public class NodeContext : INodeContext
 
     /// <inheritdoc />
     public PipelineSecretRegistry SecretRegistry { get; }
+
+    /// <inheritdoc />
+    public PipelineLogAggregator LogAggregator { get; }
 
     /// <inheritdoc />
     public void RegisterSecret(string? plaintext)
