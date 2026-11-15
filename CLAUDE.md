@@ -843,6 +843,33 @@ fail. Note that numeric strings into `Double`/`Int` already parsed before AB#546
 `SystemTextJsonOptions.Default` inherits `NumberHandling.AllowReadingFromString` from the CK
 engine's `RtSystemTextJsonSerializer.CreateDefault()`, and the parity converters honour it.
 
+#### Missing argument paths: `optional`, `defaultValue` and one warning per execution (AB#9006)
+
+A missing `valuePath` used to log one WARNING **per record**; inside a `ForEach@1` over optional
+fields that was ~808k warnings a day on prod-1 (meshmakers-app "Match Transactions to Documents").
+`ScriptArgument` now has two additive fields, and existing YAML runs unchanged:
+
+| Field | Effect |
+|---|---|
+| `optional: true` | A missing path is silent (per-record line at Debug only). |
+| `defaultValue` | Passed when the path is missing **or** holds null (instead of null). Converted to `dataType` on **every** execution, also when the path resolves, so an inconvertible default fails the first run with a message naming argument, type and value — not the first record that misses it. |
+
+A missing path of a **non-optional** argument is counted in the execution's
+`PipelineLogAggregator` (`INodeContext.LogAggregator`, one instance per execution, inherited by child
+node contexts like `SecretRegistry`) and reported **once per execution and argument** as a warning
+with the count (`… was not found in {MissingCount} record(s) of this execution …`).
+`EtlDataOrchestrator` flushes it in its `finally` block — on success and failure, before the debugger
+ends — so the line also reaches the Studio debug panel. Entries are keyed by the node **configuration
+object** (same instance for every iteration; the node path carries the iteration index) plus the
+argument name. A path that exists with value null stays silent, as before.
+
+`optional` is `bool?` on purpose (YamlDotNet writes null for `optional:` without a value, and a
+non-nullable value type would also be marked required in the generated schema). The JSON schema
+types `defaultValue` as any value; the type check against `dataType` is the runtime check above.
+A node context without an aggregator (test doubles, custom `INodeContext`) warns per record as before.
+Tests: `ExecuteCSharpNodeTests` (`*OptionalArgument*`, `*NonOptional*`, `*Default*`, `*NullValuedPath*`,
+`*WithoutAggregator*`) and `ExecuteCSharpOptionalArgumentPipelineTests` (orchestrator, YAML, schema).
+
 ## Development Notes
 
 - Target framework `net10.0` only; `netstandard2.0` was dropped platform-wide in Phase 3.
