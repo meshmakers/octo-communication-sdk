@@ -852,7 +852,7 @@ fields that was ~808k warnings a day on prod-1 (meshmakers-app "Match Transactio
 | Field | Effect |
 |---|---|
 | `optional: true` | A missing path is silent (per-record line at Debug only). |
-| `defaultValue` | Passed when the path is missing **or** holds null (instead of null). Converted to `dataType` on **every** execution, also when the path resolves, so an inconvertible default fails the first run with a message naming argument, type and value — not the first record that misses it. |
+| `defaultValue` | Passed when the path is missing **or** holds null (instead of null, which the script sees as its declared type's default: null, 0, false, `DateTime.MinValue`). Converted to `dataType` on **every** execution, also when the path resolves, so an inconvertible default fails the first run with a message naming argument, type and value — not the first record that misses it. YAML hands a scalar default over as a string, the JSON pipeline serializer as a boxed `JsonElement`; scalars are unwrapped before the conversion (`JsonElement` is not `IConvertible`). |
 
 A missing path of a **non-optional** argument is counted in the execution's
 `PipelineLogAggregator` (`INodeContext.LogAggregator`, one instance per execution, inherited by child

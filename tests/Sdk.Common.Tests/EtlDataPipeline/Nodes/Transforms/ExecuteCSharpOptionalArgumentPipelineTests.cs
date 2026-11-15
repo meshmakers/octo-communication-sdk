@@ -21,6 +21,11 @@ namespace Sdk.Common.Tests.EtlDataPipeline.Nodes.Transforms;
 /// per execution, the YAML deserializer reads <c>optional</c>/<c>defaultValue</c>, existing YAML
 /// without them still deserializes, and the generated pipeline schema exposes both fields.
 /// </summary>
+/// <remarks>
+/// In the non-parallel AllocationGates collection: these tests compile scripts into the
+/// process-wide ExecuteCSharp cache, whose exact size ExecuteCSharpNodeTests asserts.
+/// </remarks>
+[Collection("AllocationGates")]
 public class ExecuteCSharpOptionalArgumentPipelineTests
 {
     private static NodeDefinitionRoot BuildPipeline(int recordCount, bool optional)
@@ -180,6 +185,41 @@ public class ExecuteCSharpOptionalArgumentPipelineTests
         Assert.Null(args[1].Optional);
         Assert.Null(args[1].DefaultValue);
         Assert.Null(args[2].Optional);
+    }
+
+    [Fact]
+    public async Task Json_DefaultValue_ArrivesAsJsonElement_AndIsConvertedForTheScript()
+    {
+        var serviceProvider = new DataPipelineFixture().Services.BuildServiceProvider();
+        var serializer = serviceProvider.GetRequiredService<IJsonPipelineConfigurationSerializer>();
+        var pipeline = new NodeDefinitionRoot
+        {
+            Transformations = new List<NodeConfiguration>
+            {
+                new ExecuteCSharpNodeConfiguration
+                {
+                    Code = "count * 2 + (enabled ? 1 : 0)",
+                    Arguments = new List<ScriptArgument>
+                    {
+                        new() { Name = "count", ValuePath = "$.count", DataType = AttributeValueTypesDto.Int, Optional = true, DefaultValue = 21 },
+                        new() { Name = "enabled", ValuePath = "$.enabled", DataType = AttributeValueTypesDto.Boolean, Optional = true, DefaultValue = true }
+                    },
+                    ReturnType = AttributeValueTypesDto.Int,
+                    TargetPath = "$.result"
+                }
+            }
+        };
+
+        var json = await serializer.SerializeAsync(pipeline);
+        var root = await serializer.DeserializeAsync(json);
+        var deserialized = Assert.IsType<ExecuteCSharpNodeConfiguration>(Assert.Single(root.Transformations!));
+        // The shape this test exists for: the JSON serializer leaves object? as a boxed JsonElement.
+        Assert.IsType<System.Text.Json.JsonElement>(deserialized.Arguments.First().DefaultValue);
+
+        var (result, logger) = await ExecuteAsync(root);
+
+        Assert.Equal(43, result!["result"]!.GetValue<int>());
+        A.CallTo(() => logger.Warning(A<string>._, A<string>._, A<string>._, A<object[]>._)).MustNotHaveHappened();
     }
 
     [Fact]

@@ -40,7 +40,8 @@ public record ScriptArgument
 
     /// <summary>
     /// Marks the argument as optional: when <see cref="ValuePath"/> does not exist in the data
-    /// context, the script receives <see cref="DefaultValue"/> (or null) and no warning is logged
+    /// context, the script receives <see cref="DefaultValue"/> (without one, the default of the
+    /// declared C# type: null, 0, false or DateTime.MinValue) and no warning is logged
     /// (debug level only). Without it, a missing path is reported once per pipeline execution as
     /// one aggregated warning with the number of records it was missing in (AB#9006).
     /// </summary>
@@ -52,7 +53,8 @@ public record ScriptArgument
 
     /// <summary>
     /// Value the script receives when <see cref="ValuePath"/> does not exist or holds null
-    /// (default: null, i.e. the type's default in the script). Must be convertible to
+    /// (without one, the script variable gets the default of its declared C# type: null for
+    /// strings and arrays, 0, false or DateTime.MinValue for value types). Must be convertible to
     /// <see cref="DataType"/>; an inconvertible value fails the node on every execution.
     /// </summary>
     public object? DefaultValue { get; set; }
@@ -424,9 +426,23 @@ public class ExecuteCSharpNode(NodeDelegate next) : IPipelineNode
             return null;
         }
 
+        // The YAML deserializer hands a scalar default over as a string, the JSON pipeline
+        // serializer as a boxed JsonElement (or JsonNode). JsonElement is not IConvertible, so
+        // unwrap scalars first; arrays stay JsonElement, which MaterializeArray accepts.
+        var raw = arg.DefaultValue switch
+        {
+            JsonNode node => JsonElementToClr(node.Deserialize<JsonElement>(SystemTextJsonOptions.Default)),
+            JsonElement element => JsonElementToClr(element),
+            var other => other
+        };
+        if (raw == null)
+        {
+            return null;
+        }
+
         try
         {
-            return ConvertArgumentValue(arg.DefaultValue, arg.DataType);
+            return ConvertArgumentValue(raw, arg.DataType);
         }
         catch (Exception ex) when (ex is FormatException or InvalidCastException or OverflowException
                                        or InvalidOperationException)
