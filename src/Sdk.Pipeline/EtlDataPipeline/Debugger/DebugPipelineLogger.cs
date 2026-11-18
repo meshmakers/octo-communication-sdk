@@ -90,6 +90,26 @@ internal class DebugPipelineLogger(ILoggerFactory loggerFactory)
             DateTime.Now, exceptionMessage));
     }
 
+    public override void Log(LogLevel logLevel, string nodeId, string nodePath, string message,
+        IReadOnlyList<KeyValuePair<string, object?>> attributes)
+    {
+        base.Log(logLevel, nodeId, nodePath, message, attributes);
+        // The message is a value (AB#9335): never run it through string.Format.
+        EnqueueBounded(new DebugMessage(ToSeverity(PipelineLogRecordState.Normalize(logLevel)), nodeId, nodePath,
+            message, DateTime.UtcNow));
+    }
+
+    private static LoggerSeverity ToSeverity(LogLevel logLevel)
+    {
+        return logLevel switch
+        {
+            LogLevel.Debug => LoggerSeverity.Debug,
+            LogLevel.Warning => LoggerSeverity.Warning,
+            LogLevel.Error => LoggerSeverity.Error,
+            _ => LoggerSeverity.Information
+        };
+    }
+
     private static string GetMessage(string message, object[] args)
     {
         if (args.Length == 0)

@@ -870,6 +870,38 @@ A node context without an aggregator (test doubles, custom `INodeContext`) warns
 Tests: `ExecuteCSharpNodeTests` (`*OptionalArgument*`, `*NonOptional*`, `*Default*`, `*NullValuedPath*`,
 `*WithoutAggregator*`) and `ExecuteCSharpOptionalArgumentPipelineTests` (orchestrator, YAML, schema).
 
+### `Logger@1` logs DataContext values with level and attributes (AB#9335)
+
+Still `Logger@1`, no node version: `message` (static) or `messagePath` (exactly one, else
+`PipelineConfigurationException`), `level` (`Debug|Information|Warning|Error`, default Information),
+`attributes` (`name` + `value`/`valuePath`, `valuePath` wins as in `SetPrimitiveValue@1`, at most 20,
+unique names, reserved: `TenantId`, `PipelineRtId`, `NodePath` and the JSON log fields), `missingValue`
+(default `<missing>`). Missing data never fails the node; non-strings render as compact JSON; message
+≤ 2048, attribute values ≤ 256 characters including the `...[truncated]` marker; values go through
+`SecretRegistry.Redact` before they are cut.
+
+- **Body unchanged by decision (Odin 2026-11-18):** `<nodePath>: <message>` like every pipeline log
+  line, so existing Logger@1 lines and Dash0 *contains* filters keep working. The node path is also
+  an attribute.
+- **The message is a value, never a template.** `IPipelineLogger.Log(level, nodeId, nodePath, message,
+  attributes)` and `INodeContext.Log(level, message, attributes)` are **default interface members**
+  (implementers such as octo-mesh-adapter's test fakes keep compiling; the defaults forward the
+  message without arguments and drop the attributes). `DefaultPipelineLogger.Log` logs a
+  `PipelineLogRecordState` — a key/value list **without** `{OriginalFormat}` — with a formatter that
+  returns the body, so NLog takes the body as it is and writes the attributes as event properties,
+  i.e. top-level fields of the adapters' JSON log line that Dash0 promotes to attributes.
+- `TenantId` and `PipelineRtId` come from `IEtlContext`, resolved lazily from the node context's
+  service provider; when the pipeline runs with a context type for which the host did not call
+  `RegisterEtlContext`, the line is written without them rather than failing the node.
+- Values are redacted **before** they are cut, and objects/arrays as a tree before they are
+  serialized (JSON escaping would hide a secret with a quote or backslash from text redaction).
+- The Studio debug log (`DebugPipelineLogger`) shows the message only, not the attributes.
+
+Tests: `LoggerNodeTests` (node behaviour, limits, redaction, braces, invalid configuration),
+`LoggerNodeNLogOutputTests` (JSON log line through NLog, pre-change baseline), and
+`LoggerNodeConfigurationTests` (YAML/JSON, schema, FormatString@1 → Logger@1 pipeline run, default
+interface members, Studio debug log).
+
 ## Development Notes
 
 - Target framework `net10.0` only; `netstandard2.0` was dropped platform-wide in Phase 3.
