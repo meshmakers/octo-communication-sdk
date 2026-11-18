@@ -873,16 +873,18 @@ Tests: `ExecuteCSharpNodeTests` (`*OptionalArgument*`, `*NonOptional*`, `*Defaul
 ### `Logger@1` logs DataContext values with level and attributes (AB#9335)
 
 Still `Logger@1`, no node version: `message` (static) or `messagePath` (exactly one, else
-`PipelineConfigurationException`), `level` (`Debug|Information|Warning|Error`, default Information),
+`PipelineConfigurationException`, which `EtlDataOrchestrator` wraps in `DataPipelineException.NodeExecutionFailed`
+like every node exception), `level` (`[DefaultValue(Information)]`, so YAML's `OmitDefaults` keeps `Debug`) (`Debug|Information|Warning|Error`, default Information),
 `attributes` (`name` + `value`/`valuePath`, `valuePath` wins as in `SetPrimitiveValue@1`, at most 20,
 unique names, reserved: `TenantId`, `PipelineRtId`, `NodePath` and the JSON log fields), `missingValue`
 (default `<missing>`). Missing data never fails the node; non-strings render as compact JSON; message
 ≤ 2048, attribute values ≤ 256 characters including the `...[truncated]` marker; values go through
 `SecretRegistry.Redact` before they are cut.
 
-- **Body unchanged by decision (Odin 2026-11-18):** `<nodePath>: <message>` like every pipeline log
-  line, so existing Logger@1 lines and Dash0 *contains* filters keep working. The node path is also
-  an attribute.
+- **Body format unchanged by decision (Odin 2026-11-18):** `<nodePath>: <message>` like every pipeline
+  log line, so existing Logger@1 lines and Dash0 *contains* filters keep working. The node path is also
+  an attribute. The limits and the secret masking apply to existing definitions too (a static message
+  over 2048 characters is cut).
 - **The message is a value, never a template.** `IPipelineLogger.Log(level, nodeId, nodePath, message,
   attributes)` and `INodeContext.Log(level, message, attributes)` are **default interface members**
   (implementers such as octo-mesh-adapter's test fakes keep compiling; the defaults forward the
@@ -894,7 +896,8 @@ unique names, reserved: `TenantId`, `PipelineRtId`, `NodePath` and the JSON log 
   service provider; when the pipeline runs with a context type for which the host did not call
   `RegisterEtlContext`, the line is written without them rather than failing the node.
 - Values are redacted **before** they are cut, and objects/arrays as a tree before they are
-  serialized (JSON escaping would hide a secret with a quote or backslash from text redaction).
+  serialized, property names included (JSON escaping would hide a secret with a quote or backslash
+  from text redaction); `NodeContext.Log` masks attribute names as well as values.
 - The Studio debug log (`DebugPipelineLogger`) shows the message only, not the attributes.
 
 Tests: `LoggerNodeTests` (node behaviour, limits, redaction, braces, invalid configuration),

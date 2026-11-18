@@ -153,7 +153,8 @@ public class NodeContext : INodeContext
             var list = new List<KeyValuePair<string, object?>>(attributes.Count);
             foreach (var attribute in attributes)
             {
-                list.Add(new KeyValuePair<string, object?>(attribute.Key,
+                // Names too: a configured name is pipeline text like the message.
+                list.Add(new KeyValuePair<string, object?>(SecretRegistry.Redact(attribute.Key) ?? attribute.Key,
                     SecretRegistry.RedactArgument(attribute.Value)));
             }
 

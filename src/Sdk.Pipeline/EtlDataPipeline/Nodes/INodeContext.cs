@@ -138,7 +138,7 @@ public interface INodeContext
     /// <summary>
     /// Logs <paramref name="message" /> as a value, never as a format template, together with
     /// structured attributes (AB#9335, used by <c>Logger@1</c>). Values registered as secret in this
-    /// execution are masked in the message and in string attribute values.
+    /// execution are masked in the message, the attribute names and string attribute values.
     /// </summary>
     /// <remarks>
     /// A default interface member, so node contexts outside this SDK (test doubles) keep compiling;

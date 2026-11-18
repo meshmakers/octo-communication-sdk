@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -79,7 +80,11 @@ public record LoggerNodeConfiguration : NodeConfiguration
     /// <summary>
     /// Log level of the line: Debug, Information, Warning or Error. Default: Information.
     /// </summary>
+    // DefaultValue: the YAML serializer omits default values, and without it YamlDotNet takes the
+    // enum's zero value (Debug) as the default - a Debug node would be saved without its level and
+    // reloaded as Information.
     [PropertyGroup("Options", 1)]
+    [DefaultValue(LoggerNodeLevel.Information)]
     public LoggerNodeLevel Level { get; init; } = LoggerNodeLevel.Information;
 
     /// <summary>
@@ -171,7 +176,7 @@ internal class LoggerNode(NodeDelegate next) : IPipelineNode
         var c = nodeContext.GetNodeConfiguration<LoggerNodeConfiguration>();
         Validate(c, nodeContext);
 
-        var missingValue = c.MissingValue ?? LoggerNodeConfiguration.DefaultMissingValue;
+        var missingValue = Redact(nodeContext, c.MissingValue ?? LoggerNodeConfiguration.DefaultMissingValue);
 
         // Redact before cutting, so a secret across the cut-off point is still masked as a whole.
         var message = c.Message != null
@@ -283,10 +288,10 @@ internal class LoggerNode(NodeDelegate next) : IPipelineNode
 
     /// <summary>
     /// Reads the value at <paramref name="path" /> as redacted text: a string as it is, any other value
-    /// as compact JSON, a missing or null value as <paramref name="missingValue" />. Objects and arrays
-    /// are redacted as a tree before they are serialized (as in SetPipelineExecutionResult@1): JSON
-    /// escaping would otherwise hide a secret that contains a quote or a backslash from the text
-    /// redaction.
+    /// as compact JSON, a missing or null value as <paramref name="missingValue" /> (already redacted).
+    /// Objects and arrays are redacted as a tree before they are serialized (as in
+    /// SetPipelineExecutionResult@1), property names included: JSON escaping would otherwise hide a
+    /// secret that contains a quote or a backslash from the text redaction.
     /// </summary>
     private static string ReadValue(IDataContext dataContext, INodeContext nodeContext, string path,
         string missingValue)
@@ -305,9 +310,55 @@ internal class LoggerNode(NodeDelegate next) : IPipelineNode
                     return missingValue;
                 }
 
-                node = nodeContext.SecretRegistry?.Redact(node) ?? node;
+                var registry = nodeContext.SecretRegistry;
+                if (registry is { HasSecrets: true })
+                {
+                    node = registry.Redact(RedactPropertyNames(node.DeepClone(), registry)) ?? node;
+                }
+
                 return node.ToJsonString(SystemTextJsonOptions.Default);
         }
+    }
+
+    /// <summary>
+    /// Masks registered secrets in the property names of <paramref name="node" /> (a clone owned by the
+    /// caller); the tree redaction of <see cref="PipelineSecretRegistry" /> masks values only.
+    /// </summary>
+    private static JsonNode RedactPropertyNames(JsonNode node, PipelineSecretRegistry registry)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var (name, child) in obj.ToList())
+                {
+                    if (child != null)
+                    {
+                        RedactPropertyNames(child, registry);
+                    }
+
+                    var redacted = registry.Redact(name) ?? name;
+                    if (redacted != name)
+                    {
+                        obj.Remove(name);
+                        // Two names masked to the same text keep the first value.
+                        obj.TryAdd(redacted, child);
+                    }
+                }
+
+                break;
+            case JsonArray array:
+                foreach (var child in array)
+                {
+                    if (child != null)
+                    {
+                        RedactPropertyNames(child, registry);
+                    }
+                }
+
+                break;
+        }
+
+        return node;
     }
 
     private static string Redact(INodeContext nodeContext, string value)

@@ -86,14 +86,24 @@ public class LoggerNodeTests(ServiceCollectionFixture fixture)
         Assert.Equal(NodePath, Attribute(entry, "NodePath"));
     }
 
-    [Fact]
-    public async Task WithoutAnEtlContext_LogsWithNodePathOnly()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WithoutAnEtlContext_LogsWithNodePathOnly(bool factoryThrows)
     {
-        // A host that registered only a derived ETL context cannot resolve IEtlContext; the line is
-        // still written, without the tenant and pipeline attributes.
+        // No IEtlContext at all, or one whose accessor was never set for this run's context type
+        // (RegisterEtlContext not called for it): resolving throws DataPipelineException. Either way
+        // the line is still written, without the tenant and pipeline attributes.
+        var services = new ServiceCollection();
+        foreach (var descriptor in fixture.Services) services.Add(descriptor);
+        if (factoryThrows)
+        {
+            services.AddScoped<IEtlContext>(_ => throw DataPipelineException.EtlContextFactoryNotSet(typeof(IEtlContext)));
+        }
+
         var logger = new RecordingPipelineLogger();
         using var dataContext = new DataContextImpl(JsonDocument.Parse("{}"));
-        var root = NodeContext.CreateRootNodeContext(fixture.Services.BuildServiceProvider(), logger, dataContext);
+        var root = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(), logger, dataContext);
         var nodeContext = root.RegisterChildNode("Logger", 0, new LoggerNodeConfiguration { Message = "m" }, dataContext);
 
         await new LoggerNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext);
@@ -198,14 +208,14 @@ public class LoggerNodeTests(ServiceCollectionFixture fixture)
             JsonSerializer.Serialize(new { text = new string('x', 5000) }));
 
         var message = Assert.Single(logger.Entries).Message;
-        Assert.Equal(LoggerNodeConfiguration.MaxMessageLength, message.Length);
+        Assert.Equal(2048, message.Length);
         Assert.EndsWith(LoggerNodeConfiguration.TruncationMarker, message);
     }
 
     [Fact]
     public async Task MessageAtTheLimit_IsNotTruncated()
     {
-        var text = new string('x', LoggerNodeConfiguration.MaxMessageLength);
+        var text = new string('x', 2048);
         var (logger, _, _) = await RunAsync(new LoggerNodeConfiguration { Message = text });
 
         Assert.Equal(text, Assert.Single(logger.Entries).Message);
@@ -228,7 +238,7 @@ public class LoggerNodeTests(ServiceCollectionFixture fixture)
         foreach (var name in new[] { "Static", "FromPath" })
         {
             var value = Attribute(entry, name)!;
-            Assert.Equal(LoggerNodeConfiguration.MaxAttributeValueLength, value.Length);
+            Assert.Equal(256, value.Length);
             Assert.EndsWith(LoggerNodeConfiguration.TruncationMarker, value);
         }
     }
@@ -239,11 +249,11 @@ public class LoggerNodeTests(ServiceCollectionFixture fixture)
         var (logger, _, _) = await RunAsync(new LoggerNodeConfiguration
         {
             Message = "m",
-            Attributes = Enumerable.Range(1, LoggerNodeConfiguration.MaxAttributes)
+            Attributes = Enumerable.Range(1, 20)
                 .Select(i => new LoggerNodeAttribute { Name = $"A{i}", Value = $"{i}" }).ToList()
         });
 
-        Assert.Equal(LoggerNodeConfiguration.MaxAttributes + 3, Assert.Single(logger.Entries).Attributes.Count);
+        Assert.Equal(23, Assert.Single(logger.Entries).Attributes.Count);
     }
 
     [Fact]
@@ -285,6 +295,45 @@ public class LoggerNodeTests(ServiceCollectionFixture fixture)
         const string expected = """{"user":"u","pw":"***","list":["***"]}""";
         Assert.Equal(expected, entry.Message);
         Assert.Equal(expected, Attribute(entry, "Cfg"));
+    }
+
+    [Fact]
+    public async Task RegisteredSecretInAPropertyName_IsMasked_AndTheDataContextKeepsThePlaintext()
+    {
+        const string quotedSecret = "fake\"pass\\word-42";
+        var json = JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["cfg"] = new Dictionary<string, object> { [quotedSecret] = "v", ["user"] = quotedSecret }
+        });
+        var etlContext = A.Fake<IEtlContext>();
+        var services = new ServiceCollection();
+        foreach (var descriptor in fixture.Services) services.Add(descriptor);
+        services.AddSingleton(etlContext);
+        var logger = new RecordingPipelineLogger();
+        using var dataContext = new DataContextImpl(JsonDocument.Parse(json));
+        var root = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(), logger, dataContext);
+        var nodeContext = root.RegisterChildNode("Logger", 0, new LoggerNodeConfiguration
+        {
+            MessagePath = "$.cfg",
+            MissingValue = $"none {quotedSecret}",
+            Attributes =
+            [
+                new LoggerNodeAttribute { Name = $"by-{quotedSecret}", Value = "x" },
+                new LoggerNodeAttribute { Name = "Absent", ValuePath = "$.nope" }
+            ]
+        }, dataContext);
+        nodeContext.RegisterSecret(quotedSecret);
+
+        await new LoggerNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext);
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal("""{"user":"***","***":"v"}""", entry.Message);
+        Assert.Contains(entry.Attributes, a => a.Key == "by-***");
+        Assert.Equal("none ***", Attribute(entry, "Absent"));
+        Assert.DoesNotContain(entry.Attributes, a => a.Key.Contains("pass", StringComparison.Ordinal));
+        // The redaction worked on copies: the pipeline data is unchanged.
+        Assert.Equal(quotedSecret, dataContext.Get<string>("$.cfg.user"));
+        Assert.Contains(quotedSecret, dataContext.Keys("$.cfg"));
     }
 
     [Fact]

@@ -110,6 +110,26 @@ public class LoggerNodeConfigurationTests
         Assert.Null(config.MissingValue);
     }
 
+    [Theory]
+    [InlineData(LoggerNodeLevel.Debug)]
+    [InlineData(LoggerNodeLevel.Information)]
+    [InlineData(LoggerNodeLevel.Warning)]
+    [InlineData(LoggerNodeLevel.Error)]
+    public async Task Yaml_RoundTrip_KeepsEveryLevel(LoggerNodeLevel level)
+    {
+        // The YAML serializer omits default values; Debug is the enum's zero value and must survive.
+        var serializer = Services().GetRequiredService<IPipelineConfigurationSerializer>();
+
+        var yaml = await serializer.SerializeAsync(new NodeDefinitionRoot
+        {
+            Transformations = [new LoggerNodeConfiguration { Message = "m", Level = level }]
+        });
+        var root = await serializer.DeserializeAsync(yaml);
+
+        var copy = Assert.IsType<LoggerNodeConfiguration>(Assert.Single(root.Transformations!));
+        Assert.Equal(level, copy.Level);
+    }
+
     [Fact]
     public async Task Json_RoundTrip_KeepsTheNewProperties()
     {
