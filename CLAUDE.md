@@ -874,7 +874,7 @@ Tests: `ExecuteCSharpNodeTests` (`*OptionalArgument*`, `*NonOptional*`, `*Defaul
 
 Still `Logger@1`, no node version: `message` (static) or `messagePath` (exactly one, else
 `PipelineConfigurationException`, which `EtlDataOrchestrator` wraps in `DataPipelineException.NodeExecutionFailed`
-like every node exception), `level` (`[DefaultValue(Information)]`, so YAML's `OmitDefaults` keeps `Debug`) (`Debug|Information|Warning|Error`, default Information),
+like every node exception that is not already a `DataPipelineException`), `level` (`[DefaultValue(Information)]`, so YAML's `OmitDefaults` keeps `Debug`) (`Debug|Information|Warning|Error`, default Information),
 `attributes` (`name` + `value`/`valuePath`, `valuePath` wins as in `SetPrimitiveValue@1`, at most 20,
 unique names, reserved: `TenantId`, `PipelineRtId`, `NodePath` and the JSON log fields), `missingValue`
 (default `<missing>`). Missing data never fails the node; non-strings render as compact JSON; message
