@@ -2,6 +2,7 @@ using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
+using Microsoft.Extensions.Logging;
 
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
@@ -133,6 +134,40 @@ public interface INodeContext
     /// <param name="message">The message to log</param>
     /// <param name="args">Arguments for logging message</param>
     void Error(Exception exception, string message, params object[] args);
+
+    /// <summary>
+    /// Logs <paramref name="message" /> as a value, never as a format template, together with
+    /// structured attributes (AB#9335, used by <c>Logger@1</c>). Values registered as secret in this
+    /// execution are masked in the message, the attribute names and string attribute values.
+    /// </summary>
+    /// <remarks>
+    /// A default interface member, so node contexts outside this SDK (test doubles) keep compiling;
+    /// the default forwards the message without arguments to the level's method and drops the
+    /// attributes.
+    /// </remarks>
+    /// <param name="logLevel">The severity; Trace is logged as Debug, Critical as Error, None as Information</param>
+    /// <param name="message">The message, logged verbatim</param>
+    /// <param name="attributes">Structured attributes of the record</param>
+    void Log(LogLevel logLevel, string message, IReadOnlyList<KeyValuePair<string, object?>> attributes)
+    {
+        switch (logLevel)
+        {
+            case LogLevel.Trace:
+            case LogLevel.Debug:
+                Debug(message);
+                break;
+            case LogLevel.Warning:
+                Warning(message);
+                break;
+            case LogLevel.Error:
+            case LogLevel.Critical:
+                Error(message);
+                break;
+            default:
+                Info(message);
+                break;
+        }
+    }
 
     /// <summary>
     /// Records that this node WOULD have applied a side effect without actually

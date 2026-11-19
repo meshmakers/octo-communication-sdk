@@ -5,6 +5,7 @@ using Meshmakers.Octo.Communication.Contracts.DataTransferObjects;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
+using Microsoft.Extensions.Logging;
 
 namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
@@ -141,6 +142,26 @@ public class NodeContext : INodeContext
     {
         _logger.Error(NodeId, NodePath, SecretRegistry.RedactException(exception), RedactMessage(message),
             RedactArguments(args));
+    }
+
+    /// <inheritdoc />
+    public void Log(LogLevel logLevel, string message, IReadOnlyList<KeyValuePair<string, object?>> attributes)
+    {
+        IReadOnlyList<KeyValuePair<string, object?>> redactedAttributes = attributes;
+        if (SecretRegistry.HasSecrets && attributes.Count > 0)
+        {
+            var list = new List<KeyValuePair<string, object?>>(attributes.Count);
+            foreach (var attribute in attributes)
+            {
+                // Names too: a configured name is pipeline text like the message.
+                list.Add(new KeyValuePair<string, object?>(SecretRegistry.Redact(attribute.Key) ?? attribute.Key,
+                    SecretRegistry.RedactArgument(attribute.Value)));
+            }
+
+            redactedAttributes = list;
+        }
+
+        _logger.Log(logLevel, NodeId, NodePath, RedactMessage(message), redactedAttributes);
     }
 
     private string RedactMessage(string message)
