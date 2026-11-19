@@ -16,9 +16,10 @@ namespace Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Transforms;
 /// <para>
 /// Exactly one of <see cref="Message" /> and <see cref="MessagePath" /> must be set. The log body is
 /// <c>&lt;nodePath&gt;: &lt;message&gt;</c> like every other pipeline log line; the message is logged as
-/// a value, so braces such as <c>{0}</c> are kept verbatim. Every record carries the attributes
-/// <c>TenantId</c>, <c>PipelineRtId</c> and <c>NodePath</c> plus the configured
-/// <see cref="Attributes" />.
+/// a value, so braces such as <c>{0}</c> are kept verbatim. Every record carries the attribute
+/// <c>NodePath</c>, plus <c>TenantId</c> and <c>PipelineRtId</c> when the execution's
+/// <see cref="IEtlContext" /> can be resolved (always in the mesh adapter and the SDK adapter host),
+/// followed by the configured <see cref="Attributes" />.
 /// </para>
 /// <para>
 /// Missing data never fails the node: a missing or null value is logged as <see cref="MissingValue" />.
