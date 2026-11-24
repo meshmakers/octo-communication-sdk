@@ -1,6 +1,11 @@
+---
+description: How Secret-type CK attributes reach the pipeline data context as an isSet marker and which nodes guard against them.
+applies_to: src/Sdk.Pipeline/EtlDataPipeline/PipelineSecretValues.cs, src/Sdk.Pipeline/EtlDataPipeline/Nodes/**
+---
+
 # Secret values in the pipeline
 
-AB#5538, concept AB#5528 (`octo-construction-kit-engine/docs/concept-secret-attribute-type.md`).
+Concept: `octo-construction-kit-engine/docs/concept-secret-attribute-type.md`.
 
 
 CK attributes of value type `Secret` reach the data context only as the marker `{"isSet": true|false}`
@@ -22,7 +27,7 @@ things in this repo build on that:
   `SetPipelineExecutionResult@1` output. Redaction is **by value**, so a copy, a concatenation
   (`Bearer …`) or a loop child is masked too; values shorter than 4 characters only as whole strings.
   The data itself is never changed — downstream nodes still read the plaintext.
-- **Node errors** (AB#5538 review): `PipelineSecretRegistry.RedactException` returns the exception
+- **Node errors**: `PipelineSecretRegistry.RedactException` returns the exception
   unchanged unless a registered value appears in its chain, otherwise a masked copy without the
   original (a `DataPipelineException` stays one). `EtlDataOrchestrator` applies it to every node error
   before wrapping or rethrowing, and `NodeContext.Error(Exception, …)` before logging, so neither the
@@ -34,7 +39,7 @@ things in this repo build on that:
 configuration must call `nodeContext.RegisterSecret(value)`.** `RevealSecret@1` (mesh adapter) is the
 canonical writer. A value written but not registered is visible in the Studio debug panel. Tests:
 `Sdk.Common.Tests/EtlDataPipeline/Secrets/*`.
-- **Configurations copied into the data context** (AB#5538 review): the controller ships configuration
+- **Configurations copied into the data context**: the controller ships configuration
   entities with Secret values revealed as plain strings. `GetPipelineConfigByWellKnownName@1` (and the
   mesh adapter's `GetPipelineConfigByCkTypeId@1`) call `ConfigurationSecrets.Register` before writing:
   the CK type (`IGlobalConfiguration.GetConfigurationTypeId`, default member) is resolved to its Secret
