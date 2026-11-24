@@ -12,10 +12,17 @@ applies_to: src/Sdk.Adapters/{AdapterBuilder,AdapterHostRunGuard}.cs, src/Sdk.Co
   `OperationCanceledException` arrives after `ApplicationStopping` was signalled (a shutdown requested
   while the host was starting).
 - **1** (`AdapterHostRunGuard.FailureExitCode`) for every other exception while building, starting or
-  running the host, including a cancellation nobody asked for (an `HttpClient` timeout). The guard
+  running the host, including a cancellation nobody asked for (an `HttpClient` timeout), and for a
+  `BackgroundService` whose `ExecuteAsync` faulted. The guard
   logs one ERROR line `Adapter stopped because of an exception: <type>: <message>`; the builder then
   runs `LogManager.Shutdown()` and ends the process with `Environment.Exit(1)` (`TerminateProcess`,
   internal so the tests can capture it instead of exiting).
+
+🔴 A faulted background service does not make the host throw: under the default
+`BackgroundServiceExceptionBehavior.StopHost` the host logs it, stops as if asked to and `Run` returns
+normally. The builders therefore resolve the hosted services before the run and call
+`AdapterHostRunGuard.ThrowIfAnyBackgroundServiceFaulted` after it, which raises the first faulted
+`ExecuteTask`'s exception (a cancelled one is no failure).
 
 🔴 `Environment.Exit` is not optional: a host that fails in `StartAsync` leaves foreground threads
 behind (seen with `Sdk.Plug.Simulation` and an unresolvable `Adapter:BrokerHost`: the refusal was

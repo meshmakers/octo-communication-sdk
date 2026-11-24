@@ -130,4 +130,42 @@ public sealed class AdapterHostRunGuardTests
         Assert.Equal(AdapterHostRunGuard.FailureExitCode, exitCode);
         Assert.Single(ErrorLines);
     }
+
+    [Fact]
+    public async Task AFaultedBackgroundServiceIsRaisedWithItsOwnException()
+    {
+        var faultedService = new BackgroundServiceEndingWith(
+            Task.FromException(new InvalidOperationException("background work failed")));
+        await faultedService.StartAsync(CancellationToken.None);
+
+        var raisedException = Assert.Throws<InvalidOperationException>(
+            () => AdapterHostRunGuard.ThrowIfAnyBackgroundServiceFaulted([faultedService]));
+
+        Assert.Equal("background work failed", raisedException.Message);
+    }
+
+    [Fact]
+    public async Task CompletedAndCancelledBackgroundServicesAreNoFailure()
+    {
+        var completedService = new BackgroundServiceEndingWith(Task.CompletedTask);
+        var cancelledService = new BackgroundServiceEndingWith(Task.FromCanceled(new CancellationToken(true)));
+        var notStartedService = new BackgroundServiceEndingWith(Task.CompletedTask);
+        await completedService.StartAsync(CancellationToken.None);
+        await cancelledService.StartAsync(CancellationToken.None);
+
+        AdapterHostRunGuard.ThrowIfAnyBackgroundServiceFaulted(
+            [completedService, cancelledService, notStartedService, new PlainHostedService()]);
+    }
+
+    private sealed class BackgroundServiceEndingWith(Task outcome) : Microsoft.Extensions.Hosting.BackgroundService
+    {
+        protected override Task ExecuteAsync(CancellationToken stoppingToken) => outcome;
+    }
+
+    private sealed class PlainHostedService : Microsoft.Extensions.Hosting.IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
 }

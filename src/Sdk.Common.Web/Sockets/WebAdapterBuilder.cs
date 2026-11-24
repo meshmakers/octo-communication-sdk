@@ -60,7 +60,9 @@ public class WebAdapterBuilder
 
                 configureApp(app);
 
+                var hostedServices = app.Services.GetServices<IHostedService>().ToList();
                 await app.RunAsync();
+                AdapterHostRunGuard.ThrowIfAnyBackgroundServiceFaulted(hostedServices);
             }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
         }
         finally

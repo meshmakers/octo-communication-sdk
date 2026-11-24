@@ -1,3 +1,5 @@
+using System.Runtime.ExceptionServices;
+using Microsoft.Extensions.Hosting;
 using NLog;
 
 namespace Meshmakers.Octo.Sdk.Common.Adapters;
@@ -11,6 +13,24 @@ internal static class AdapterHostRunGuard
     internal const int FailureExitCode = 1;
 
     private const int SuccessExitCode = 0;
+
+    /// <summary>
+    ///     A background service that throws stops the host as if it was asked to, so the host returns
+    ///     normally; its fault is raised here to make the run a failure.
+    /// </summary>
+    internal static void ThrowIfAnyBackgroundServiceFaulted(IEnumerable<IHostedService> hostedServices)
+    {
+        var faultedExecution = hostedServices
+            .OfType<BackgroundService>()
+            .Select(backgroundService => backgroundService.ExecuteTask)
+            .FirstOrDefault(executeTask => executeTask is { IsFaulted: true });
+
+        var backgroundFailure = faultedExecution?.Exception;
+        if (backgroundFailure != null)
+        {
+            ExceptionDispatchInfo.Capture(backgroundFailure.InnerException ?? backgroundFailure).Throw();
+        }
+    }
 
     internal static int Run(Action runHost, Func<bool> isStopRequested, Logger logger)
     {

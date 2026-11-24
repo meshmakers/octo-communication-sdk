@@ -124,6 +124,38 @@ public sealed class AdapterBuilderExitCodeTests : IDisposable
         Assert.Null(_terminatedWithExitCode);
     }
 
+    [Fact]
+    public void ABackgroundServiceThatFailsAfterTheStartEndsTheProcessWithANonZeroExitCode()
+    {
+        var memoryTarget = new MemoryTarget("memory") { Layout = "${level:uppercase=true}|${message}" };
+        var loggingConfiguration = new LoggingConfiguration();
+        loggingConfiguration.AddRuleForAllLevels(memoryTarget);
+        LogManager.Configuration = loggingConfiguration;
+
+        CreateAdapterBuilder().Run([],
+            (_, services) =>
+            {
+                RegisterMinimalAdapter(services);
+                services.AddHostedService<FailingBackgroundService>();
+            });
+
+        Assert.Equal(AdapterHostRunGuard.FailureExitCode, _terminatedWithExitCode);
+        Assert.Contains(memoryTarget.Logs, line =>
+            line.StartsWith("ERROR|Adapter stopped because of an exception", StringComparison.Ordinal) &&
+            line.Contains(FailingBackgroundService.Reason, StringComparison.Ordinal));
+    }
+
+    private sealed class FailingBackgroundService : BackgroundService
+    {
+        public const string Reason = "lease loop failed";
+
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(200), stoppingToken);
+            throw new InvalidOperationException(Reason);
+        }
+    }
+
     private sealed class StopOnStartService(IHostApplicationLifetime applicationLifetime) : IHostedService
     {
         public Task StartAsync(CancellationToken cancellationToken)

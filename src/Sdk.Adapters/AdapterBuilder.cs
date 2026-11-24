@@ -73,7 +73,9 @@ public class AdapterBuilder
                     return;
                 }
 
+                var hostedServices = host.Services.GetServices<IHostedService>().ToList();
                 host.Run();
+                AdapterHostRunGuard.ThrowIfAnyBackgroundServiceFaulted(hostedServices);
             }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
         }
         finally
