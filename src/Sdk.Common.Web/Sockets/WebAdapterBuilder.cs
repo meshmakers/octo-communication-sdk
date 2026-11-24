@@ -35,29 +35,35 @@ public class WebAdapterBuilder
         Action<WebApplication> configureApp,
         Action<IDistributionEventHubConfiguration>? configureDistributionEventHub = null)
     {
+        IHostApplicationLifetime? applicationLifetime = null;
         try
         {
-            Logger.Info("Octo Adapter, Version {ProductVersion}",
-                AssemblyMetadataReader.GetProductVersion());
-            Logger.Info("{Copyright}", AssemblyMetadataReader.GetCopyright());
-
-            var builder = CreateHostBuilder(args, configureServicesDelegate, configureDistributionEventHub);
-            var app = builder.Build();
-
-            var schemaOutputPath = GetSchemaOutputPath(args);
-            if (schemaOutputPath != null)
+            var exitCode = await AdapterHostRunGuard.RunAsync(async () =>
             {
-                GeneratePipelineSchema(app.Services, schemaOutputPath);
-                return;
+                Logger.Info("Octo Adapter, Version {ProductVersion}",
+                    AssemblyMetadataReader.GetProductVersion());
+                Logger.Info("{Copyright}", AssemblyMetadataReader.GetCopyright());
+
+                var builder = CreateHostBuilder(args, configureServicesDelegate, configureDistributionEventHub);
+                var app = builder.Build();
+                applicationLifetime = app.Lifetime;
+
+                var schemaOutputPath = GetSchemaOutputPath(args);
+                if (schemaOutputPath != null)
+                {
+                    GeneratePipelineSchema(app.Services, schemaOutputPath);
+                    return;
+                }
+
+                configureApp(app);
+
+                await app.RunAsync();
+            }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
+
+            if (exitCode != 0)
+            {
+                Environment.ExitCode = exitCode;
             }
-
-            configureApp(app);
-
-            await app.RunAsync();
-        }
-        catch (Exception ex)
-        {
-            Logger.Error(ex, "Stopped socket because of exception");
         }
         finally
         {

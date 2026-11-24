@@ -51,26 +51,32 @@ public class AdapterBuilder
         Action<HostBuilderContext, IServiceCollection> configureServices,
         Action<IDistributionEventHubConfiguration>? configureDistributionEventHub = null)
     {
+        IHostApplicationLifetime? applicationLifetime = null;
         try
         {
-            Logger.Info($"Octo Mesh Adapter, Version {AssemblyMetadataReader.GetProductVersion()}");
-            Logger.Info(AssemblyMetadataReader.GetCopyright());
-
-            var host = CreateHostBuilder(args, configureConfiguration, configureServices,
-                configureDistributionEventHub).Build();
-
-            var schemaOutputPath = GetSchemaOutputPath(args);
-            if (schemaOutputPath != null)
+            var exitCode = AdapterHostRunGuard.Run(() =>
             {
-                GeneratePipelineSchema(host, schemaOutputPath);
-                return;
-            }
+                Logger.Info($"Octo Mesh Adapter, Version {AssemblyMetadataReader.GetProductVersion()}");
+                Logger.Info(AssemblyMetadataReader.GetCopyright());
 
-            host.Run();
-        }
-        catch (Exception ex)
-        {
-            Logger.Error(ex, "Stopped adapter because of exception");
+                var host = CreateHostBuilder(args, configureConfiguration, configureServices,
+                    configureDistributionEventHub).Build();
+                applicationLifetime = host.Services.GetService<IHostApplicationLifetime>();
+
+                var schemaOutputPath = GetSchemaOutputPath(args);
+                if (schemaOutputPath != null)
+                {
+                    GeneratePipelineSchema(host, schemaOutputPath);
+                    return;
+                }
+
+                host.Run();
+            }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
+
+            if (exitCode != 0)
+            {
+                Environment.ExitCode = exitCode;
+            }
         }
         finally
         {

@@ -31,3 +31,15 @@ collect under `Unreleased` until the next communication release train.
   message longer than 2048 characters is now cut, and values registered as secret are masked. The
   message is now passed as a value instead of a format template; braces such as `{0}` were already
   kept verbatim by NLog when no arguments were given, and now no longer depend on that.
+
+### Fixed
+
+- An adapter whose host fails to build or start now ends its process with exit code 1 instead of 0
+  (AB#9682), so Kubernetes shows a crash instead of a clean exit. `AdapterBuilder.Run` and
+  `WebAdapterBuilder.RunAsync` log one ERROR line naming the exception type and message
+  (`Adapter stopped because of an exception: <type>: <message>`) and set `Environment.ExitCode`;
+  signatures are unchanged. A normal stop (SIGTERM, drain exit, `StopApplication`) and a cancellation
+  after a shutdown request while starting still end with 0. The deliberate startup refusals (a
+  datastore host that does not resolve, an `AdapterPool` section that does not bind) are such
+  failures. A host that calls `Environment.Exit` itself or sets `Environment.ExitCode` after `Run`
+  returns keeps the last word.
