@@ -1,28 +1,28 @@
 ---
 description: Caller identity carried by ExecutePipelineOptions and why it ends at a pipeline chain.
-applies_to: src/Sdk.Pipeline/Services/ExecutePipelineOptions.cs, src/Sdk.Pipeline/Services/VerifiedPrincipal.cs, src/Sdk.Pipeline/EtlDataPipeline/Nodes/Triggers/From*Node.cs, src/Sdk.Pipeline/EtlDataPipeline/Nodes/Loads/ToPipelineDataEventNode.cs
+applies_to: src/Sdk.Pipeline/Services/{ExecutePipelineOptions,VerifiedPrincipal}.cs, src/Sdk.Pipeline/EtlDataPipeline/Nodes/{Triggers/From*,Loads/ToPipelineDataEvent}Node.cs
 ---
 
 # Execution identity — what this repo owns
 
-The adapter decides which identity a pipeline execution acts as (`PipelineIdentityResolver`, AB#5028,
+The adapter decides which identity a pipeline execution acts as (`PipelineIdentityResolver`,
 in `octo-mesh-adapter`). What lives **here** is the carrier and the triggers that fill it:
 
-- **`ExecutePipelineOptions.VerifiedPrincipal`** (AB#4975) — the caller a trigger authenticated. A
+- **`ExecutePipelineOptions.VerifiedPrincipal`** — the caller a trigger authenticated. A
   slim, token-free value object, because the trigger projects it into the pipeline data root, which is
   echoed in HTTP responses, persistable by `SetPipelineExecutionResult@1` and shown in the Studio
-  debug panel. Carries `PreferredChannel` (AB#5149, optional last positional parameter so every
+  debug panel. Carries `PreferredChannel` (optional last positional parameter so every
   pre-existing constructor call keeps compiling): the user's preferred outbound channel for
   system-initiated messages, canonical uppercase `"TEAMS"` | `"SIGNAL"` (extensible), filled by the
   mesh adapter's verified-caller directory from the identity record and propagated verbatim — null
   for callers resolved from bearer claims (no such claim exists).
-- **`ExecutePipelineOptions.CallerAccessToken`** (AB#5031) — the caller's **raw** bearer token, for
+- **`ExecutePipelineOptions.CallerAccessToken`** — the caller's **raw** bearer token, for
   nodes that must act as the caller against another service (the delegation / on-behalf-of grant needs
   it as `subject_token`). 🔴 It must never reach the data root, never `VerifiedPrincipal`, and never
   `IEtlContext.Properties` — that dictionary hangs on the `PipelineRegistration` and is shared across
   **all runs** of the pipeline, so a token left there would outlive its request. It is a
   **per-execution** side channel: trigger → ETL context of exactly this execution, nowhere else.
-- **`ExecutePipelineOptions.MethodInvocation`** (AB#7459, F3.7) — nullable `ExecutePipelineMethodInvocation`
+- **`ExecutePipelineOptions.MethodInvocation`** — nullable `ExecutePipelineMethodInvocation`
   marker (octo-sdk) that the run was started by a CK method invocation; consumed by the mesh adapter's
   generic-create guard. `FromExecutePipelineCommandNode` copies `request.MethodInvocation` **unconditionally**
   — for every `CallerBindingMode` and caller outcome, deliberately *not* via
@@ -32,7 +32,7 @@ in `octo-mesh-adapter`). What lives **here** is the carrier and the triggers tha
 - Both surface on `IEtlContext` as **default interface members**, so an adapter implementing the
   interface itself was not broken by their addition.
 
-## The identity ends at a pipeline chain — by decision, and visibly (AB#5045)
+## The identity ends at a pipeline chain — by decision, and visibly
 
 `ToPipelineDataEvent@1` → `FromPipelineDataEvent@1` crosses the message bus. The trigger on the far
 side builds its `ExecutePipelineOptions` **without** a `VerifiedPrincipal` and **without** a caller
@@ -63,5 +63,5 @@ forwarded identity would be an assertion the target cannot check.
 
 `FromPipelineDataEventNodeTests` and `FromExecutePipelineCommandNodeTests` pin that both start their
 execution with neither value, and `ToPipelineDataEventNodeTests` pins that the hand-off is recorded
-and that neither the token nor the subject reaches the message. See the AB#5029 matrix in
-`octo-mesh-adapter/CLAUDE.md` for how this row fits the other trigger kinds.
+and that neither the token nor the subject reaches the message. The trigger-kind matrix that shows how this row fits the other trigger kinds
+lives in the `octo-mesh-adapter` repository.

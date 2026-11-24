@@ -18,7 +18,7 @@ applies_to: src/Sdk.Pipeline/EtlDataPipeline/Nodes/**, src/Sdk.Pipeline/EtlDataP
 Domain nodes (entity CRUD, stream data, HTTP, files, PDF, mail, …) live in `octo-mesh-adapter`, not
 here.
 
-## `DateTime@1` time zone operations (AB#5095, AB#6854)
+## `DateTime@1` time zone operations
 
 Operation ordinals are persisted in deployed pipelines and the generated schema maps names onto them,
 so new operations are **only appended** (`DateTimeOperationDto`; `DateTimeOperationDto_AppendsNewOperations…`
@@ -45,7 +45,7 @@ time it picks the standard-time offset, i.e. the later instant. The only round t
 the second pass of the repeated hour (its wall clock equals the first pass). A lenient mode for the gap
 (shift forward) would be a separate story, not an option.
 
-## ExecuteCSharp argument typing (AB#5232)
+## ExecuteCSharp argument typing
 
 `ExecuteCSharp@1` arguments are declared in the generated script with the real C# type for their
 `DataType`: the scalars map to `string`/`int`/`long`/`bool`/`double`/`DateTime`, and the **array**
@@ -54,14 +54,14 @@ kinds map to typed CLR arrays — `StringArray → string[]`, `IntArray`/`Intege
 array kinds `AttributeValueTypesDto` defines; everything else falls back to `object`. Incoming values
 are materialized into those arrays regardless of shape (typed array, `JsonElement`/`JsonNode` array,
 or a native list from a fixed configuration `Value`), and array `ReturnType`s materialize `T[]`,
-`List<T>` and lazy LINQ enumerables alike. Before AB#5232 array arguments were declared `object` and
+`List<T>` and lazy LINQ enumerables alike. Previously array arguments were declared `object` and
 arrived as a boxed `JsonElement`, so `foreach` over them failed to compile — pipeline scripts written
 against that era cast the argument via `((JsonElement)arg).EnumerateArray()`; such scripts must be
 made version-tolerant (check `arg is JsonElement` and fall back to the typed array) while pre-fix
 adapter images are still deployed. Null/absent arguments still coalesce to the type's default
 (`null` for arrays).
 
-### A JSON type that does not match the declared `dataType` (AB#5463)
+### A JSON type that does not match the declared `dataType`
 
 Argument resolution runs **before** the script, so a deserializer throw there is invisible to any
 `try`/`catch` inside the script and — with no `continueOnError` on `ExecuteCSharp@1` or the
@@ -82,14 +82,14 @@ Default` — that bundle is shared by the whole engine and every adapter, and a 
 there would change behaviour far outside this node. And **`DateTime` stays strict**: STJ already
 reads every ISO 8601 string, and whatever it rejects (`"01.02.2026"`, a bare Unix number) is
 ambiguous; `DateTime.Parse` under the invariant culture would guess a month/day order rather than
-fail. Note that numeric strings into `Double`/`Int` already parsed before AB#5463 —
+fail. Note that numeric strings into `Double`/`Int` already parsed before that fallback —
 `SystemTextJsonOptions.Default` inherits `NumberHandling.AllowReadingFromString` from the CK
 engine's `RtSystemTextJsonSerializer.CreateDefault()`, and the parity converters honour it.
 
-### Missing argument paths: `optional`, `defaultValue` and one warning per execution (AB#9006)
+### Missing argument paths: `optional`, `defaultValue` and one warning per execution
 
 A missing `valuePath` used to log one WARNING **per record**; inside a `ForEach@1` over optional
-fields that was ~808k warnings a day on prod-1 (meshmakers-app "Match Transactions to Documents").
+fields that was ~808k warnings a day in production.
 `ScriptArgument` now has two additive fields, and existing YAML runs unchanged:
 
 | Field | Effect |
@@ -113,7 +113,7 @@ A node context without an aggregator (test doubles, custom `INodeContext`) warns
 Tests: `ExecuteCSharpNodeTests` (`*OptionalArgument*`, `*NonOptional*`, `*Default*`, `*NullValuedPath*`,
 `*WithoutAggregator*`) and `ExecuteCSharpOptionalArgumentPipelineTests` (orchestrator, YAML, schema).
 
-## `Logger@1` logs DataContext values with level and attributes (AB#9335)
+## `Logger@1` logs DataContext values with level and attributes
 
 Still `Logger@1`, no node version: `message` (static) or `messagePath` (exactly one, else
 `PipelineConfigurationException`, which `EtlDataOrchestrator` wraps in `DataPipelineException.NodeExecutionFailed`
@@ -124,7 +124,7 @@ unique names, reserved: `TenantId`, `PipelineRtId`, `NodePath` and the JSON log 
 ≤ 2048, attribute values ≤ 256 characters including the `...[truncated]` marker; values go through
 `SecretRegistry.Redact` before they are cut.
 
-- **Body format unchanged by decision (Odin 2026-11-18):** `<nodePath>: <message>` like every pipeline
+- **Body format unchanged by decision:** `<nodePath>: <message>` like every pipeline
   log line, so existing Logger@1 lines and Dash0 *contains* filters keep working. The node path is also
   an attribute. The limits and the secret masking apply to existing definitions too (a static message
   over 2048 characters is cut).

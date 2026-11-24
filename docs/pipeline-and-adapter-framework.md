@@ -5,11 +5,8 @@ background: true
 
 # Pipeline and adapter framework
 
-Source: moved verbatim from `octo-sdk` `docs/pipeline-and-adapter-framework.md` (octo-sdk main `0d24a31`).
-
-> This describes code of `octo-communication-sdk` (`src/Sdk.Pipeline`, `src/Sdk.Adapters`, `src/Sdk.Plug.Simulation`,
-> `tests/Sdk.Common.Tests`, `tests/Sdk.Common.PipelineParityTests`), not of this repository, and the paths below are
-> those of the time it was written here. It stays until it moves with that repository's own agent docs.
+Background for the code in `src/Sdk.Pipeline`, `src/Sdk.Adapters` and `src/Sdk.Plug.Simulation` and its tests in
+`tests/Sdk.Common.Tests` and `tests/Sdk.Common.PipelineParityTests`.
 
 **ETL Pipeline Pattern**
 - `EtlDataOrchestrator` executes pipelines via `IPipelineNode` chains
@@ -23,7 +20,7 @@ Source: moved verbatim from `octo-sdk` `docs/pipeline-and-adapter-framework.md` 
   - `UpdateMatchesAsync(jsonPath, body)` — multi-match read/write (per-match sub-contexts)
   - `SelectMatches(jsonPath)` — read-only multi-match; returns `IEnumerable<IDataContext>` of detached sub-contexts, one per JSONPath match. Replaces the removed `EnumerateMatches` (which returned raw `JsonNode?` values and exposed STJ internals to callers).
   - Node code must not pass `JsonSerializerOptions` to any `IDataContext` method — all STJ details are internal to the context implementation.
-- `SystemTextJsonOptions.Default` (`src/Sdk.Common/EtlDataPipeline/SystemTextJsonOptions.cs`) is the central STJ options bundle used internally — it **preserves** explicit nulls (`DefaultIgnoreCondition = Never`) so node code can distinguish `DataKind.Null` from `DataKind.Undefined`, and carries the CK/Rt converters. (The canonical `RtSystemTextJsonSerializer` it derives from uses `WhenWritingNull`; the pipeline bundle overrides that.) The `options` parameter that was formerly on some `IDataContext` methods has been removed; callers no longer control serialization options.
+- `SystemTextJsonOptions.Default` (`src/Sdk.Pipeline/EtlDataPipeline/SystemTextJsonOptions.cs`) is the central STJ options bundle used internally — it **preserves** explicit nulls (`DefaultIgnoreCondition = Never`) so node code can distinguish `DataKind.Null` from `DataKind.Undefined`, and carries the CK/Rt converters. (The canonical `RtSystemTextJsonSerializer` it derives from uses `WhenWritingNull`; the pipeline bundle overrides that.) The `options` parameter that was formerly on some `IDataContext` methods has been removed; callers no longer control serialization options.
 - Pipeline configuration via YAML/JSON with `NodeName` and `NodeConfiguration` attributes for type discovery
 - Reverse-ordered node delegation (middleware-style)
 

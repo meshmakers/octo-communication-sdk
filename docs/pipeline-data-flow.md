@@ -12,7 +12,7 @@ implementation. `SystemTextJsonOptions.Default` is the single options bundle; it
 `UnsafeRelaxedJsonEscaping` encoder is load-bearing for every consumer that **hashes** serialized
 output.
 
-## Integer coercion on typed reads (AB#5275)
+## Integer coercion on typed reads
 
 `NewtonsoftParityDoubleConverter` (CK engine) deliberately writes an integral `double` as `5.0`, not
 `5` — otherwise the value round-trips back as `Int64` and lands in MongoDB as a `BsonInt64` where
@@ -39,7 +39,7 @@ runtime, so the rule cannot drift. Two divergences are deliberate and pinned the
 (`"5.0"`) coerces here but throws in Newtonsoft, and a JSON boolean throws here but yields `1` in
 Newtonsoft.
 
-## What a node's `…Path` setting may point at (AB#5351)
+## What a node's `…Path` setting may point at
 
 Every node setting read through **`GetArray<T>`** (`toPath`, `rtIdsPath`, `opsPath`, `path`, …)
 accepts four shapes, and a pipeline author picks whichever the upstream data has:
@@ -55,7 +55,7 @@ The node turns that `null` into its own error, so a message like *"No RtIds foun
 the path matched nothing — not that the path form is unsupported.
 
 🔴 The multi-match row is the one that was missing. A single-value read resolves a path with
-`JsonPathWalker.Select(...).FirstOrDefault()`, so before AB#5351 a wildcard path silently returned
+`JsonPathWalker.Select(...).FirstOrDefault()`, so before multi-match support a wildcard path silently returned
 **only the first match** while the overlay was still clean and `null` once any node had written to
 the document — the same pipeline, two wrong answers, depending on what ran before it. `GetArray<T>`
 therefore classifies the path first (`JsonPathShape.IsMultiMatch`) and collects multi-match paths
@@ -66,8 +66,7 @@ unchanged and still resolves to the first match**; only `GetArray<T>` is multi-m
 
 ⚠️ **Inside `ForEach@1` a multi-match path sees the child's own document only** — its writes
 (`$.key…`) and its aliases (`$.full…`), never the parent-fallback chain, because folding the parent
-in would re-materialise the whole outer document per call (the allocation alias pruning removed,
-AB#4662). So reach the outer document through `$.full[*]…`, not through a bare outer path: the
+in would re-materialise the whole outer document per call (the allocation alias pruning removed). So reach the outer document through `$.full[*]…`, not through a bare outer path: the
 single-value read of that bare path resolves through the parent, the multi-match read returns
-`null`. That boundary is older than AB#5351 (it is `SelectMatches`/`UpdateMatchesAsync` semantics)
+`null`. That boundary is older than multi-match support (it is `SelectMatches`/`UpdateMatchesAsync` semantics)
 and is pinned by `DataContextGetArrayMultiMatchTests`.

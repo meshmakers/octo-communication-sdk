@@ -3,7 +3,7 @@ description: Adapter pool member: lease scope, lease client ordering, participan
 applies_to: src/Sdk.Adapters/AdapterPool*.cs, src/Sdk.Adapters/IAdapterLease*.cs, src/Sdk.Adapters/AdapterNodeDescriptorProjection.cs
 ---
 
-# Adapter pool membership (AB#4924 increment 6)
+# Adapter pool membership
 
 `AddAdapterPoolMember()` (`src/Sdk.Adapters/AdapterPoolServiceCollectionExtensions.cs`) turns an
 adapter host into a **pool member**: a process that belongs to no tenant and is handed one per lease.
@@ -18,14 +18,14 @@ composition root rather than a bindable switch, for the same reason `AdapterTena
 is hard-coded false: a process that was not built as a pool member must not become one by environment
 variable.
 
-## 🔴 A pool member carries no `DedicatedTenantId` — enforced, not assumed (AB#4924)
+## 🔴 A pool member carries no `DedicatedTenantId` — enforced, not assumed
 
 `ConfigurePoolMemberAdapterTenantId` (`IPostConfigureOptions<AdapterOptions>`, registered by
 `AddAdapterPoolMember()`) **clears** `AdapterOptions.DedicatedTenantId` whenever the pool
 configuration is complete, and logs one warning if something had configured it.
 
 It exists because "it is null on a pool member" was a claim three call sites in two repositories rely
-on and that nothing made true: `AdapterOptions`' constructor sets `"meshTest"`, and the AB#4924 local
+on and that nothing made true: `AdapterOptions`' constructor sets `"meshTest"`, and the local
 runbook instructed the operator to set the key to the **lending** tenant. The reads are
 `AdapterExecutionService.CkModelChangedAsync`, `HttpRequestService` (route prefix and authorization)
 and — the one that costs something — `ServiceAccountTokenService.ResolveTenantId` in
@@ -74,10 +74,10 @@ close, because the controller's next act is to hand the member another tenant.
 - A second concurrent lease is **refused**, not queued. The controller's registry makes it impossible,
   so reaching there means the two views diverged — and the safe answer to "I may already be serving
   somebody else" is never "serve them both".
-- Both directions degrade through the once-only `HubException` pattern (same as AB#4917's scale-status
+- Both directions degrade through the once-only `HubException` pattern (same as the scale-status
   channel): controller, `octo-sdk` and this SDK ship together, so it only covers a rolling upgrade.
 
-## Registration carries the member's node descriptors (AB#4924)
+## Registration carries the member's node descriptors
 
 `AdapterPoolClient.RegisterAsync` sends `NodeDescriptors` + `PipelineSchemaJson` on
 `PoolMemberRegistrationDto` — the **same** values a dedicated adapter sends on
@@ -104,8 +104,8 @@ drop everything" becomes a question a test can answer by enumerating participant
 registry.
 
 ⚠️ `IAdapterLeaseWorkItem` defaults to `NoAdapterLeaseWorkItem` — an honest "nothing queued for me",
-because the queue and the scheduler are increment 7. The member still runs the full enter/leave/release
-cycle, which is what makes the wire contract verifiable before the scheduler exists.
+so a host that runs leased work registers its own implementation. The member still runs the full
+enter/leave/release cycle either way, which keeps the wire contract verifiable.
 
 Tests: `tests/Sdk.Common.Tests/TenantIsolation/AdapterPoolTenantScopeTests.cs`,
 `tests/Sdk.Common.Tests/Adapters/AdapterPoolClientTests.cs`,

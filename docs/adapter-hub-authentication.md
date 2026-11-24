@@ -3,7 +3,7 @@ description: How an adapter acquires and renews its own access token for the ada
 applies_to: src/Sdk.Adapters/AdapterOptions.cs, src/Sdk.Adapters/AdapterAccessToken*.cs, src/Sdk.Adapters/ConfigureAdapterAuthenticatorOptions.cs, src/charts/**
 ---
 
-# Adapter hub authentication (AB#5072)
+# Adapter hub authentication
 
 The adapter acquires its **own** client-credentials access token at startup and presents it on the
 `/{tenantId}/adapterHub` SignalR connection. Four pieces, in the order the token travels:
@@ -30,18 +30,18 @@ pipeline **execution** paths (`DeployPipeline@1`, `AnthropicAiQuery@1`, `MeshCon
 connection went out with no `Authorization` header, and the hub saw an anonymous caller identified
 only by the unprotected `adapter-rtId` / `adapter-ckTypeId` headers. Worse than plainly anonymous: an
 adapter that had already run one of those pipelines *did* present a token on its **next** reconnect,
-so the fleet was not in a deterministic state and the adapter-hub gate's (AB#5063) `LogOnly`
+so the fleet was not in a deterministic state and the adapter-hub gate's `LogOnly`
 inventory was not worth reading.
 
-🔴 **`acr_values=tenant:{TenantId}` is not optional.** Since AB#5077 a token request without it is
+🔴 **`acr_values=tenant:{TenantId}` is not optional.** A token request without it is
 issued for the **system** tenant, and the controller then refuses the adapter on its own tenant route
 with a 403. That is what `ConfigureAdapterAuthenticatorOptions` exists to pin.
 
-🔴 **Unconfigured is a supported state and must stay one.** Every adapter in the estate runs without
-these keys today. Without a client id the service logs one warning, never calls the authenticator,
-and the access token stays null — which makes the SDK send no `Authorization` header and no
-`access_token` query parameter at all, i.e. exactly today's connection. A hard requirement here would
-take the whole adapter fleet down on upgrade.
+🔴 **Unconfigured is a supported state and must stay one.** An adapter deployed without these keys must
+keep connecting as before. Without a client id the service logs one warning, never calls the
+authenticator, and the access token stays null — which makes the SDK send no `Authorization` header
+and no `access_token` query parameter at all. A hard requirement here would take every adapter that
+has not been given the keys down on upgrade.
 
 **Renewal.** A live SignalR connection is authorized once, at connect. The *re*connect is the
 exposure, and adapters reconnect routinely (controller rollout, node drain, network blip, the SDK's
@@ -65,13 +65,11 @@ controller sends to the operator at deploy time and through the adapter chart. T
 makes the adapter *able* to authenticate — but `src/charts/octo-plug-simulation` is itself one of
 those adapter charts and carries the delivery half.
 
-🔴 **Every SDK-based adapter chart has to render the three keys, or that adapter stays anonymous.**
-The three env vars are read by `AdapterOptions`, which every adapter shares, so the controller
-projects the credentials for *all* of them — but Helm silently ignores values a chart does not read.
-Eight charts carry the block, deliberately byte-identical: `octo-mesh-adapter`,
-`octo-loxone-adapter`, `octo-plug-simulation`, `octo-weclapp-adapter`, `octo-modbus-plug`,
-`octo-modbus-socket`, `octo-finapi-adapter`, `octo-eda-adapter`. A new adapter chart must copy it,
-and `authUri` needs no plumbing — the operator writes it into every workload's context values
+🔴 **Every new or changed SDK-based adapter chart has to render the three keys, or that adapter stays
+anonymous.** The three env vars are read by `AdapterOptions`, which every adapter shares, so the
+controller projects the credentials for *all* of them — but Helm silently ignores values a chart does
+not read. Copy the block byte-identical from an existing adapter chart (for example
+`src/charts/octo-plug-simulation` in this repository); `authUri` needs no plumbing — the operator writes it into every workload's context values
 (`WorkloadContextValuesBuilder`). The value paths the controller writes are
 `serviceAccountClientId` and the secret-flagged `secrets.serviceAccountClientSecret`; they are
 pinned on the controller side in `PoolService`.

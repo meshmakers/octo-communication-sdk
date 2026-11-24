@@ -10,20 +10,19 @@ engine, the node model, the trigger/execution contracts, and the adapter host. I
 its own — it is consumed as NuGet packages by `octo-mesh-adapter`, `octo-adapter-loxone`,
 `octo-plug-zenon` and the other adapter repos, so **a change here is a change to every adapter**.
 
-It was carved out of `octo-sdk` in Phase 3 of the pipeline-YAML migration. The namespaces still read
-`Meshmakers.Octo.Sdk.Common.*` on purpose — keeping them stable meant the nine consumer repos needed
-no source changes beyond a package reference.
+The namespaces still read `Meshmakers.Octo.Sdk.Common.*` on purpose: they stay stable so that consumer
+repositories need no source change beyond a package reference.
 
 ### Projects
 
 | Project | Package | What it is |
 |---|---|---|
-| `src/Sdk.Pipeline` | `Meshmakers.Octo.Sdk.Pipeline` | The ETL pipeline + node framework. `EtlDataPipeline/` holds the orchestrator, the path-only `IDataContext`, the node base types and the built-in nodes; `Services/` holds the execution contracts (`ExecutePipelineOptions`, `PipelineRegistration`, `VerifiedPrincipal`, the registry and polling services). |
+| `src/Sdk.Pipeline` | `Meshmakers.Octo.Sdk.Pipeline` | The ETL pipeline and node framework: `EtlDataPipeline/` (orchestrator, nodes) and `Services/` (execution contracts). |
 | `src/Sdk.Adapters` | `Meshmakers.Octo.Sdk.Adapters` | The adapter host: `AdapterBuilder`, startup/shutdown, the controller hub callback, health and metrics. |
 | `src/Sdk.CommunicationAdapter` | `Meshmakers.Octo.Sdk.CommunicationAdapter` | The `System.Sdk` CK model and the adapter contracts that go with it. |
 | `src/Sdk.Common.Web` | `Meshmakers.Octo.Sdk.Common.Web` | ASP.NET Core hosting for sockets and plugs. |
 | `src/Sdk.SimulationNodes` | `Meshmakers.Octo.Sdk.SimulationNodes` | Simulation pipeline nodes and their generators. |
-| `src/Sdk.Plug.Simulation` | *(executable)* | The plug-simulation service; publishes its own Helm chart (AB#4948). |
+| `src/Sdk.Plug.Simulation` | *(executable)* | The plug-simulation service; publishes its own Helm chart. |
 
 `samples/` holds `Sdk.Plugs.Sample` and `Sdk.Socket.WebSample`; neither is packaged.
 
@@ -33,14 +32,14 @@ no source changes beyond a package reference.
 | When you change | Read first |
 |---|---|
 | `src/Sdk.Adapters/AdapterOptions.cs`, `src/Sdk.Adapters/AdapterAccessToken*.cs`, `src/Sdk.Adapters/ConfigureAdapterAuthenticatorOptions.cs`, `src/charts/**` | `docs/adapter-hub-authentication.md` |
-| `src/Sdk.Adapters/AdapterHub*.cs`, `src/Sdk.Adapters/AdapterExecutionService.cs`, `src/Sdk.Adapters/HostedAdapterExecutionService.cs`, `src/Sdk.Adapters/AdapterBuilder.cs` | `docs/adapter-hub-registration.md` |
+| `src/Sdk.Adapters/{AdapterHub*,AdapterExecutionService,HostedAdapterExecutionService,AdapterBuilder}.cs` | `docs/adapter-hub-registration.md` |
 | `src/Sdk.Adapters/AdapterPool*.cs`, `src/Sdk.Adapters/IAdapterLease*.cs`, `src/Sdk.Adapters/AdapterNodeDescriptorProjection.cs` | `docs/adapter-pool-membership.md` |
-| `src/Sdk.Pipeline/Services/ExecutePipelineOptions.cs`, `src/Sdk.Pipeline/Services/VerifiedPrincipal.cs`, `src/Sdk.Pipeline/EtlDataPipeline/Nodes/Triggers/From*Node.cs`, `src/Sdk.Pipeline/EtlDataPipeline/Nodes/Loads/ToPipelineDataEventNode.cs` | `docs/execution-identity.md` |
+| `src/Sdk.Pipeline/Services/{ExecutePipelineOptions,VerifiedPrincipal}.cs`, `src/Sdk.Pipeline/EtlDataPipeline/Nodes/{Triggers/From*,Loads/ToPipelineDataEvent}Node.cs` | `docs/execution-identity.md` |
 | `src/Sdk.Pipeline/EtlDataPipeline/Nodes/**`, `src/Sdk.Pipeline/EtlDataPipeline/DefaultPipelineLogger.cs` | `docs/nodes.md` |
 | `src/Sdk.Pipeline/EtlDataPipeline/**`, `tests/Sdk.Common.PipelineParityTests/**` | `docs/pipeline-data-flow.md` |
-| `src/Sdk.Adapters/AdapterPool*.cs`, `src/Sdk.Adapters/HubRegistration*.cs`, `src/Sdk.Pipeline/Services/PipelineRegistryService.cs`, `tests/Sdk.Common.Tests/Adapters/AdapterPool*` | `docs/pool-member-recovery.md` |
+| `src/Sdk.Adapters/{AdapterPool*,HubRegistration*}.cs`, `**/PipelineRegistryService.cs`, `tests/**/AdapterPool*` | `docs/pool-member-recovery.md` |
 | `src/Sdk.Pipeline/EtlDataPipeline/PipelineSecretValues.cs`, `src/Sdk.Pipeline/EtlDataPipeline/Nodes/**` | `docs/secret-values-in-pipelines.md` |
-| `src/Sdk.Pipeline/Services/*TenantScope*.cs`, `src/Sdk.Pipeline/Services/IAdapterLeaseScope.cs`, `src/Sdk.Adapters/Configure*AdapterTenantId.cs`, `tests/Sdk.Common.Tests/TenantIsolation/**` | `docs/tenant-isolation.md` |
+| `src/Sdk.Pipeline/Services/{*TenantScope*,IAdapterLeaseScope}.cs`, `src/Sdk.Adapters/Configure*AdapterTenantId.cs`, `tests/**/TenantIsolation/**` | `docs/tenant-isolation.md` |
 | `src/Sdk.Pipeline/EtlDataPipeline/Configuration/NodeExecutionClassAttribute.cs`, `src/Sdk.Pipeline/EtlDataPipeline/Nodes/Triggers/**` | `docs/trigger-execution.md` |
 | `src/Sdk.Pipeline/EtlDataPipeline/AdapterTriggerContext.cs`, `src/Sdk.Pipeline/Services/*Reporter*.cs`, `src/Sdk.Pipeline/Services/PipelineExecution*.cs` | `docs/trigger-status-reporting.md` |
 <!-- <<< end generated: routing -->
@@ -61,7 +60,7 @@ dotnet build -c Release
 Three configurations: `Debug`, `Release`, `DebugL`. **DebugL** pins every version to `999.0.0` and
 prepends `../nuget` to `RestoreSources`; every packable project has `GeneratePackageOnBuild`, so a
 build drops the `.nupkg` into `<project>/bin/DebugL/`. Outside DebugL the upstream versions come only
-from the pipeline (AB#6297): there is no release-line `OctoVersion` fallback in `Directory.Build.props`,
+from the pipeline: there is no release-line `OctoVersion` fallback in `Directory.Build.props`,
 so `dotnet build -c Release` needs `-p:OctoVersion=X.Y.Z` (or `-p:OctoNugetPrivateServer=<feed>` for
 the main line `0.1.*`) and otherwise fails fast with `OCTO0001`.
 
@@ -80,22 +79,51 @@ change did not happen:**
 
 Test projects: `Sdk.Common.Tests` (unit), `Sdk.Common.IntegrationTests`, and
 `Sdk.Common.PipelineParityTests` — the last one enforces the Newtonsoft→System.Text.Json numeric and
-scalar round-trip contract with Newtonsoft as the oracle. See `octo-construction-kit-engine/CLAUDE.md`
-for the serialization rules themselves.
+scalar round-trip contract with Newtonsoft as the oracle. The serialization rules themselves live in the
+`octo-construction-kit-engine` repository.
 
 ## Before you commit
 
-> **Important**: Keep this file up to date when the codebase changes — new nodes, new services, or a
-> change to one of the contracts written down below.
+1. `dotnet build -c DebugL` and `dotnet test -c DebugL --no-build` are green (warnings are errors).
+2. A change a consumer repository has to see is propagated with the three steps under Build & test; a green local
+   build alone does not prove the consumer builds against the new package.
+3. The matching file under `docs/` (and this file when a rule changes) is updated in the same commit: a new node, a
+   new service or a change to a contract written down there.
+4. Commit messages and pull request titles name the work item as the team convention requires; code, comments,
+   tests and docs carry no work item numbers.
 
 ## Rules
 
-- Target framework `net10.0` only; `netstandard2.0` was dropped platform-wide in Phase 3.
-- Nullable reference types are on and **warnings are errors**.
-- The pipeline definition deserializer is **YamlDotNet**: a key that is *present and null* overwrites a
-  C# property initializer, so node-configuration numbers and enums that need a default must be
-  nullable with the default resolved where they are read (the `JsonNullAsDefaultAttribute` used for
-  GlobalConfiguration settings records only covers the System.Text.Json path).
-- Helm charts under `src/charts` follow the AB#4948 lane rule: `test/*` publishes into the shared dev
-  bucket as a SemVer **prerelease**, so an unpinned `ChartVersion` keeps resolving main's newest
-  stable chart.
+These are obligations for new or changed code. Detail and the reasons are in the doc named after each rule.
+
+- Target framework `net10.0` only; nullable reference types are on and **warnings are errors**.
+- **Pipeline data** goes through `IDataContext` only: node code does not use `JToken`, `JObject` or `JArray` and does
+  not pass `JsonSerializerOptions` to an `IDataContext` method. Exception: `JsonScalar.ToClr` (the dynamic boxing
+  path) stays strict and is not given integer coercion. See `docs/pipeline-data-flow.md`.
+- **Tokens and secrets**: `CallerAccessToken` and `MethodInvocation` never reach the data root, `VerifiedPrincipal`
+  or `IEtlContext.Properties`; no credential or message body goes into a trigger status line or a log line, and
+  logged values pass `SecretRegistry.Redact` first. See `docs/execution-identity.md`,
+  `docs/trigger-status-reporting.md` and `docs/secret-values-in-pipelines.md`.
+- **Identity** is not forwarded across the message bus: `FromPipelineDataEvent` and `FromExecutePipelineCommand`
+  start their execution without `VerifiedPrincipal` and caller token, and a new trigger fed over the bus does the
+  same; the identity is established on the receiving side, never relayed. See `docs/execution-identity.md`.
+- **Tenant**: new code takes the tenant from `IEtlContext.TenantId` or `INodeContext` inside a node and from
+  `IAdapterTenantScope` around it, never from a process-wide value. `AdapterOptions.DedicatedTenantId` is only for
+  the adapter's own connection, and `AdapterOptions` gets no `TenantId` member back. A new singleton that mentions a
+  tenant goes on the allow-list of the DI sweep test with a reason. See `docs/tenant-isolation.md`.
+- **Pool member**: `AddAdapterPoolMember()` is called before `AddDataPipeline()`; `AdapterHubRegistration` is not
+  registered on a member; readiness follows the registration, never a lease; a member does not start trigger nodes.
+  See `docs/adapter-pool-membership.md` and `docs/pool-member-recovery.md`.
+- **Liveness stays independent of the hub**: `/healthz/live` evaluates no check, and the recovery services stop the
+  host by decision, never by a failing check. See `docs/adapter-hub-registration.md`.
+- **Compatibility with adapter repositories**: a member added to an interface or base class they implement or
+  subclass (`IEtlContext`, `IPipelineExecutionReporter`, `IPipelineLogger`, `INodeContext`, `TriggerContext`) is a
+  default interface member or a virtual no-op, never abstract. New fields of a wire DTO such as `NodeDescriptorDto`
+  are appended last with a default. New `DateTimeOperationDto` operations are appended and existing ordinals never
+  change; `PipelineExecutionClass` keys stay in lockstep with the CK enum of the same name.
+- **Adapter charts**: a new or changed adapter chart renders the three adapter credential keys, and
+  `test/*` branches publish charts into the shared dev bucket as a SemVer prerelease so an unpinned `ChartVersion`
+  keeps resolving the newest stable chart. See `docs/adapter-hub-authentication.md`.
+- **Pipeline definitions are read with YamlDotNet**: a key that is present and null overwrites a C# property
+  initializer, so node-configuration numbers and enums that need a default are nullable, with the default resolved
+  where they are read. `JsonNullAsDefaultAttribute` only covers the System.Text.Json path.

@@ -1,11 +1,11 @@
 ---
 description: Pool member recovery: readiness, self-heal, lease resumption, draining, two token holders.
-applies_to: src/Sdk.Adapters/AdapterPool*.cs, src/Sdk.Adapters/HubRegistration*.cs, src/Sdk.Pipeline/Services/PipelineRegistryService.cs, tests/Sdk.Common.Tests/Adapters/AdapterPool*
+applies_to: src/Sdk.Adapters/{AdapterPool*,HubRegistration*}.cs, **/PipelineRegistryService.cs, tests/**/AdapterPool*
 ---
 
-# Pool member recovery (AB#4924 AP-I5)
+# Pool member recovery
 
-The pool member's counterpart of AB#5409/AB#5415. Same policy, same configuration keys
+The pool member's counterpart of `docs/adapter-hub-registration.md`. Same policy, same configuration keys
 (`Adapter:HubReadinessProbeEnabled`, `HubReadinessGracePeriod`, `HubRegistrationRecoveryEnabled`,
 `HubRegistrationRecoveryTimeout`), different hub. The decision logic lives once in the abstract
 `HubRegistrationRecoveryService` / `HubRegistrationReadinessHealthCheck`; the dedicated and the member
@@ -28,7 +28,7 @@ classes differ only in which connection's `IsAlive` they sample.
 - **Self-heal without restart** (`AdapterPoolMemberService.TickAsync`): connection down → nothing (the
   SignalR client owns reconnecting, its callback registers); registered → heartbeat; up but not
   registered → register again instead of heartbeating into nothing.
-- 🔴 **Reconnect during a lease registers WITH the lease** (AB#5826, `AdapterPoolClient.ResumeAsync` →
+- 🔴 **Reconnect during a lease registers WITH the lease** (`AdapterPoolClient.ResumeAsync` →
   `ResumePoolMemberAsync`): the controller takes the lease over — after a controller restart it would
   otherwise not know it, after a dropped connection it holds the work back for a reconnect grace instead
   of re-queuing it — and the member's release completes the execution. Only against a controller that
@@ -36,7 +36,7 @@ classes differ only in which connection's `IsAlive` they sample.
   the lease is released, as before; that answer is latched per connection (`IsResumptionUnsupported`,
   reset by `OnNewConnection`). A plain registration would get the busy member the next lease at once,
   which it must refuse — failing that borrower's execution.
-- 🔴 **A release that could not be reported is kept** (AB#5826, `_pendingReleases`) and re-sent on the
+- 🔴 **A release that could not be reported is kept** (`_pendingReleases`) and re-sent on the
   next connect **before** the member registers, and on every tick. It used to be dropped ("the
   controller will expire it on TTL"), which lost the work item's result. The release now names
   `ExecutionId`, `TenantId` and `MemberId`, so a controller that no longer holds the lease can attribute
@@ -53,10 +53,10 @@ classes differ only in which connection's `IsAlive` they sample.
 
 Tests: `Sdk.Common.Tests/Adapters/AdapterPoolMemberRecoveryTests`.
 
-## A draining member ends as a process (AB#5864)
+## A draining member ends as a process
 
 The drain contract always said "finish what you hold, take nothing new, **exit**", and no member ever
-exited: on test-2-dev a failed leave drained the only member of a pool, which then stayed `1/1 Ready`,
+exited: on a test cluster a failed leave drained the only member of a pool, which then stayed `1/1 Ready`,
 refused every lease the controller kept granting it, and the pool was dead until the pod was deleted.
 
 - **A failed leave keeps the work item's outcome.** It is a fact about the process, not the pipeline:
@@ -75,10 +75,9 @@ refused every lease the controller kept granting it, and the pool was dead until
 
 Tests: `Sdk.Common.Tests/Adapters/AdapterPoolMemberDrainTests`.
 
-## A pool member never starts trigger nodes (AB#5863 / AB#5828)
+## A pool member never starts trigger nodes
 
-On a member the lease **is** the trigger: the controller turns cron ticks (`LeaseTriggerMessage`,
-AB#5278) and execute calls into queued work, and the member runs it through `IAdapterLeaseWorkItem`.
+On a member the lease **is** the trigger: the controller turns cron ticks (`LeaseTriggerMessage`) and execute calls into queued work, and the member runs it through `IAdapterLeaseWorkItem`.
 `PipelineRegistryService` therefore registers a pipeline **without** calling
 `StartTriggerPipelineNodesAsync` when `IAdapterTenantScope.IsPoolMember` is true (resolved lazily,
 leniently — a composition without a scope keeps the dedicated behaviour). The registration itself
@@ -86,12 +85,12 @@ stays: the work item resolves it to run the pipeline, and `PipelineRegistryLease
 on leave.
 
 Why: a started `FromPipelineTriggerEvent@1` declared and bound the borrower's durable trigger queue
-on a bus the member never starts and left it behind on release (AB#5828); its stop then waited for
-the never-reached endpoint ready state (AB#4968 pattern) until `TriggerStopTimeout` (30 s), the leave
-failed and the member drained on **every** leased run of the canonical cron form (AB#5863). Tests:
+on a bus the member never starts and left it behind on release; its stop then waited for
+the never-reached endpoint ready state until `TriggerStopTimeout` (30 s), the leave
+failed and the member drained on **every** leased run of the canonical cron form. Tests:
 `PipelineRegistryServiceTests.PoolMember_*` / `DedicatedAdapter_RegisterPipelineAsync_StillStartsTriggerNodes`.
 
-## Two identities, two token holders (AB#5865)
+## Two identities, two token holders
 
 A pool member presents **its own** identity (the lending pool's tenant, from `Adapter:ClientId` +
 `AdapterPool:AdapterPoolTenantId`) on the `/adapterPoolHub` management connection, and the
@@ -105,6 +104,6 @@ A pool member presents **its own** identity (the lending pool's tenant, from `Ad
 Why: SignalR's `AccessTokenProvider` reads the client's holder on every (re)connect. With one shared
 holder a pool hub connection rebuilt during a lease (controller restart) was authenticated as the
 borrower, and the deferred re-registration went out on it — refused under
-`AdapterPoolHubAuthorization:Mode=Enforce` (test-2-dev 2026-10-07). It also let the own-credential
+`AdapterPoolHubAuthorization:Mode=Enforce`. It also let the own-credential
 refresh overwrite a borrower token mid-lease, and a lease leave wipe the member's own token. A
 dedicated adapter is unchanged (one identity, process-wide holder). Tests: `AdapterPoolHubIdentityTests`.

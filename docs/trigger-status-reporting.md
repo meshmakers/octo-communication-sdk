@@ -3,7 +3,7 @@ description: Trigger status line, start-of-execution report and failure kind of 
 applies_to: src/Sdk.Pipeline/EtlDataPipeline/AdapterTriggerContext.cs, src/Sdk.Pipeline/Services/*Reporter*.cs, src/Sdk.Pipeline/Services/PipelineExecution*.cs
 ---
 
-# The trigger → pipeline status line (AB#5385)
+# The trigger → pipeline status line
 
 `ITriggerContext.ReportStatusAsync(message, isError, ct)` is how a trigger node tells the operator
 what its last poll did. The line travels `AdapterTriggerContext` → `IPipelineExecutionReporter.
@@ -33,14 +33,14 @@ Senders keep the line short (the controller truncates at 1000 characters) and ne
 or message bodies in it. Tests: `AdapterPipelineExecutionReporterTests` (DTO, never-throw, rate
 limit) and `AdapterTriggerContextTests` (forwarding, no-reporter no-op).
 
-## The start is reported before the context exists (AB#5493)
+## The start is reported before the context exists
 
 `AdapterTriggerContext.StartExecutePipelineAsync` generates the execution id, captures the start
 time and calls `IPipelineExecutionReporter.ReportExecutionStartAsync` **before**
 `IContextCreatorService.CreateEtlContext`. Context creation (and the debugger setup behind it) is
 wrapped in a try/catch that logs at Error with the tenant id, reports
 `ReportExecutionEndAsync(Failed, ex.Message)` under the same id and rethrows. It used to be the
-other way round, and a context creation that throws (prod-1: the mesh adapter's
+other way round, and a context creation that throws (a production adapter: the mesh adapter's
 `FindTenantRepositoryAsync` failing with "System tenant database does not exist" on every cron
 tick for four days) never reached the reporter — no execution on the controller, frozen
 `PipelineStatistics`, `octo.pipeline.execution.failures` at zero, no alert. No double report:
@@ -50,7 +50,7 @@ existing end path. The mesh adapter's hand-maintained copy carries the same orde
 step. Tests: `AdapterTriggerContextTests` (`StartExecutePipelineAsync_WhenContextCreationFails_*`,
 `StartExecutePipelineAsync_ReportsTheStartBeforeTheContextIsCreated`).
 
-## Failure kind of a failed execution (AB#8037)
+## Failure kind of a failed execution
 
 A failed execution reports **what it means for its writes** next to `PipelineExecutionStatus.Failed`:
 the new seven-parameter overload `IPipelineExecutionReporter.ReportExecutionEndAsync(..., outputData, failureKind)` fills

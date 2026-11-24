@@ -1,11 +1,11 @@
 ---
 description: Adapter hub registration as the only reachable signal: readiness, recovery service, registration retry.
-applies_to: src/Sdk.Adapters/AdapterHub*.cs, src/Sdk.Adapters/AdapterExecutionService.cs, src/Sdk.Adapters/HostedAdapterExecutionService.cs, src/Sdk.Adapters/AdapterBuilder.cs
+applies_to: src/Sdk.Adapters/{AdapterHub*,AdapterExecutionService,HostedAdapterExecutionService,AdapterBuilder}.cs
 ---
 
-# Adapter hub registration is the only "reachable" signal (AB#5409)
+# Adapter hub registration is the only "reachable" signal
 
-> **0.2 lane: two branches, one policy.** `AdapterHubRecoveryService` and the `ready`-tagged
+> **Two branches, one policy.** `AdapterHubRecoveryService` and the `ready`-tagged
 > `AdapterHubReadinessHealthCheck` are wired in the `else` (dedicated) branch of the pool-member switch
 > in `AdapterBuilder`/`WebAdapterBuilder`; a pool member gets their pool-hub counterparts instead (see
 > "Pool member recovery" below). 🔴 Never register `AdapterHubRegistration` on a member — it has no
@@ -15,7 +15,7 @@ A live SignalR connection is **not** the same as a usable adapter. Registration 
 `adapterHub` is a hub invoke of its own, and it can fail while the connection is up. When it does,
 the adapter is *deaf*: RabbitMQ data events and in-process triggers keep running, so pipelines it
 already knows about still execute, but everything the controller has to **push** — configuration
-updates, `DeployDataFlow`, HTTP-activator calls — goes nowhere. On prod-1 five of seven tenant
+updates, `DeployDataFlow`, HTTP-activator calls — goes nowhere. In production five of seven tenant
 adapters sat like that for eleven hours behind `1/1 Running`, `/healthz/live` 200, `/healthz/ready`
 200 and an adapter entity reading `DEPLOYED / RUNNING`. The only thing that said so out loud was a
 deploy answering `has no live SignalR connection`.
@@ -30,7 +30,7 @@ signal — a singleton written by `AdapterExecutionService` on every (re)registr
   `Adapter:HubReadinessProbeEnabled` turns the gating off entirely. The adapter chart pairs it with a
   generous `failureThreshold: 12` (2 min).
 - **`AdapterHubRecoveryService`** — stops the host after `Adapter:HubRegistrationRecoveryTimeout`
-  (15 min) without a registration, so the container restarts and re-registers. On prod-1 a restart
+  (15 min) without a registration, so the container restarts and re-registers. In production a restart
   repaired every deaf adapter with no configuration change; this automates exactly that.
 
 🔴 **The readiness probe cannot do the restart.** Kubernetes restarts a container for **liveness**
@@ -44,8 +44,8 @@ recovery service rather than a re-pointed liveness probe.
 enabled or a controller that was never deployed — restarting that in a loop repairs nothing and hides
 the cause. That guard is what makes the automatic restart safe to default to on.
 
-🔴 **`AdapterHubRecoveryService` stops the host by decision only, never by a failing check**
-(AB#5473). An exception that escapes a `BackgroundService` stops the host too, so the service that
+🔴 **`AdapterHubRecoveryService` stops the host by decision only, never by a failing check**.
+An exception that escapes a `BackgroundService` stops the host too, so the service that
 exists to restart an adapter after 15 minutes would restart it on the tick a check throws. Its timer
 is independent of everything else, which means it also samples the hub client while a tenant update
 (`PreUpdateTenantAsync`: stop, wait 5 s, start) has it stopped. `ISignalRClient.IsAlive` used to throw
@@ -62,7 +62,7 @@ for.
 
 `AdapterExecutionService.RegisterAtHubAsync` retries the register invoke `RegistrationMaxAttempts`
 (3) times with a linear back-off (`RegistrationRetryBaseDelay`, 2 s × attempt), then rethrows so the
-SignalR (re)connect loop keeps its own retry (AB#4805 — swallowing it made the loop treat a failed
+SignalR (re)connect loop keeps its own retry (swallowing it made the loop treat a failed
 registration as success and exit). The observed failure is
 `InvokeCoreAsync cannot be called if the connection is not active`: the register invoke races the
 connection state right after `HubConnection.StartAsync` returned. On a fresh start the start loop's
@@ -76,7 +76,7 @@ back-off, by which time the connection has either finished connecting or is gone
 
 Failed attempts log at **Error**, not Warn, on purpose: the adapter log carries WARN-level
 `[Audit:DataPermissions.ReadViolation]` noise by the dozen per pipeline run and rotates the startup
-log away within the hour, which is why this was missed twice (AB#5409 item 3, a different layer).
+log away within the hour, which is why this was missed twice.
 
 Tests: `Sdk.Common.Tests/Adapters/AdapterExecutionServiceTests` (a reconnect whose first registration
 throws ends registered; all attempts failing marks not-registered and rethrows) and
@@ -84,7 +84,7 @@ throws ends registered; all attempts failing marks not-registered and rethrows) 
 never-registered guard, and a connection state that cannot be read: it counts as an outage, the
 service keeps sampling and restarts only after the timeout).
 
-## Registered, connected — and still deaf (AB#5827)
+## Registered, connected — and still deaf
 
 A registration can succeed and still be lost on the controller: a tenant pre/post-update racing it
 left the adapter in an orphaned cache instance (fixed controller-side). The adapter cannot detect
