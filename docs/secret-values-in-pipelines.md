@@ -1,3 +1,8 @@
+---
+description: How Secret-type CK attributes reach the pipeline data context as an isSet marker and which nodes guard against them.
+applies_to: src/Sdk.Pipeline/EtlDataPipeline/PipelineSecretValues.cs, src/Sdk.Pipeline/EtlDataPipeline/Nodes/**
+---
+
 # Secret values in the pipeline
 
 AB#5538, concept AB#5528 (`octo-construction-kit-engine/docs/concept-secret-attribute-type.md`).
