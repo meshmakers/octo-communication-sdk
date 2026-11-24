@@ -145,6 +145,28 @@ public sealed class AdapterBuilderExitCodeTests : IDisposable
             line.Contains(FailingBackgroundService.Reason, StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void ABackgroundServiceThatCancelsItselfBeforeAShutdownEndsTheProcessWithANonZeroExitCode()
+    {
+        CreateAdapterBuilder().Run([],
+            (_, services) =>
+            {
+                RegisterMinimalAdapter(services);
+                services.AddHostedService<SelfCancellingBackgroundService>();
+            });
+
+        Assert.Equal(AdapterHostRunGuard.FailureExitCode, _terminatedWithExitCode);
+    }
+
+    private sealed class SelfCancellingBackgroundService : BackgroundService
+    {
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(200), stoppingToken);
+            throw new TaskCanceledException("upstream request timed out");
+        }
+    }
+
     private sealed class FailingBackgroundService : BackgroundService
     {
         public const string Reason = "lease loop failed";
