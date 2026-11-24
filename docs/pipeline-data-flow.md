@@ -1,5 +1,5 @@
 ---
-description: How pipeline data is read and written: IDataContext, STJ only, integer coercion, multi-match path settings.
+description: "How pipeline data is read and written: IDataContext, STJ only, integer coercion, multi-match path settings."
 applies_to: src/Sdk.Pipeline/EtlDataPipeline/**, tests/Sdk.Common.PipelineParityTests/**
 ---
 

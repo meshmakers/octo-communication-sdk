@@ -1,5 +1,5 @@
 ---
-description: Pool member recovery: readiness, self-heal, lease resumption, draining, two token holders.
+description: "Pool member recovery: readiness, self-heal, lease resumption, draining, two token holders."
 applies_to: src/Sdk.Adapters/{AdapterPool*,HubRegistration*}.cs, **/PipelineRegistryService.cs, tests/**/AdapterPool*
 ---
 

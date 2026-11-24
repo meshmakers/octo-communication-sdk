@@ -1,5 +1,5 @@
 ---
-description: Adapter pool member: lease scope, lease client ordering, participants and the node descriptors it registers.
+description: "Adapter pool member: lease scope, lease client ordering, participants and the node descriptors it registers."
 applies_to: src/Sdk.Adapters/AdapterPool*.cs, src/Sdk.Adapters/IAdapterLease*.cs, src/Sdk.Adapters/AdapterNodeDescriptorProjection.cs
 ---
 

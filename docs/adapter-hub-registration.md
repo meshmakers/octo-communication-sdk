@@ -1,5 +1,5 @@
 ---
-description: Adapter hub registration as the only reachable signal: readiness, recovery service, registration retry.
+description: "Adapter hub registration as the only reachable signal: readiness, recovery service, registration retry."
 applies_to: src/Sdk.Adapters/{AdapterHub*,AdapterExecutionService,HostedAdapterExecutionService,AdapterBuilder}.cs
 ---
 

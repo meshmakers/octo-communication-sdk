@@ -1,5 +1,5 @@
 ---
-description: Tenant scope of an execution: IAdapterTenantScope, AdapterOptions.DedicatedTenantId and the orchestrator requirement.
+description: "Tenant scope of an execution: IAdapterTenantScope, AdapterOptions.DedicatedTenantId and the orchestrator requirement."
 applies_to: src/Sdk.Pipeline/Services/{*TenantScope*,IAdapterLeaseScope}.cs, src/Sdk.Adapters/Configure*AdapterTenantId.cs, tests/**/TenantIsolation/**
 ---
 
