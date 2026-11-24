@@ -24,6 +24,8 @@ public class WebAdapterBuilder
 {
     private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
 
+    internal Action<int> TerminateProcess { get; init; } = Environment.Exit;
+
     /// <summary>
     ///     Executes the startup of a socket.
     /// </summary>
@@ -35,34 +37,41 @@ public class WebAdapterBuilder
         Action<WebApplication> configureApp,
         Action<IDistributionEventHubConfiguration>? configureDistributionEventHub = null)
     {
+        IHostApplicationLifetime? applicationLifetime = null;
+        int exitCode;
         try
         {
-            Logger.Info("Octo Adapter, Version {ProductVersion}",
-                AssemblyMetadataReader.GetProductVersion());
-            Logger.Info("{Copyright}", AssemblyMetadataReader.GetCopyright());
-
-            var builder = CreateHostBuilder(args, configureServicesDelegate, configureDistributionEventHub);
-            var app = builder.Build();
-
-            var schemaOutputPath = GetSchemaOutputPath(args);
-            if (schemaOutputPath != null)
+            exitCode = await AdapterHostRunGuard.RunAsync(async () =>
             {
-                GeneratePipelineSchema(app.Services, schemaOutputPath);
-                return;
-            }
+                Logger.Info("Octo Adapter, Version {ProductVersion}",
+                    AssemblyMetadataReader.GetProductVersion());
+                Logger.Info("{Copyright}", AssemblyMetadataReader.GetCopyright());
 
-            configureApp(app);
+                var builder = CreateHostBuilder(args, configureServicesDelegate, configureDistributionEventHub);
+                var app = builder.Build();
+                applicationLifetime = app.Lifetime;
 
-            await app.RunAsync();
-        }
-        catch (Exception ex)
-        {
-            Logger.Error(ex, "Stopped socket because of exception");
+                var schemaOutputPath = GetSchemaOutputPath(args);
+                if (schemaOutputPath != null)
+                {
+                    GeneratePipelineSchema(app.Services, schemaOutputPath);
+                    return;
+                }
+
+                configureApp(app);
+
+                await app.RunAsync();
+            }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
         }
         finally
         {
             // Ensure to flush and stop internal timers/threads before application-exit (Avoid segmentation fault on Linux)
             LogManager.Shutdown();
+        }
+
+        if (exitCode != 0)
+        {
+            TerminateProcess(exitCode);
         }
     }
 

@@ -27,6 +27,8 @@ public class AdapterBuilder
 {
     private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
 
+    internal Action<int> TerminateProcess { get; init; } = Environment.Exit;
+
     /// <summary>
     ///     Executes the startup of an adapter.
     /// </summary>
@@ -51,31 +53,38 @@ public class AdapterBuilder
         Action<HostBuilderContext, IServiceCollection> configureServices,
         Action<IDistributionEventHubConfiguration>? configureDistributionEventHub = null)
     {
+        IHostApplicationLifetime? applicationLifetime = null;
+        int exitCode;
         try
         {
-            Logger.Info($"Octo Mesh Adapter, Version {AssemblyMetadataReader.GetProductVersion()}");
-            Logger.Info(AssemblyMetadataReader.GetCopyright());
-
-            var host = CreateHostBuilder(args, configureConfiguration, configureServices,
-                configureDistributionEventHub).Build();
-
-            var schemaOutputPath = GetSchemaOutputPath(args);
-            if (schemaOutputPath != null)
+            exitCode = AdapterHostRunGuard.Run(() =>
             {
-                GeneratePipelineSchema(host, schemaOutputPath);
-                return;
-            }
+                Logger.Info($"Octo Mesh Adapter, Version {AssemblyMetadataReader.GetProductVersion()}");
+                Logger.Info(AssemblyMetadataReader.GetCopyright());
 
-            host.Run();
-        }
-        catch (Exception ex)
-        {
-            Logger.Error(ex, "Stopped adapter because of exception");
+                var host = CreateHostBuilder(args, configureConfiguration, configureServices,
+                    configureDistributionEventHub).Build();
+                applicationLifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+
+                var schemaOutputPath = GetSchemaOutputPath(args);
+                if (schemaOutputPath != null)
+                {
+                    GeneratePipelineSchema(host, schemaOutputPath);
+                    return;
+                }
+
+                host.Run();
+            }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
         }
         finally
         {
             // Ensure to flush and stop internal timers/threads before application-exit (Avoid segmentation fault on Linux)
             LogManager.Shutdown();
+        }
+
+        if (exitCode != 0)
+        {
+            TerminateProcess(exitCode);
         }
     }
 
