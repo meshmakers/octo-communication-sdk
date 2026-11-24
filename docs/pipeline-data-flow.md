@@ -52,7 +52,8 @@ accepts four shapes, and a pipeline author picks whichever the upstream data has
 | absent / null / object / no match | `$.nope` | **`null`** — not an empty sequence |
 
 The node turns that `null` into its own error, so a message like *"No RtIds found at path …"* means
-the path matched nothing — not that the path form is unsupported.
+the path matched nothing, **or** matched a `null` or an object (all three give `null`, see the last row) — not that
+the path form is unsupported. Check what the path actually points at before concluding it matched nothing.
 
 🔴 The multi-match row is the one that was missing. A single-value read resolves a path with
 `JsonPathWalker.Select(...).FirstOrDefault()`, so before multi-match support a wildcard path silently returned

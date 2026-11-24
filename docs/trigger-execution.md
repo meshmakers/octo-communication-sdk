@@ -25,7 +25,7 @@ not a marker.
 - 🔴 **Append new descriptor fields last, with a default.** `NodeDescriptorDto` is the wire contract between an adapter and the controller; a trailing defaulted parameter is what lets an older adapter's payload still deserialize on a newer controller.
 - The enum values are the keys of the `PipelineExecutionClass` CK enum in `System.Communication` and must stay in lockstep — they are persisted on every pipeline entity. They are ordered so ascending value equals scheduling order.
 - Absent means `Batch`, the conservative answer: a trigger nobody classified must never jump a queue.
-- The schema extension `x-executionClass` is emitted for **every trigger**, including the default — unlike `x-requiresRunningProcess`, which is emitted only when true. An editor showing the class only for nodes that opted in could not distinguish "classified Batch" from "not classified", which is the question the extension exists to answer. Non-triggers get nothing.
+- The schema extension `x-executionClass` is emitted for **every trigger**, including the default — unlike `x-requiresRunningProcess`, which is emitted only when true. It carries the **effective** class, so an editor can show where a job will sit in a pool queue for every trigger. It does not carry provenance: an explicitly classified `Batch` trigger and an unclassified one both emit `Batch`, so the extension alone cannot tell them apart. Non-triggers get nothing.
 - A trigger that serves a waiting caller declares `Interactive`; every other trigger relies on the default.
   Examples: `FromHttpRequest@1` and `@2` (both in `octo-mesh-adapter`), `FromExecutePipelineCommand@1`.
 

@@ -18,7 +18,8 @@ turns every such read into a compile error — which is the only mechanism that 
 
 | Use | Read this |
 |---|---|
-| Connection-level: the adapter's own hub route, its own credential, its own unregister-on-shutdown | `AdapterOptions.DedicatedTenantId` |
+| Connection-level, dedicated adapter: the adapter's own hub route, its own credential, its own unregister-on-shutdown | `AdapterOptions.DedicatedTenantId` |
+| Connection-level credential, pool member: the lending tenant (`DedicatedTenantId` stays null on a member) | `AdapterPoolMemberOptions.AdapterPoolTenantId` |
 | Inside a node | `IEtlContext.TenantId` / `INodeContext` — unchanged, the node layer was always explicit |
 | Services around the node layer (HTTP routing, token acquisition, caches) | `IAdapterTenantScope` |
 
@@ -35,7 +36,7 @@ tenant on every execution; leasing changes only the value, never this site.
 ⚠️ **`OCTO_ADAPTER__TENANTID` stays bound** by `ConfigureLegacyAdapterTenantId`, with a deprecation warning
 naming the adapter, for as long as any adapter chart still sets that key. The options binder ignores a key
 with no matching property **silently**, so without the shim such an adapter would fall back to the
-`"meshTest"` default and connect on the wrong tenant route, reporting nothing at startup. Remove the shim only
+built-in default tenant and connect on the wrong tenant route, reporting nothing at startup. Remove the shim only
 after every adapter chart sets the new key. The new key is `OCTO_ADAPTER__DEDICATEDTENANTID` and wins when both are set.
 
 **Tests** (`tests/Sdk.Common.Tests/TenantIsolation/`): the reflection guard that

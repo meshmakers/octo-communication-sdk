@@ -57,8 +57,10 @@ or a native list from a fixed configuration `Value`), and array `ReturnType`s ma
 `List<T>` and lazy LINQ enumerables alike. Previously array arguments were declared `object` and
 arrived as a boxed `JsonElement`, so `foreach` over them failed to compile — pipeline scripts written
 against that era cast the argument via `((JsonElement)arg).EnumerateArray()`; such scripts must be
-made version-tolerant (check `arg is JsonElement` and fall back to the typed array) while pre-fix
-adapter images are still deployed. Null/absent arguments still coalesce to the type's default
+made version-tolerant while pre-fix adapter images are still deployed: assign the argument to an
+`object` first (`object value = arg;`), then test `value is JsonElement` and fall back to the typed array.
+On a new image `arg` has a static array type, so neither a direct `(JsonElement)arg` cast nor an
+`arg is JsonElement` pattern compiles; going through `object` compiles on both image generations. Null/absent arguments still coalesce to the type's default
 (`null` for arrays).
 
 ### A JSON type that does not match the declared `dataType`
@@ -79,8 +81,9 @@ kind — a silent null would be worse than the throw.
 
 🔴 Two things are deliberate. The coercion sits in the **node**, not in `SystemTextJsonOptions.
 Default` — that bundle is shared by the whole engine and every adapter, and a string converter
-there would change behaviour far outside this node. And **`DateTime` stays strict**: STJ already
-reads every ISO 8601 string, and whatever it rejects (`"01.02.2026"`, a bare Unix number) is
+there would change behaviour far outside this node. And **`DateTime` stays strict**: STJ reads only
+its ISO 8601-1:2019 *extended* profile (e.g. `2026-07-15T12:00:00Z`; the basic form `20260715T120000Z` is
+rejected, so pipeline authors must not rely on it), and whatever it rejects (`"01.02.2026"`, a bare Unix number) is
 ambiguous; `DateTime.Parse` under the invariant culture would guess a month/day order rather than
 fail. Note that numeric strings into `Double`/`Int` already parsed before that fallback —
 `SystemTextJsonOptions.Default` inherits `NumberHandling.AllowReadingFromString` from the CK

@@ -25,7 +25,7 @@ variable.
 configuration is complete, and logs one warning if something had configured it.
 
 It exists because "it is null on a pool member" was a claim three call sites in two repositories rely
-on and that nothing made true: `AdapterOptions`' constructor sets `"meshTest"`, and the local
+on and that nothing made true: `AdapterOptions`' constructor sets a built-in default tenant, and the local
 runbook instructed the operator to set the key to the **lending** tenant. The reads are
 `AdapterExecutionService.CkModelChangedAsync`, `HttpRequestService` (route prefix and authorization)
 and — the one that costs something — `ServiceAccountTokenService.ResolveTenantId` in
