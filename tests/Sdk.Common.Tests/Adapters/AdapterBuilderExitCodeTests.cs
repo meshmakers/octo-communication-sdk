@@ -4,52 +4,73 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using NLog;
+using NLog.Config;
+using NLog.Targets;
 
 namespace Sdk.Common.Tests.Adapters;
 
 /// <summary>
-///     The process exit code and the global NLog configuration are shared by the whole test run,
-///     so these tests run alone.
+///     The builder shuts down the global NLog configuration, so these tests run alone.
 /// </summary>
-[CollectionDefinition(nameof(ProcessExitCodeCollection), DisableParallelization = true)]
-public sealed class ProcessExitCodeCollection;
+[CollectionDefinition(nameof(AdapterBuilderProcessCollection), DisableParallelization = true)]
+public sealed class AdapterBuilderProcessCollection;
 
 /// <summary>
 ///     The builder ends the process with a non-zero exit code when its host cannot be built or started,
 ///     so Kubernetes reports a crash instead of a clean exit.
 /// </summary>
-[Collection(nameof(ProcessExitCodeCollection))]
+[Collection(nameof(AdapterBuilderProcessCollection))]
 public sealed class AdapterBuilderExitCodeTests : IDisposable
 {
-    private readonly int _exitCodeBefore = Environment.ExitCode;
+    private const string StartupFailureReason = "datastore host mongo-unresolvable does not resolve";
+
     private readonly string _workDirectory =
         Path.Combine(Path.GetTempPath(), "adapter-builder-exit-code-" + Guid.NewGuid().ToString("N"));
+
+    private int? _terminatedWithExitCode;
 
     public AdapterBuilderExitCodeTests()
     {
         Directory.CreateDirectory(_workDirectory);
-        Environment.ExitCode = 0;
     }
 
     public void Dispose()
     {
-        Environment.ExitCode = _exitCodeBefore;
         Directory.Delete(_workDirectory, recursive: true);
     }
 
-    [Fact]
-    public void AConfigurationThatDoesNotBindEndsTheProcessWithANonZeroExitCode()
-    {
-        var adapterBuilder = new AdapterBuilder();
+    private AdapterBuilder CreateAdapterBuilder() =>
+        new() { TerminateProcess = exitCode => _terminatedWithExitCode = exitCode };
 
-        adapterBuilder.Run([],
+    private static void RegisterMinimalAdapter(IServiceCollection services)
+    {
+        services.AddDataPipeline().RegisterEtlContext<IEtlContext>();
+        services.AddSingleton(A.Fake<IAdapterService>());
+    }
+
+    [Fact]
+    public void AConfigurationThatDoesNotBindEndsTheProcessWithANonZeroExitCodeAndNamesTheReason()
+    {
+        var memoryTarget = new MemoryTarget("memory") { Layout = "${level:uppercase=true}|${message}" };
+        var loggingConfiguration = new LoggingConfiguration();
+        loggingConfiguration.AddRuleForAllLevels(memoryTarget);
+        LogManager.Configuration = loggingConfiguration;
+
+        CreateAdapterBuilder().Run([],
             configuration => configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 [$"{AdapterPoolMemberOptions.SectionName}:AdapterPoolTenantId"] = "accounting"
             }),
             (_, _) => { });
 
-        Assert.Equal(AdapterHostRunGuard.FailureExitCode, Environment.ExitCode);
+        Assert.Equal(AdapterHostRunGuard.FailureExitCode, _terminatedWithExitCode);
+        var errorLines = memoryTarget.Logs
+            .Where(line => line.StartsWith("ERROR|", StringComparison.Ordinal))
+            .ToList();
+        var errorLine = Assert.Single(errorLines);
+        Assert.Contains(typeof(AdapterException).FullName!, errorLine, StringComparison.Ordinal);
+        Assert.Contains("AdapterPoolRtId", errorLine, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -68,43 +89,39 @@ public sealed class AdapterBuilderExitCodeTests : IDisposable
                </rules>
              </nlog>
              """);
-        var adapterBuilder = new AdapterBuilder();
 
-        adapterBuilder.Run([],
+        CreateAdapterBuilder().Run([],
             configuration => configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Adapter:NlogConfigPath"] = nlogConfigPath
             }),
             (_, services) =>
             {
-                services.AddDataPipeline().RegisterEtlContext<IEtlContext>();
-                services.AddSingleton(A.Fake<IAdapterService>());
-                services.AddHostedService<FailingStartupService>();
+                RegisterMinimalAdapter(services);
+                services.AddSingleton<IHostedService>(_ =>
+                    throw new InvalidOperationException(StartupFailureReason));
             });
 
-        Assert.Equal(AdapterHostRunGuard.FailureExitCode, Environment.ExitCode);
+        Assert.Equal(AdapterHostRunGuard.FailureExitCode, _terminatedWithExitCode);
         var errorLinesNamingTheReason = File.ReadAllLines(logFilePath)
             .Where(line => line.StartsWith("ERROR|", StringComparison.Ordinal))
-            .Where(line => line.Contains(FailingStartupService.Reason, StringComparison.Ordinal))
+            .Where(line => line.Contains(StartupFailureReason, StringComparison.Ordinal))
             .ToList();
         var errorLine = Assert.Single(errorLinesNamingTheReason);
         Assert.Contains(typeof(InvalidOperationException).FullName!, errorLine, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void AHostThatStopsOnRequestEndsTheProcessWithZero()
+    public void AHostThatStopsOnRequestDoesNotTerminateTheProcess()
     {
-        var adapterBuilder = new AdapterBuilder();
-
-        adapterBuilder.Run([],
+        CreateAdapterBuilder().Run([],
             (_, services) =>
             {
-                services.AddDataPipeline().RegisterEtlContext<IEtlContext>();
-                services.AddSingleton(A.Fake<IAdapterService>());
+                RegisterMinimalAdapter(services);
                 services.AddHostedService<StopOnStartService>();
             });
 
-        Assert.Equal(0, Environment.ExitCode);
+        Assert.Null(_terminatedWithExitCode);
     }
 
     private sealed class StopOnStartService(IHostApplicationLifetime applicationLifetime) : IHostedService
@@ -114,16 +131,6 @@ public sealed class AdapterBuilderExitCodeTests : IDisposable
             applicationLifetime.StopApplication();
             return Task.CompletedTask;
         }
-
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-    }
-
-    private sealed class FailingStartupService : IHostedService
-    {
-        public const string Reason = "datastore host mongo-unresolvable does not resolve";
-
-        public Task StartAsync(CancellationToken cancellationToken) =>
-            throw new InvalidOperationException(Reason);
 
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }

@@ -24,6 +24,8 @@ public class WebAdapterBuilder
 {
     private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
 
+    internal Action<int> TerminateProcess { get; init; } = Environment.Exit;
+
     /// <summary>
     ///     Executes the startup of a socket.
     /// </summary>
@@ -36,9 +38,10 @@ public class WebAdapterBuilder
         Action<IDistributionEventHubConfiguration>? configureDistributionEventHub = null)
     {
         IHostApplicationLifetime? applicationLifetime = null;
+        int exitCode;
         try
         {
-            var exitCode = await AdapterHostRunGuard.RunAsync(async () =>
+            exitCode = await AdapterHostRunGuard.RunAsync(async () =>
             {
                 Logger.Info("Octo Adapter, Version {ProductVersion}",
                     AssemblyMetadataReader.GetProductVersion());
@@ -59,16 +62,16 @@ public class WebAdapterBuilder
 
                 await app.RunAsync();
             }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
-
-            if (exitCode != 0)
-            {
-                Environment.ExitCode = exitCode;
-            }
         }
         finally
         {
             // Ensure to flush and stop internal timers/threads before application-exit (Avoid segmentation fault on Linux)
             LogManager.Shutdown();
+        }
+
+        if (exitCode != 0)
+        {
+            TerminateProcess(exitCode);
         }
     }
 

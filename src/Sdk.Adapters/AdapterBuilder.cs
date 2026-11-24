@@ -27,6 +27,8 @@ public class AdapterBuilder
 {
     private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
 
+    internal Action<int> TerminateProcess { get; init; } = Environment.Exit;
+
     /// <summary>
     ///     Executes the startup of an adapter.
     /// </summary>
@@ -52,9 +54,10 @@ public class AdapterBuilder
         Action<IDistributionEventHubConfiguration>? configureDistributionEventHub = null)
     {
         IHostApplicationLifetime? applicationLifetime = null;
+        int exitCode;
         try
         {
-            var exitCode = AdapterHostRunGuard.Run(() =>
+            exitCode = AdapterHostRunGuard.Run(() =>
             {
                 Logger.Info($"Octo Mesh Adapter, Version {AssemblyMetadataReader.GetProductVersion()}");
                 Logger.Info(AssemblyMetadataReader.GetCopyright());
@@ -72,16 +75,16 @@ public class AdapterBuilder
 
                 host.Run();
             }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
-
-            if (exitCode != 0)
-            {
-                Environment.ExitCode = exitCode;
-            }
         }
         finally
         {
             // Ensure to flush and stop internal timers/threads before application-exit (Avoid segmentation fault on Linux)
             LogManager.Shutdown();
+        }
+
+        if (exitCode != 0)
+        {
+            TerminateProcess(exitCode);
         }
     }
 
