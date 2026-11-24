@@ -80,50 +80,59 @@ change did not happen:**
 Test projects: `Sdk.Common.Tests` (unit), `Sdk.Common.IntegrationTests`, and
 `Sdk.Common.PipelineParityTests` — the last one enforces the Newtonsoft→System.Text.Json numeric and
 scalar round-trip contract with Newtonsoft as the oracle. The serialization rules themselves live in the
-`octo-construction-kit-engine` repository.
+`octo-construction-kit-engine` repository (`octo-construction-kit-engine/docs/ck-schema-and-json-serialization.md`).
 
 ## Before you commit
 
-1. `dotnet build -c DebugL` and `dotnet test -c DebugL --no-build` are green (warnings are errors).
+1. `dotnet build -c DebugL` and `dotnet test -c DebugL --no-build` are green.
 2. A change a consumer repository has to see is propagated with the three steps under Build & test; a green local
    build alone does not prove the consumer builds against the new package.
 3. The matching file under `docs/` (and this file when a rule changes) is updated in the same commit: a new node, a
    new service or a change to a contract written down there.
-4. Commit messages and pull request titles name the work item as the team convention requires; code, comments,
-   tests and docs carry no work item numbers.
 
 ## Rules
 
-These are obligations for new or changed code. Detail and the reasons are in the doc named after each rule.
+These rules bind new and changed code. Known exceptions in existing code are named in the linked docs.
 
-- Target framework `net10.0` only; nullable reference types are on and **warnings are errors**.
-- **Pipeline data** goes through `IDataContext` only: node code does not use `JToken`, `JObject` or `JArray` and does
-  not pass `JsonSerializerOptions` to an `IDataContext` method. Exception: `JsonScalar.ToClr` (the dynamic boxing
-  path) stays strict and is not given integer coercion. See `docs/pipeline-data-flow.md`.
-- **Tokens and secrets**: `CallerAccessToken` and `MethodInvocation` never reach the data root, `VerifiedPrincipal`
-  or `IEtlContext.Properties`; no credential or message body goes into a trigger status line or a log line, and
-  logged values pass `SecretRegistry.Redact` first. See `docs/execution-identity.md`,
-  `docs/trigger-status-reporting.md` and `docs/secret-values-in-pipelines.md`.
-- **Identity** is not forwarded across the message bus: `FromPipelineDataEvent` and `FromExecutePipelineCommand`
-  start their execution without `VerifiedPrincipal` and caller token, and a new trigger fed over the bus does the
-  same; the identity is established on the receiving side, never relayed. See `docs/execution-identity.md`.
+- Target framework `net10.0` only; nullable reference types are on and warnings are errors.
+- **Pipeline data is System.Text.Json and path-only.** Nodes use `IDataContext`, no Newtonsoft types and no
+  `JsonSerializerOptions` on an `IDataContext` call; dynamic boxing goes only through `JsonScalar.ToClr` without
+  integer coercion, and a change to typed integer reads keeps `Sdk.Common.PipelineParityTests` green, including its
+  pinned divergences. See `docs/pipeline-data-flow.md`.
+- **Caller tokens live for one execution.** `CallerAccessToken` and `MethodInvocation` never reach the data root or
+  `IEtlContext.Properties`, nor does the token reach `VerifiedPrincipal`; no credential or message body goes into a
+  trigger status line, and no credential into a log line or exception text. See `docs/execution-identity.md` and
+  `docs/trigger-status-reporting.md`.
+- **A node that puts a plaintext secret into the data context or resolves a credential calls
+  `INodeContext.RegisterSecret` before any log line or output**; only output through `NodeContext` is masked, an
+  injected `ILogger` is not. See `docs/secret-values-in-pipelines.md`.
+- **A pipeline's identity is not relayed over the message bus.** `FromPipelineDataEvent` (and any new trigger fed by
+  another pipeline) starts without `VerifiedPrincipal` and caller token; only `FromExecutePipelineCommand` carries the
+  invoker that the controller verified, under its `CallerBindingMode`. See `docs/execution-identity.md`.
 - **Tenant**: new code takes the tenant from `IEtlContext.TenantId` or `INodeContext` inside a node and from
   `IAdapterTenantScope` around it, never from a process-wide value. `AdapterOptions.DedicatedTenantId` is only for
   the adapter's own connection, and `AdapterOptions` gets no `TenantId` member back. A new singleton that mentions a
-  tenant goes on the allow-list of the DI sweep test with a reason. See `docs/tenant-isolation.md`.
+  tenant goes on the allow-list of the DI sweep test with a reason (the named exception). See
+  `docs/tenant-isolation.md`.
 - **Pool member**: `AddAdapterPoolMember()` is called before `AddDataPipeline()`; `AdapterHubRegistration` is not
-  registered on a member; readiness follows the registration, never a lease; a member does not start trigger nodes.
-  See `docs/adapter-pool-membership.md` and `docs/pool-member-recovery.md`.
-- **Liveness stays independent of the hub**: `/healthz/live` evaluates no check, and the recovery services stop the
-  host by decision, never by a failing check. See `docs/adapter-hub-registration.md`.
-- **Compatibility with adapter repositories**: a member added to an interface or base class they implement or
-  subclass (`IEtlContext`, `IPipelineExecutionReporter`, `IPipelineLogger`, `INodeContext`, `TriggerContext`) is a
-  default interface member or a virtual no-op, never abstract. New fields of a wire DTO such as `NodeDescriptorDto`
-  are appended last with a default. New `DateTimeOperationDto` operations are appended and existing ordinals never
-  change; `PipelineExecutionClass` keys stay in lockstep with the CK enum of the same name.
-- **Adapter charts**: a new or changed adapter chart renders the three adapter credential keys, and
-  `test/*` branches publish charts into the shared dev bucket as a SemVer prerelease so an unpinned `ChartVersion`
-  keeps resolving the newest stable chart. See `docs/adapter-hub-authentication.md`.
+  registered on a member, so the `AdapterHubRegistration` health check (`AdapterHubReadinessHealthCheck`) never runs
+  there; readiness follows the registration, never a lease; a member does not start trigger nodes. See
+  `docs/adapter-pool-membership.md` and `docs/pool-member-recovery.md`.
+- **Liveness stays independent of the hub**: no health check of this repository gets the `live` tag, and the recovery
+  services stop the host by decision, never by a failing check. See `docs/adapter-hub-registration.md`.
+- **Compatibility with adapter repositories**: a member added to an interface or base class they implement
+  (`IEtlContext`, `INodeContext`, `IPipelineExecutionReporter`, `IPipelineLogger`, `TriggerContext`) is a default
+  interface member or a virtual no-op. A persisted enum such as `DateTimeOperationDto` only gets values appended, and
+  `PipelineExecutionClass` stays in lockstep with its CK enum.
+- **Adapter charts**: a new or changed adapter chart renders the three adapter credential keys. See
+  `docs/adapter-hub-authentication.md`.
 - **Pipeline definitions are read with YamlDotNet**: a key that is present and null overwrites a C# property
   initializer, so node-configuration numbers and enums that need a default are nullable, with the default resolved
-  where they are read. `JsonNullAsDefaultAttribute` only covers the System.Text.Json path.
+  where they are read (`JsonNullAsDefaultAttribute` in octo-mesh-adapter covers only the JSON path). See
+  `docs/nodes.md`.
+- **This repository is public.** No work item ids, internal hostnames, customer or tenant names, or secrets in docs
+  and in new or changed code comments and test names (work item ids stay in `CHANGELOG.md` entries); remove an
+  existing one when you touch its line.
+- **A released node version keeps its behaviour.** A change that alters what `Name@N` does ships as `Name@N+1`; a new
+  option is optional with a neutral default and inert unless configured, and a new operation value is appended. See
+  `docs/nodes.md`.

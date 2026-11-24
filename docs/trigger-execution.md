@@ -43,7 +43,7 @@ Why exclusive and not shared: the address belongs to **one pipeline**, the sende
 registration would need `MigratesLegacyCommand` — one legacy bridge per pipeline probing the broker every 2 s, for every
 pipeline of every adapter. A second replica of a dedicated adapter is therefore a hot standby for these commands. Moving
 them to shared belongs with a sender migration, not here. The fire-and-forget path of `FromPipelineDataEvent@1` is a durable
-shared queue already and is not affected. A `LegacyCommandBridgeObserver` per process does not apply:
+shared queue already and is not affected. The one-bridge-observer-per-process rule does not apply:
 these are dynamic registrations and exclusive-by-design creates no bridge.
 
 The reasons are the constants `FromExecutePipelineCommandNode.ExclusiveByDesignReason` and

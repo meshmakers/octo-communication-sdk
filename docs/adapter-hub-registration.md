@@ -8,7 +8,7 @@ applies_to: src/Sdk.Adapters/{AdapterHub*,AdapterExecutionService,HostedAdapterE
 > **Two branches, one policy.** `AdapterHubRecoveryService` and the `ready`-tagged
 > `AdapterHubReadinessHealthCheck` are wired in the `else` (dedicated) branch of the pool-member switch
 > in `AdapterBuilder`/`WebAdapterBuilder`; a pool member gets their pool-hub counterparts instead (see
-> "Pool member recovery" below). 🔴 Never register `AdapterHubRegistration` on a member — it has no
+> `docs/pool-member-recovery.md`). 🔴 Never register `AdapterHubRegistration` on a member — it has no
 > adapter-hub connection, so the check would keep every member un-ready.
 
 A live SignalR connection is **not** the same as a usable adapter. Registration at the controller's

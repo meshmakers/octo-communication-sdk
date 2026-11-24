@@ -13,7 +13,7 @@ The adapter acquires its **own** client-credentials access token at startup and 
    — the secret is deliberately not part of the check, so a confidential client with a missing secret
    fails loudly at the token endpoint instead of silently degrading to an anonymous connection that
    looks healthy until the gate is armed. The tenant is `AdapterOptions.DedicatedTenantId` — or, on a
-   pool member, the **lending** tenant from `AdapterPool:PoolTenantId`; see below.
+   pool member, the **lending** tenant from `AdapterPool:PoolTenantId`; see `docs/adapter-pool-membership.md`.
 2. **`ConfigureAdapterAuthenticatorOptions`** (`IConfigureOptions<AuthenticatorOptions>`) projects
    those four onto the SDK's `AuthenticatorOptions`, which `AuthenticatorClient` reads.
 3. **`AdapterAccessTokenService`** (`BackgroundService`) requests the token
@@ -23,15 +23,9 @@ The adapter acquires its **own** client-credentials access token at startup and 
    `HttpConnectionOptions.AccessTokenProvider` on every connection attempt, so a refresh reaches the
    next (re)connect with no notification path.
 
-**What was broken.** Nothing filled that holder at startup. The only production writer was
-`ServiceAccountTokenService.EnsureTokenAsync` in `octo-mesh-adapter`, and all of its callers sit on
-pipeline **execution** paths (`DeployPipeline@1`, `AnthropicAiQuery@1`, `MeshContextCreatorService`,
-`PipelineIdentityResolver`). At connect time the holder was empty, the provider returned `null`, the
-connection went out with no `Authorization` header, and the hub saw an anonymous caller identified
-only by the unprotected `adapter-rtId` / `adapter-ckTypeId` headers. Worse than plainly anonymous: an
-adapter that had already run one of those pipelines *did* present a token on its **next** reconnect,
-so the fleet was not in a deterministic state and the adapter-hub gate's `LogOnly`
-inventory was not worth reading.
+**Why the token is acquired at startup.** The token holder has to be filled before the first connect:
+the writers on the pipeline execution paths fill it too late, and an adapter that presents a token only on
+some reconnects makes the adapter-hub gate's `LogOnly` inventory unreadable.
 
 🔴 **`acr_values=tenant:{TenantId}` is not optional.** A token request without it is
 issued for the **system** tenant, and the controller then refuses the adapter on its own tenant route
@@ -73,6 +67,9 @@ not read. Copy the block byte-identical from an existing adapter chart (for exam
 (`WorkloadContextValuesBuilder`). The value paths the controller writes are
 `serviceAccountClientId` and the secret-flagged `secrets.serviceAccountClientSecret`; they are
 pinned on the controller side in `PoolService`.
+
+**Chart publishing.** `test/*` branches publish adapter charts into the shared dev bucket as a SemVer
+prerelease, so an unpinned `ChartVersion` keeps resolving the newest stable chart.
 
 Tests: `tests/Sdk.Common.Tests/Adapters/AdapterAccessTokenServiceTests.cs` (token published into the
 shared holder, scope shape, unconfigured never calls the authenticator in either direction, valid

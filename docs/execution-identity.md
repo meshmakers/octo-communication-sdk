@@ -56,12 +56,13 @@ pipeline data and no credential may travel on it. Without a caller identity the 
 debug level — the overwhelming majority of chains are service-to-service and an info line per hop
 would drown the case that matters.
 
-The same holds for **`FromExecutePipelineCommand@1`** (Studio "Execute" and the ExecutePipeline API).
-That is the row most likely to be "improved" later, because the person clicking the button *is*
-authenticated — but the command travels over the bus and this node authenticates nobody, so a
-forwarded identity would be an assertion the target cannot check.
+**`FromExecutePipelineCommand@1`** (Studio "Execute" and the ExecutePipeline API) is the one trigger that
+carries an invoker: the controller verifies the invoker and the command carries the invoker's token.
+`ExecuteCommandCallerCarryThrough.Apply` puts it onto the execution under the trigger's `CallerBindingMode`, and
+a required binding without an invoker is rejected rather than run as the service account.
 
-`FromPipelineDataEventNodeTests` and `FromExecutePipelineCommandNodeTests` pin that both start their
-execution with neither value, and `ToPipelineDataEventNodeTests` pins that the hand-off is recorded
-and that neither the token nor the subject reaches the message. The trigger-kind matrix that shows how this row fits the other trigger kinds
+`FromPipelineDataEventNodeTests` pins that the data-event trigger starts its execution with neither value,
+`ExecuteCommandCallerCarryThroughTests` pins the carry-through per binding mode, and
+`ToPipelineDataEventNodeTests` pins that the hand-off is recorded and that neither the token nor the subject
+reaches the message. The trigger-kind matrix that shows how this row fits the other trigger kinds
 lives in the `octo-mesh-adapter` repository.

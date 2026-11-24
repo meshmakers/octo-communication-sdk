@@ -32,11 +32,11 @@ tenant on every execution; leasing changes only the value, never this site.
 - Nested `BeginExecution` **restores** the outer tenant on dispose, so a node starting a sub-pipeline does not strip the tenant off the rest of the outer pipeline.
 - `IsPoolMember` is hard-coded `false` and deliberately **not** bindable — an environment variable that could flip it would defeat the guarantee that a process built as a dedicated adapter never becomes a pool member.
 
-⚠️ **`OCTO_ADAPTER__TENANTID` is still bound for one release** by `ConfigureLegacyAdapterTenantId`,
-with a deprecation warning naming the adapter. Eight Helm charts set that key, and the options binder
-ignores a key with no matching property **silently** — without the shim every one of those adapters
-would have fallen back to the `"meshTest"` default and connected on the wrong tenant route, reporting
-nothing at startup. The new key is `OCTO_ADAPTER__DEDICATEDTENANTID` and wins when both are set.
+⚠️ **`OCTO_ADAPTER__TENANTID` stays bound** by `ConfigureLegacyAdapterTenantId`, with a deprecation warning
+naming the adapter, for as long as any adapter chart still sets that key. The options binder ignores a key
+with no matching property **silently**, so without the shim such an adapter would fall back to the
+`"meshTest"` default and connect on the wrong tenant route, reporting nothing at startup. Remove the shim only
+after every adapter chart sets the new key. The new key is `OCTO_ADAPTER__DEDICATEDTENANTID` and wins when both are set.
 
 **Tests** (`tests/Sdk.Common.Tests/TenantIsolation/`): the reflection guard that
 `AdapterOptions` carries no member named `TenantId` by any route; a DI sweep asserting every SDK
