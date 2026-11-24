@@ -43,6 +43,5 @@ collect under `Unreleased` until the next communication release train.
   refusal and then hung instead of exiting. A normal stop (SIGTERM, drain exit, `StopApplication`)
   and a cancellation after a shutdown request while starting still return normally and end with 0.
   The deliberate startup refusals (a datastore host that does not resolve, an `AdapterPool` section
-  that does not bind) are such failures, and so is a `BackgroundService` whose `ExecuteAsync` throws
-  or is cancelled before a shutdown was requested: the host stops as if asked to and returns normally,
-  so the builders watch every background service's `ExecuteTask` and treat such an end as a failure.
+  that does not bind) are such failures. A `BackgroundService` that faults after the start is not
+  covered yet: the host stops as if asked to and the process still ends with 0.

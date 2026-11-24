@@ -60,10 +60,7 @@ public class WebAdapterBuilder
 
                 configureApp(app);
 
-                var backgroundServiceWatch = new BackgroundServiceWatch(
-                    app.Services.GetServices<IHostedService>(), app.Lifetime.ApplicationStopping);
                 await app.RunAsync();
-                backgroundServiceWatch.ThrowIfAnyFailed();
             }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
         }
         finally

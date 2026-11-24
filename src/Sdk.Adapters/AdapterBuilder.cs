@@ -64,8 +64,7 @@ public class AdapterBuilder
 
                 var host = CreateHostBuilder(args, configureConfiguration, configureServices,
                     configureDistributionEventHub).Build();
-                var hostLifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
-                applicationLifetime = hostLifetime;
+                applicationLifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
 
                 var schemaOutputPath = GetSchemaOutputPath(args);
                 if (schemaOutputPath != null)
@@ -74,10 +73,7 @@ public class AdapterBuilder
                     return;
                 }
 
-                var backgroundServiceWatch = new BackgroundServiceWatch(
-                    host.Services.GetServices<IHostedService>(), hostLifetime.ApplicationStopping);
                 host.Run();
-                backgroundServiceWatch.ThrowIfAnyFailed();
             }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
         }
         finally

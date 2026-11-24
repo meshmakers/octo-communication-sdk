@@ -34,7 +34,7 @@ repositories need no source change beyond a package reference.
 | `src/Sdk.Adapters/AdapterOptions.cs`, `src/Sdk.Adapters/AdapterAccessToken*.cs`, `src/Sdk.Adapters/ConfigureAdapterAuthenticatorOptions.cs`, `src/charts/**` | `docs/adapter-hub-authentication.md` |
 | `src/Sdk.Adapters/{AdapterHub*,AdapterExecutionService,HostedAdapterExecutionService,AdapterBuilder}.cs` | `docs/adapter-hub-registration.md` |
 | `src/Sdk.Adapters/AdapterPool*.cs`, `src/Sdk.Adapters/IAdapterLease*.cs`, `src/Sdk.Adapters/AdapterNodeDescriptorProjection.cs` | `docs/adapter-pool-membership.md` |
-| `src/Sdk.Adapters/{AdapterBuilder,AdapterHostRunGuard,BackgroundServiceWatch}.cs`, `src/Sdk.Common.Web/Sockets/WebAdapterBuilder.cs` | `docs/adapter-process-exit.md` |
+| `src/Sdk.Adapters/{AdapterBuilder,AdapterHostRunGuard}.cs`, `src/Sdk.Common.Web/Sockets/WebAdapterBuilder.cs` | `docs/adapter-process-exit.md` |
 | `src/Sdk.Pipeline/Services/{ExecutePipelineOptions,VerifiedPrincipal}.cs`, `src/Sdk.Pipeline/EtlDataPipeline/Nodes/{Triggers/From*,Loads/ToPipelineDataEvent}Node.cs` | `docs/execution-identity.md` |
 | `src/Sdk.Pipeline/EtlDataPipeline/Nodes/**`, `src/Sdk.Pipeline/EtlDataPipeline/DefaultPipelineLogger.cs` | `docs/nodes.md` |
 | `src/Sdk.Pipeline/EtlDataPipeline/**`, `tests/Sdk.Common.PipelineParityTests/**` | `docs/pipeline-data-flow.md` |
