@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Meshmakers.Octo.Runtime.Contracts.Repositories;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Debugger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
@@ -72,6 +73,10 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
             : null;
         var contextAccessor = serviceProvider.GetRequiredService<IEtlContextAccessor<TEtlContext>>();
         contextAccessor.EtlContextFactory = () => etlContext;
+
+        // Names this execution as the caller of the runtime-entity reads its nodes make, so the engine can report
+        // an unbounded read once per execution and node (AB#9824). Describes the caller only; no read changes.
+        using var runtimeReadExecution = RuntimeReadScope.BeginExecution(CreateRuntimeReadExecution(etlContext));
 
         // Owns the JsonDocument when CreateDataContextFromValue parsed one; the `using`
         // releases the document's pooled buffers at scope exit. Get<JsonNode>("$") below
@@ -152,7 +157,10 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
                     nodeContext.Debug("Forward Executing");
                     try
                     {
-                        await node!.ProcessObjectAsync(ds, nodeContext);
+                        using (RuntimeReadNodeScope.Begin(nodeQualifiedName!, nodeContext))
+                        {
+                            await node!.ProcessObjectAsync(ds, nodeContext);
+                        }
                     }
                     catch (DataPipelineException e)
                     {
@@ -214,6 +222,33 @@ public class EtlDataOrchestrator : IEtlDataOrchestrator
         }
 
         return dataContext.Get<JsonNode>("$");
+    }
+
+    /// <summary>
+    /// Describes the execution for <see cref="RuntimeReadScope" />. Observability only: a context that cannot name
+    /// one of its ids (e.g. a hand-built test context) leaves that id out instead of failing the execution.
+    /// </summary>
+    private static RuntimeReadExecution CreateRuntimeReadExecution(IEtlContext etlContext)
+    {
+        return new RuntimeReadExecution(
+            TryFormat(() => etlContext.TenantId),
+            TryFormat(() => etlContext.PipelineRtEntityId.RtId.ToString()),
+            null,
+            TryFormat(() => etlContext.DataFlowRtId.ToString()),
+            TryFormat(() => etlContext.PipelineExecutionId.ToString()));
+
+        static string? TryFormat(Func<string?> read)
+        {
+            try
+            {
+                var value = read();
+                return string.IsNullOrWhiteSpace(value) ? null : value;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
     }
 
     private static DataContextImpl CreateDataContextFromValue(object? value)

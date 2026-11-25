@@ -73,7 +73,10 @@ public abstract class ChildNodeBase : IPipelineNode
                 var childNodeContext = rootNodeContext.RegisterChildNode(nodeQualifiedName!, sequenceNumber++,
                     nodeConfiguration, dc);
                 childNodeContext.Debug("Forward Executing (child)");
-                await node!.ProcessObjectAsync(dc, childNodeContext);
+                using (RuntimeReadNodeScope.Begin(nodeQualifiedName!, childNodeContext))
+                {
+                    await node!.ProcessObjectAsync(dc, childNodeContext);
+                }
                 childNodeContext.Debug("Reverse completed (child)");
             };
         }

@@ -14,7 +14,8 @@ public class DataPipelineFixture : ServiceCollectionFixture
             .RegisterNode<TestNode>()
             .RegisterNode<ExceptionNode>()
             .RegisterNode<TestOutputNode>()
-            .RegisterNode<ModeCaptureNode>();
+            .RegisterNode<ModeCaptureNode>()
+            .RegisterNode<ReadScopeCaptureNode>();
     }
 
     public IDataPipelineBuilder DataPipelineBuilder { get; }
