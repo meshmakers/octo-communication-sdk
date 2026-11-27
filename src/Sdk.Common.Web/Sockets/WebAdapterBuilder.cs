@@ -83,7 +83,6 @@ public class WebAdapterBuilder
 
         builder.Configuration.AddEnvironmentVariables("OCTO_").AddCommandLine(args);
         configureServicesDelegate(builder);
-        BackgroundServiceWatch.TakeOverHostStopOnFailure(builder.Services);
 
         builder.Services.Configure<AdapterOptions>(options =>
             builder.Configuration.GetSection("Adapter").Bind(options));

@@ -2,47 +2,46 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace Meshmakers.Octo.Sdk.Common.Adapters;
 
 /// <summary>
 ///     Runs an adapter host and fails the run when one of its background services faulted, or cancelled
-///     itself before a shutdown was requested. The watch, not the host, stops the host on such an end when
-///     <see cref="BackgroundServiceExceptionBehavior.StopHost" /> is configured, so it sees the end before
-///     any stop was requested.
+///     itself before a shutdown was requested. Once the host has started, the watch, not the host, stops the
+///     host on such an end when <see cref="BackgroundServiceExceptionBehavior.StopHost" /> is configured and
+///     every hosted service is the instance the host started, so it sees the end before any stop was requested.
 /// </summary>
 internal sealed class BackgroundServiceWatch
 {
     private readonly IReadOnlyList<BackgroundService> _backgroundServices;
+    private readonly bool _watchesEveryHostedService;
     private readonly IHostApplicationLifetime _applicationLifetime;
-    private readonly bool _stopsHostOnFailure;
+    private readonly HostOptions _hostOptions;
     private readonly ConcurrentQueue<BackgroundService> _servicesCancelledBeforeStop = new();
+    private IReadOnlyList<(Task ExecuteTask, Task EndRecording)> _endRecordings = [];
+    private bool _stopsHostOnFailure;
 
-    private BackgroundServiceWatch(IEnumerable<IHostedService> hostedServices,
-        IHostApplicationLifetime applicationLifetime, bool stopsHostOnFailure)
+    private BackgroundServiceWatch(IReadOnlyList<IHostedService> hostedServices, bool watchesEveryHostedService,
+        IHostApplicationLifetime applicationLifetime, HostOptions hostOptions)
     {
         _backgroundServices = hostedServices.OfType<BackgroundService>().ToList();
+        _watchesEveryHostedService = watchesEveryHostedService;
         _applicationLifetime = applicationLifetime;
-        _stopsHostOnFailure = stopsHostOnFailure;
+        _hostOptions = hostOptions;
         applicationLifetime.ApplicationStarted.Register(WatchBackgroundServices);
     }
 
-    internal static void TakeOverHostStopOnFailure(IServiceCollection services)
+    internal static BackgroundServiceWatch For(IServiceProvider hostServices)
     {
-        var configuredBehavior = new ConfiguredExceptionBehavior();
-        services.AddSingleton(configuredBehavior);
-        services.PostConfigure<HostOptions>(hostOptions =>
-        {
-            configuredBehavior.StopsHost =
-                hostOptions.BackgroundServiceExceptionBehavior == BackgroundServiceExceptionBehavior.StopHost;
-            hostOptions.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore;
-        });
-    }
-
-    internal static BackgroundServiceWatch For(IServiceProvider hostServices) =>
-        new(hostServices.GetServices<IHostedService>(),
+        var hostedServices = hostServices.GetServices<IHostedService>().ToList();
+        var hostedServicesResolvedAgain = hostServices.GetServices<IHostedService>();
+        var watchesEveryHostedService =
+            hostedServices.SequenceEqual(hostedServicesResolvedAgain, ReferenceEqualityComparer.Instance);
+        return new BackgroundServiceWatch(hostedServices, watchesEveryHostedService,
             hostServices.GetRequiredService<IHostApplicationLifetime>(),
-            hostServices.GetRequiredService<ConfiguredExceptionBehavior>().StopsHost);
+            hostServices.GetRequiredService<IOptions<HostOptions>>().Value);
+    }
 
     internal void Run(Action runHost)
     {
@@ -76,11 +75,26 @@ internal sealed class BackgroundServiceWatch
 
     private void WatchBackgroundServices()
     {
-        foreach (var backgroundService in _backgroundServices)
+        var hostStopsOnFailure =
+            _hostOptions.BackgroundServiceExceptionBehavior == BackgroundServiceExceptionBehavior.StopHost;
+        if (hostStopsOnFailure && _watchesEveryHostedService)
         {
-            backgroundService.ExecuteTask?.ContinueWith(endedTask => StopIfEndedBeforeStop(backgroundService, endedTask),
-                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            _hostOptions.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore;
+            _stopsHostOnFailure = true;
         }
+
+        _endRecordings = _backgroundServices
+            .Where(backgroundService => backgroundService.ExecuteTask != null)
+            .Select(RecordEndOf)
+            .ToList();
+    }
+
+    private (Task ExecuteTask, Task EndRecording) RecordEndOf(BackgroundService backgroundService)
+    {
+        var executeTask = backgroundService.ExecuteTask!;
+        var endRecording = executeTask.ContinueWith(endedTask => StopIfEndedBeforeStop(backgroundService, endedTask),
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return (executeTask, endRecording);
     }
 
     private void StopIfEndedBeforeStop(BackgroundService backgroundService, Task endedTask)
@@ -103,6 +117,12 @@ internal sealed class BackgroundServiceWatch
 
     private void ThrowIfAnyFailed()
     {
+        var recordingsOfEndedServices = _endRecordings
+            .Where(endRecording => endRecording.ExecuteTask.IsCompleted)
+            .Select(endRecording => endRecording.EndRecording)
+            .ToArray();
+        Task.WaitAll(recordingsOfEndedServices);
+
         var faultedService = _backgroundServices.FirstOrDefault(backgroundService =>
             backgroundService.ExecuteTask is { IsFaulted: true });
         if (faultedService != null)
@@ -134,10 +154,5 @@ internal sealed class BackgroundServiceWatch
         }
 
         throw new UnreachableException();
-    }
-
-    private sealed class ConfiguredExceptionBehavior
-    {
-        internal bool StopsHost { get; set; } = true;
     }
 }

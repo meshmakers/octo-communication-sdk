@@ -48,7 +48,7 @@ collect under `Unreleased` until the next communication release train.
   `HttpClient` timeout in `ExecuteAsync`), now ends its process with exit code 1 instead of 0
   (AB#9744), also when it happens while a stop request cancels the start. The guard's one ERROR line
   names the service type and the original exception type and message. A normal stop still ends with 0.
-  The builders now set `HostOptions.BackgroundServiceExceptionBehavior` to `Ignore` and stop the host
-  themselves when the adapter configured `StopHost` (the default); a fault while another hosted service
-  is still starting stops the host only after the start completes. An adapter that configured `Ignore`
-  keeps running after a fault and ends with 1 when it is stopped.
+  Once the host has started, the builders switch `HostOptions.BackgroundServiceExceptionBehavior` from
+  `StopHost` (the default) to `Ignore` and stop the host themselves; while it starts, `StopHost` stays in
+  force. They do not take over when a hosted service is registered as transient. An adapter that
+  configured `Ignore` keeps running after a fault and ends with 1 when it is stopped.

@@ -136,7 +136,6 @@ public class AdapterBuilder
 
             // Continue with configuration
             services.AddSingleton<AdapterLifetimeManagement>();
-            BackgroundServiceWatch.TakeOverHostStopOnFailure(services);
 
             services.AddLogging(loggingBuilder =>
             {

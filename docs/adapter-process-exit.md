@@ -41,24 +41,28 @@ exactly like one stopped by the shutdown. The builders therefore run the host th
   `ExecuteTask` that faults, or is cancelled while `ApplicationStopping` is not yet signalled, ended on
   its own; one cancelled after the stop was requested ended because of the shutdown and is no failure.
 - After the run, or when the run ends with an `OperationCanceledException` (a start cancelled by a stop
-  request), the watch raises an `InvalidOperationException` for the first faulted service, else for the
-  first service that cancelled itself. Its message names the service type and the original exception's
-  type and message, and the guard logs it as its one ERROR line and ends with 1. A fault that is or wraps
-  an `OperationCanceledException` is a fault: the guard never reads the raised exception as a shutdown.
-- 🔴 The watch, not the host, stops the host on such an end. If the host stopped first, the stop request
-  would already be signalled when the watch's continuation runs, and a service that cancelled itself
-  would read as stopped by the shutdown. `TakeOverHostStopOnFailure` therefore sets
-  `HostOptions.BackgroundServiceExceptionBehavior` to `Ignore` in a `PostConfigure` and remembers the value
-  the adapter configured: with `StopHost` (the default) the watch calls `StopApplication` itself. The
-  watch starts watching when the host has started, so a fault while another hosted service is still
-  starting stops the host only after the start completes (before, Hosting cancelled the start); the
-  process still ends with 1. An adapter that configured `Ignore` keeps running after a fault, as it
-  asked for, and ends with 1 when it is stopped later.
+  request), the watch waits for the continuations of the services that ended and raises an
+  `InvalidOperationException` for the first faulted service, else for the first service that cancelled
+  itself. Its message names the service type and the original exception's type and message, and the guard
+  logs it as its one ERROR line and ends with 1. A fault that is or wraps an `OperationCanceledException`
+  is a fault: the guard never reads the raised exception as a shutdown.
+- 🔴 After the start, the watch, not the host, stops the host on such an end. If the host stopped first,
+  the stop request would already be signalled when the watch's continuation runs, and a service that
+  cancelled itself would read as stopped by the shutdown. So when the host has started, the watch sets the
+  host's live `HostOptions.BackgroundServiceExceptionBehavior` from `StopHost` (the default) to `Ignore`
+  and calls `StopApplication` itself. While the host starts, `StopHost` stays in force: a fault while
+  another hosted service is still starting makes Hosting cancel the start as before, and the process ends
+  with 1.
+- The watch takes over only when every `IHostedService` resolves to the same instance twice. A hosted
+  service registered as transient is another instance than the one the host starts; the watch cannot see
+  it, so `StopHost` stays with the host and a fault of that service ends with 0, as before. An adapter
+  that configured `Ignore` keeps running after a fault, as it asked for, and ends with 1 when it is stopped
+  later.
 
 Microsoft.Extensions.Hosting adds its own `BackgroundService failed` ERROR line before the guard's.
-Not distinguished: a service that cancels itself while a SIGTERM arrives during the start reads as
-stopped by the shutdown, and a service that cancels itself before the start was cancelled by a stop
-request is not seen at all (only a fault is).
+Not distinguished: a service that cancels itself before the host has started reads as stopped by the
+shutdown, because `StopHost` has already signalled the stop when the watch starts watching (only a fault
+is seen).
 
 ## Tests
 

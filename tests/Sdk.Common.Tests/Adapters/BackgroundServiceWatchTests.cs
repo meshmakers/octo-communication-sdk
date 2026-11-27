@@ -1,6 +1,7 @@
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace Sdk.Common.Tests.Adapters;
 
@@ -16,7 +17,6 @@ public sealed class BackgroundServiceWatchTests
     {
         var hostBuilder = Host.CreateEmptyApplicationBuilder(new HostApplicationBuilderSettings());
         registerServices(hostBuilder.Services);
-        BackgroundServiceWatch.TakeOverHostStopOnFailure(hostBuilder.Services);
         return hostBuilder.Build();
     }
 
@@ -32,6 +32,9 @@ public sealed class BackgroundServiceWatchTests
             backgroundServiceWatch.Run(host.Run);
         }
     }
+
+    private static Task RunWatchedWithinTimeoutAsync(IHost host) =>
+        RunWatchedAsync(host, true).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
     [Theory]
     [InlineData(typeof(FaultingService), false)]
@@ -52,17 +55,33 @@ public sealed class BackgroundServiceWatchTests
     }
 
     [Fact]
-    public async Task AFaultWhileTheStartIsCancelledStillFailsTheRun()
+    public async Task AFaultWhileAnotherServiceIsStillStartingCancelsTheStartAndFailsTheRun()
     {
         using var host = BuildHost(services =>
         {
             services.AddHostedService<FaultingService>();
-            services.AddHostedService<StopsWhileStartingAfterAFaultService>();
+            services.AddHostedService<StartsUntilCancelledService>();
         });
 
-        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => RunWatchedAsync(host, false));
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => RunWatchedWithinTimeoutAsync(host));
 
         Assert.Contains(typeof(FaultingService).FullName!, failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AHostedServiceTheWatchCannotSeeLeavesStoppingToTheHost()
+    {
+        using var host = BuildHost(services =>
+        {
+            services.AddTransient<IHostedService, FaultingService>();
+            services.AddHostedService<RunsUntilStoppedService>();
+        });
+
+        var hostOptions = host.Services.GetRequiredService<IOptions<HostOptions>>().Value;
+
+        await RunWatchedWithinTimeoutAsync(host);
+
+        Assert.Equal(BackgroundServiceExceptionBehavior.StopHost, hostOptions.BackgroundServiceExceptionBehavior);
     }
 
     [Theory]
@@ -147,16 +166,10 @@ public sealed class BackgroundServiceWatchTests
             Task.FromException(new OperationCanceledException(FailureReason));
     }
 
-    private sealed class StopsWhileStartingAfterAFaultService(
-        IServiceProvider serviceProvider,
-        IHostApplicationLifetime applicationLifetime) : IHostedService
+    private sealed class StartsUntilCancelledService : IHostedService
     {
-        public async Task StartAsync(CancellationToken cancellationToken)
-        {
-            await Task.WhenAny(FaultingServiceOf(serviceProvider).ExecuteTask!);
-            applicationLifetime.StopApplication();
-            await Task.Delay(Timeout.Infinite, cancellationToken);
-        }
+        public Task StartAsync(CancellationToken cancellationToken) =>
+            Task.Delay(Timeout.Infinite, cancellationToken);
 
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
