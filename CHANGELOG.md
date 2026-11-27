@@ -7,6 +7,12 @@ collect under `Unreleased` until the next communication release train.
 
 ### Added
 
+- The pipeline runtime names the caller of runtime-entity reads (AB#9824): `EtlDataOrchestrator` opens a
+  `RuntimeReadScope` execution scope (tenant, pipeline rtId, data flow rtId, execution id) per execution, and the
+  orchestrator and `ChildNodeBase` (ForEach, For, If, Switch, Group, ...) open a node scope (node type, node path)
+  around every node. The engine uses it to report an unbounded read once per execution and node; no read, result
+  or error changes. Needs the `Meshmakers.Octo.Runtime.Contracts` package with `RuntimeReadScope`.
+
 - `Logger@1` logs values from the data context (AB#9335, Feature AB#9249). New optional properties:
   `messagePath` (JSONPath to the message; exactly one of `message` and `messagePath` is required),
   `level` (`Debug`, `Information`, `Warning`, `Error`; default `Information`), `attributes` (list of
