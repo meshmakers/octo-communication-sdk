@@ -49,9 +49,11 @@ exactly like one stopped by the shutdown. The builders therefore run the host th
   would already be signalled when the watch's continuation runs, and a service that cancelled itself
   would read as stopped by the shutdown. `TakeOverHostStopOnFailure` therefore sets
   `HostOptions.BackgroundServiceExceptionBehavior` to `Ignore` in a `PostConfigure` and remembers the value
-  the adapter configured: with `StopHost` (the default) the watch calls `StopApplication` itself, so the
-  result is the same as before, only with exit code 1. An adapter that configured `Ignore` keeps running
-  after a fault, as it asked for, and ends with 1 when it is stopped later.
+  the adapter configured: with `StopHost` (the default) the watch calls `StopApplication` itself. The
+  watch starts watching when the host has started, so a fault while another hosted service is still
+  starting stops the host only after the start completes (before, Hosting cancelled the start); the
+  process still ends with 1. An adapter that configured `Ignore` keeps running after a fault, as it
+  asked for, and ends with 1 when it is stopped later.
 
 Microsoft.Extensions.Hosting adds its own `BackgroundService failed` ERROR line before the guard's.
 Not distinguished: a service that cancels itself while a SIGTERM arrives during the start reads as

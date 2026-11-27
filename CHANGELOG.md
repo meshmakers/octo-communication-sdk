@@ -49,5 +49,6 @@ collect under `Unreleased` until the next communication release train.
   (AB#9744), also when it happens while a stop request cancels the start. The guard's one ERROR line
   names the service type and the original exception type and message. A normal stop still ends with 0.
   The builders now set `HostOptions.BackgroundServiceExceptionBehavior` to `Ignore` and stop the host
-  themselves when the adapter configured `StopHost` (the default), so the host stops as before; an
-  adapter that configured `Ignore` keeps running after a fault and ends with 1 when it is stopped.
+  themselves when the adapter configured `StopHost` (the default); a fault while another hosted service
+  is still starting stops the host only after the start completes. An adapter that configured `Ignore`
+  keeps running after a fault and ends with 1 when it is stopped.
