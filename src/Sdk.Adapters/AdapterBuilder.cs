@@ -73,7 +73,7 @@ public class AdapterBuilder
                     return;
                 }
 
-                host.Run();
+                BackgroundServiceWatch.For(host.Services).Run(host.Run);
             }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
         }
         finally

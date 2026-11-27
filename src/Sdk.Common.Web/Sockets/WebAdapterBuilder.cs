@@ -60,7 +60,7 @@ public class WebAdapterBuilder
 
                 configureApp(app);
 
-                await app.RunAsync();
+                await BackgroundServiceWatch.For(app.Services).RunAsync(() => app.RunAsync());
             }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
         }
         finally
