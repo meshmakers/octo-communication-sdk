@@ -43,5 +43,11 @@ collect under `Unreleased` until the next communication release train.
   refusal and then hung instead of exiting. A normal stop (SIGTERM, drain exit, `StopApplication`)
   and a cancellation after a shutdown request while starting still return normally and end with 0.
   The deliberate startup refusals (a datastore host that does not resolve, an `AdapterPool` section
-  that does not bind) are such failures. A `BackgroundService` that faults after the start is not
-  covered yet: the host stops as if asked to and the process still ends with 0.
+  that does not bind) are such failures.
+- An adapter whose `BackgroundService` faults, or cancels itself before a shutdown was requested (an
+  `HttpClient` timeout in `ExecuteAsync`), now ends its process with exit code 1 instead of 0
+  (AB#9744), also when it happens while a stop request cancels the start. The guard's one ERROR line
+  names the service type and the original exception type and message. A normal stop still ends with 0.
+  The builders now set `HostOptions.BackgroundServiceExceptionBehavior` to `Ignore` and stop the host
+  themselves when the adapter configured `StopHost` (the default), so the host stops as before; an
+  adapter that configured `Ignore` keeps running after a fault and ends with 1 when it is stopped.

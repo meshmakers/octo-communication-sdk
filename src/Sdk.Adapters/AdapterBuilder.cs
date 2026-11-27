@@ -73,7 +73,7 @@ public class AdapterBuilder
                     return;
                 }
 
-                host.Run();
+                BackgroundServiceWatch.For(host.Services).Run(host.Run);
             }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
         }
         finally
@@ -136,6 +136,7 @@ public class AdapterBuilder
 
             // Continue with configuration
             services.AddSingleton<AdapterLifetimeManagement>();
+            BackgroundServiceWatch.TakeOverHostStopOnFailure(services);
 
             services.AddLogging(loggingBuilder =>
             {

@@ -24,6 +24,7 @@ public sealed class AdapterBuilderProcessCollection;
 public sealed class AdapterBuilderExitCodeTests : IDisposable
 {
     private const string StartupFailureReason = "datastore host mongo-unresolvable does not resolve";
+    private const string BackgroundFailureReason = "pool lease renewal failed";
 
     private readonly string _workDirectory =
         Path.Combine(Path.GetTempPath(), "adapter-builder-exit-code-" + Guid.NewGuid().ToString("N"));
@@ -52,10 +53,7 @@ public sealed class AdapterBuilderExitCodeTests : IDisposable
     [Fact]
     public void AConfigurationThatDoesNotBindEndsTheProcessWithANonZeroExitCodeAndNamesTheReason()
     {
-        var memoryTarget = new MemoryTarget("memory") { Layout = "${level:uppercase=true}|${message}" };
-        var loggingConfiguration = new LoggingConfiguration();
-        loggingConfiguration.AddRuleForAllLevels(memoryTarget);
-        LogManager.Configuration = loggingConfiguration;
+        var memoryTarget = CaptureLogInMemory();
 
         CreateAdapterBuilder().Run([],
             configuration => configuration.AddInMemoryCollection(new Dictionary<string, string?>
@@ -122,6 +120,78 @@ public sealed class AdapterBuilderExitCodeTests : IDisposable
             });
 
         Assert.Null(_terminatedWithExitCode);
+    }
+
+    [Fact]
+    public void ABackgroundServiceThatFaultsEndsTheProcessWithANonZeroExitCodeAndNamesTheReason()
+    {
+        var memoryTarget = CaptureLogInMemory();
+
+        CreateAdapterBuilder().Run([],
+            (_, services) =>
+            {
+                RegisterMinimalAdapter(services);
+                services.AddHostedService<FaultingBackgroundService>();
+            });
+
+        Assert.Equal(AdapterHostRunGuard.FailureExitCode, _terminatedWithExitCode);
+        var guardErrorLine = Assert.Single(memoryTarget.Logs, line =>
+            line.StartsWith("ERROR|Adapter stopped because of an exception", StringComparison.Ordinal));
+        Assert.Contains(typeof(FaultingBackgroundService).FullName!, guardErrorLine, StringComparison.Ordinal);
+        Assert.Contains(BackgroundFailureReason, guardErrorLine, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AHealthyAdapterWithSeveralBackgroundServicesThatStopsOnRequestLogsNoError()
+    {
+        var memoryTarget = CaptureLogInMemory();
+
+        CreateAdapterBuilder().Run([],
+            (_, services) =>
+            {
+                RegisterMinimalAdapter(services);
+                services.AddSingleton<IHostedService>(_ => new RunsUntilStoppedService());
+                services.AddSingleton<IHostedService>(_ => new RunsUntilStoppedService());
+                services.AddHostedService<StopWhenStartedService>();
+            });
+
+        Assert.Null(_terminatedWithExitCode);
+        Assert.DoesNotContain(memoryTarget.Logs, line => line.StartsWith("ERROR|", StringComparison.Ordinal));
+    }
+
+    private static MemoryTarget CaptureLogInMemory()
+    {
+        var memoryTarget = new MemoryTarget("memory") { Layout = "${level:uppercase=true}|${message}" };
+        var loggingConfiguration = new LoggingConfiguration();
+        loggingConfiguration.AddRuleForAllLevels(memoryTarget);
+        LogManager.Configuration = loggingConfiguration;
+        return memoryTarget;
+    }
+
+    private sealed class FaultingBackgroundService : BackgroundService
+    {
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            await Task.Yield();
+            throw new InvalidOperationException(BackgroundFailureReason);
+        }
+    }
+
+    private sealed class RunsUntilStoppedService : BackgroundService
+    {
+        protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+            Task.Delay(Timeout.Infinite, stoppingToken);
+    }
+
+    private sealed class StopWhenStartedService(IHostApplicationLifetime applicationLifetime) : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            applicationLifetime.ApplicationStarted.Register(applicationLifetime.StopApplication);
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private sealed class StopOnStartService(IHostApplicationLifetime applicationLifetime) : IHostedService

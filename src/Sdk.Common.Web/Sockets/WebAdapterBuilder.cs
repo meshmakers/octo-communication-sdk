@@ -60,7 +60,7 @@ public class WebAdapterBuilder
 
                 configureApp(app);
 
-                await app.RunAsync();
+                await BackgroundServiceWatch.For(app.Services).RunAsync(() => app.RunAsync());
             }, () => applicationLifetime?.ApplicationStopping.IsCancellationRequested == true, Logger);
         }
         finally
@@ -83,6 +83,7 @@ public class WebAdapterBuilder
 
         builder.Configuration.AddEnvironmentVariables("OCTO_").AddCommandLine(args);
         configureServicesDelegate(builder);
+        BackgroundServiceWatch.TakeOverHostStopOnFailure(builder.Services);
 
         builder.Services.Configure<AdapterOptions>(options =>
             builder.Configuration.GetSection("Adapter").Bind(options));
